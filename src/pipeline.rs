@@ -27,6 +27,8 @@ pub enum Error {
     Tps(tps::TpsError),
     Meta(meta::MetaError),
     AtlasSizeUnknown,
+    EmptySheet,
+    DuplicateSpriteName(String),
 }
 
 impl fmt::Display for Error {
@@ -37,6 +39,11 @@ impl fmt::Display for Error {
             Self::Tps(e) => write!(f, "tps parse: {e}"),
             Self::Meta(e) => write!(f, "meta: {e}"),
             Self::AtlasSizeUnknown => write!(f, "atlas size missing from tpsheet header"),
+            Self::EmptySheet => write!(f, "tpsheet has zero sprites; refusing to delete it"),
+            Self::DuplicateSpriteName(name) => write!(
+                f,
+                "duplicate sprite name after prefix application: {name:?}"
+            ),
         }
     }
 }
@@ -70,6 +77,12 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
     if sheet.tex.width == 0 || sheet.tex.height == 0 {
         return Err(Error::AtlasSizeUnknown);
     }
+    if sheet.sprites.is_empty() {
+        // Refuse to consume (delete) the .tpsheet when no sprites would be
+        // emitted — that would leave the project in a state where every
+        // prefab referencing the atlas's sprites has dangling fileIDs.
+        return Err(Error::EmptySheet);
+    }
     let atlas_size = AtlasSize {
         width: sheet.tex.width,
         height: sheet.tex.height,
@@ -88,7 +101,9 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
 
     for sprite in &sheet.sprites {
         let asset_name = format!("{}{}", input.prefix, sprite.name);
-        current_asset_names.insert(asset_name.clone());
+        if !current_asset_names.insert(asset_name.clone()) {
+            return Err(Error::DuplicateSpriteName(asset_name));
+        }
 
         let asset_path = input.sprite_dir.join(format!("{asset_name}.asset"));
         let meta_path = input.sprite_dir.join(format!("{asset_name}.asset.meta"));
@@ -223,9 +238,15 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
         }
     }
 
-    // Prune orphans (and the consumed .tpsheet pair).
+    // Prune orphans (and the consumed .tpsheet pair). Surface non-NotFound
+    // failures via stderr — silently swallowing would hide real permission
+    // problems behind a "successful" return.
     for p in &deleted_paths {
-        let _ = fs::remove_file(p);
+        if let Err(e) = fs::remove_file(p)
+            && e.kind() != io::ErrorKind::NotFound
+        {
+            eprintln!("unity-sprite-author: failed to remove {p:?}: {e}");
+        }
     }
 
     Ok(GenerateOutput {
