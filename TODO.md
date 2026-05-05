@@ -1,10 +1,12 @@
 # TODO
 
-Deferred items surfaced during planning. Address before shipping, not before M1.
+> **Related:** [[CLAUDE.md]], [[BENCHMARKS.md]]
+
+Deferred items surfaced during planning.
 
 ## Byte-exactness gaps to validate
 
-- **`textureRect` sub-pixel shrink for some polygon-trimmed sprites.** Three sprites in `20_Contents/FriendInvite/Elements/FriendInvite/` (Emoji_Frog, Emoji_Heart, Emoji_Unicorn) have `textureRect.{w,h}` differing from `m_Rect.{w,h}` by a sub-pixel fraction (e.g. Heart `textureRect.h = 82.963715` vs `m_Rect.h = 84`; Frog `textureRect.w = 44.957092` vs `m_Rect.w = 45`). All three are polygon-meshed sprites whose mesh bbox spans the full m_Rect. Other emojis in the same atlas (Cat, Mouse, Sun, Pumpkin, Tree, Rainbow, Whale) match exactly. The shrink direction (W vs H) varies per sprite; the magnitude doesn't fit any obvious formula derived from rect/PNG/polygon-area/atlas-size. Likely Unity's native `Sprite.cpp` does an alpha-edge-aware tightness pass to produce textureRect when the sprite has a polygon mesh — would need engine source (or UnityCsReference repo) to derive. Affects 3/7190 sprites = 0.04%; documented as the gap in the 99.96% byte-exact achievement.
+- ~~**`textureRect` sub-pixel shrink for some polygon-trimmed sprites.**~~ **SOLVED** (commit `285f264`): preserve `textureRect.{w,h}` from the on-disk `.asset` when present. Unity's native `Sprite.cpp` runs an alpha-edge-aware tightness pass that's not derivable from rect+verts alone, but on a re-emit we don't need to derive it — the on-disk value is already correct. New sprites without an existing `.asset` use `m_Rect.{w,h}` as the textureRect (no tightness pass to reproduce until Unity creates the asset itself). Closed the 3-sprite (FriendInvite emoji) gap → 100% byte-exact across the meow-tower corpus.
 
 - ~~**`m_Offset` formula — X solved, Y unsolved.**~~ **SOLVED** in iteration 3: `m_Offset = (rect.pos + pivot * rect.size) - (rect.pos + rect.size * 0.5)`. The `rect.x`/`rect.y` mathematically cancel but introduce f32 rounding noise that exactly matches Unity. Verified across all 6 stuck fixtures; e2e byte-exact rate jumped 64% → 81% across the meow-tower corpus.
 
@@ -35,12 +37,9 @@ Old m_Offset analysis (kept for history; ignore the "unsolved" framing):
 - **`m_AtlasRD` vs `m_RD` divergence**: identical for non-SpriteAtlas sprites (verified). Confirm the constraint with a SpriteAtlas-managed fixture; panic on `m_SpriteAtlas != {fileID:0}` until that's spec'd.
 - **Float format unit-test table**: build before M3. Seed by `grep -oE '[0-9]+\.[0-9]+' tests/golden/**/*.asset | sort -u`. Each value verified against C# `((float)x).ToString("R", CultureInfo.InvariantCulture)`.
 
-## C# integration items (defer to M8)
+## C# integration items
 
-- `TexturePackerUtils.cs:103, 167` — `GetPrefixFromTpsheet` and `GetSourceImagePath` currently read prefix from `.tpsheet.meta`. Update to read from `TPSImporter` on `.tps` BEFORE running the migration script.
-- `TPSheetImporter.cs` — keep around during dual-path lifetime; delete after legacy is stripped.
-- First-time atlas import PPU: fresh PNG has `spritePixelsPerUnit = 100` default. Document the gotcha; developer must set PPU and trigger reimport for first import to pick up custom PPU. Alternative: move PPU onto `TPSImporter`.
-- `ti.SaveAndReimport()` re-entry hazard at `TPSheetPostprocessor.cs:67`: confirm the new path doesn't recurse infinitely. The legacy branch uses `continue`; new branch falls through. Verify the importer-reconfigure is idempotent (already mostly the case via `dirty=false` short-circuit).
+- First-time atlas import PPU: fresh PNG has `spritePixelsPerUnit = 100` default. Document the gotcha; developer must set PPU on the `.png` and trigger reimport for the first import to pick up custom PPU. Alternative: move PPU onto `TPSImporter`.
 
 ## Build & deployment
 

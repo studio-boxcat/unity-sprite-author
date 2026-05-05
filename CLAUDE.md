@@ -1,18 +1,18 @@
 # unity-sprite-author
 
-Native library (`cdylib`) called from Unity's `TPSheetPostprocessor` via P/Invoke. Replaces the C# sprite-asset generation path with byte-exact output. Legacy subasset path stays untouched.
+> **Related:** [[TODO.md]], [[BENCHMARKS.md]]
+
+Native library (`cdylib`) called from Unity's `TPSheetPostprocessor` via P/Invoke. Authors Unity Sprite `.asset` files byte-exactly from a TexturePacker `.tpsheet` + `.tps` + atlas `.png`.
 
 ## Purpose
 
-Replace the body of `CreateSprites(...)` in `TPSheetPostprocessor.cs` with a Rust `cdylib` that authors `.asset` files byte-exactly. C# remains the `AssetPostprocessor` entry point — it gates the legacy/new branch, reconfigures the texture importer, reads `_prefix` from `TPSheetImporter`, calls the native lib, and refreshes AssetDatabase. The lib does parse + bytes + filesystem.
+C# (`TPSheetPostprocessor`) is the `AssetPostprocessor` entry point — for each imported `.tpsheet` it reads `_prefix` from `TPSImporter` on the sibling `.tps`, picks up PPU from the `.png`'s `TextureImporter`, and calls into the native lib. The lib does parse + bytes + filesystem; C# routes the returned written/deleted paths back through `AssetDatabase.ImportAsset`/`DeleteAsset`.
 
-Today's `CreateSprites` is slow (C# managed), non-deterministic across Unity versions, and re-runs on every reimport. Moving it to native code with a byte-exact contract makes it fast, deterministic, and version-stable.
+The previous C# `CreateSprites` path was slow (managed), non-deterministic across Unity versions, and re-ran on every reimport. Moving it to native code with a byte-exact contract makes it fast, deterministic, and version-stable.
 
-The bar is **byte-exactness**: output must equal what Unity's `EditorUtility.CopySerialized` emits today, byte-for-byte. Existing committed `.asset` files survive the swap with no diff churn — AssetBundle hashes, addressables, `.meta` GUID refs stay stable.
+The bar is **byte-exactness**: output must equal what Unity's `EditorUtility.CopySerialized` emits, byte-for-byte. Existing committed `.asset` files survive the swap with no diff churn — AssetBundle hashes, addressables, `.meta` GUID refs stay stable.
 
 ## Goal
-
-Drop-in replacement for `CreateSprites(...)`:
 
 - **Input** (path-based, via FFI): tpsheet path, tps path, atlas `.png` path, output sprite dir, prefix string, PPU.
 - **Output**: byte-exact `.asset` + matching `.asset.meta` per sprite. Orphan `.asset`/`.asset.meta` pruned. `.tpsheet` + `.tpsheet.meta` deleted on success.
@@ -20,7 +20,6 @@ Drop-in replacement for `CreateSprites(...)`:
 
 ## Non-Goals
 
-- Legacy path (`textureType == Sprite && spriteImportMode == Multiple`). Frozen C#, future-stripped.
 - Other Unity asset types (`.controller`, `.spriteatlasv2`, etc.). Sprite-only by design.
 - Reimplementing Unity's tight-mesh tracer / alpha outline algorithms. Tpsheet always carries verts + tris.
 - Standalone CLI, watcher, or scratch-path workflow.
@@ -31,11 +30,9 @@ Drop-in replacement for `CreateSprites(...)`:
 ```
 TexturePacker → Foo.tps + Foo.tpsheet (in Assets/, alongside Foo.png)
        ↓
-Unity import → TPSheetPostprocessor (C#)
+Unity import → TPSheetPostprocessor.OnPostprocessAllAssets
        ↓
-   IsLegacyTexture? ── yes ──► frozen C# legacy path (subassets in .png.meta)
-       ↓ no
-   ConfigureTextureImporter (textureType=Default, alphaIsTransparency, mip=off)
+   For each *.tpsheet: prefix from TPSImporter (.tps), PPU from TextureImporter (.png)
        ↓
    P/Invoke → unity_sprite_author::generate (Rust cdylib)
        ↓
@@ -43,15 +40,6 @@ Unity import → TPSheetPostprocessor (C#)
        ↓
    (.tpsheet + .tpsheet.meta gone; .asset + .asset.meta written or pruned)
 ```
-
-Branch signal (verified, `TPSheetPostprocessor.cs:14-15`):
-
-```csharp
-private static bool IsLegacyTexture(TextureImporter ti) =>
-    ti.textureType is TextureImporterType.Sprite && ti.spriteImportMode is SpriteImportMode.Multiple;
-```
-
-Default texture type for fresh PNGs falls into the new path.
 
 ## C# ↔ Rust contract
 
@@ -92,7 +80,7 @@ void     free_error(ErrorOut* err);
 - **Skip-write-if-equal**: before writing, read existing bytes; if identical, skip. Avoids mtime churn that would re-import dependents in Unity.
 - **No global state**: no `OnceCell`, `lazy_static`, thread-locals, or caches outliving a `generate` call. Mono does not unload native plugins on domain reload — global state would leak across script recompiles.
 - `.tpsheet` + `.tpsheet.meta` deletion happens inside Rust on success only. Both paths are reported in `deleted_paths` so C# can call `AssetDatabase.DeleteAsset` on them.
-- Native binary lives at `Assets/Plugins/Editor/libunity_sprite_author.{dylib,dll}`. Editor-only, never shipped in builds. Hand-author the `.meta` plugin-import flags (`Editor: 1`, all platforms `0`) — Unity's auto-detection defaults to "Any Platform" and bundles the dylib into player builds.
+- Native binary lives at `meow-tower/Assets/50_Modules/Tools/TexturePacker/Editor/{libunity_sprite_author.dylib,unity_sprite_author.dll}`. The `Editor/` subfolder makes Unity treat it as editor-only automatically, no manual plugin-import flags required.
 
 C# call pattern (canonical):
 
@@ -151,7 +139,8 @@ tpsheet line format (semicolon-separated):
 
 | Sprite `.asset` field          | Source                                                              |
 | ------------------------------ | ------------------------------------------------------------------- |
-| `m_Rect`, `textureRect`        | tpsheet rect                                                        |
+| `m_Rect`                       | tpsheet rect                                                        |
+| `textureRect`                  | tpsheet rect by default; (w,h) preserved from on-disk `.asset` when present, since Unity's polygon-trimmed sprites carry a sub-pixel `textureRect` not derivable from rect+verts alone (see `meta::extract_texture_rect_size`, `pipeline.rs:129`) |
 | `m_Pivot`                      | tpsheet pivot                                                       |
 | `m_Border`                     | tpsheet borders (LRTB)                                              |
 | `m_PixelsToUnits`              | `ppu / spriteScale` (PPU from importer; spriteScale from `.tps`)    |
@@ -169,11 +158,12 @@ Reference asset for parity testing: `meow-tower/Assets/21_Collections/OrgelConte
 
 ## Reference Implementations
 
-C# spec (authoritative):
-- `meow-tower/Assets/50_Modules/Tools/TexturePacker/TPSheetPostprocessor.cs` — replaceable boundary is `CreateSprites` (lines 108-172).
-- `meow-tower/Assets/50_Modules/Tools/TexturePacker/TPSheetImporter.cs` — holds `_prefix`.
-- `meow-tower/Assets/50_Modules/Tools/TexturePacker/SheetLoader.cs` — tpsheet parsing, including no-polygon rect fallback.
-- `meow-tower/Assets/50_Modules/Tools/TexturePacker/TexturePackerUtils.cs` — `.tps` parsing for `spriteScale`.
+C# integration (matched-pair to this crate):
+- `meow-tower/Assets/50_Modules/Tools/TexturePacker/TPSheetPostprocessor.cs` — `OnPostprocessAllAssets` entry point.
+- `meow-tower/Assets/50_Modules/Tools/TexturePacker/NativeSpriteAuthor.cs` — P/Invoke wrapper; mirror struct-for-struct with `src/ffi.rs`.
+- `meow-tower/Assets/50_Modules/Tools/TexturePacker/TPSImporter.cs` — `ScriptedImporter` holding `_prefix` on `.tps`.
+- `meow-tower/Assets/50_Modules/Tools/TexturePacker/TexturePackerUtils.cs` — `.tps` parsing for `spriteScale` (and `_prefix` reader for menu items).
+- `meow-tower/Assets/50_Modules/Tools/TexturePacker/SheetLoader.cs` — historical tpsheet parser. No longer on the import path; useful as a cross-reference for our parser.
 
 TS port for mesh internals (proven byte-exact for `m_IndexBuffer`, float-tolerant elsewhere):
 - `prefab-saloon/src/lib/sprite/tpsheet-parser.ts`
@@ -201,7 +191,7 @@ Do **not** port: `prefab-saloon/src/lib/prefab/{parser,serializer,templates}.ts`
 - Rust stable. `cdylib` only, no binary.
 - Cross-compile targets:
   - `aarch64-apple-darwin` + `x86_64-apple-darwin` via `cargo zigbuild`, combined into a universal dylib via `lipo`.
-  - `x86_64-pc-windows-msvc` via `cargo xwin` (NOT `-gnu`; Unity Editor on Windows is MSVC-CRT, mixing CRTs across the FFI boundary corrupts the heap when ownership crosses).
+  - `x86_64-pc-windows-gnu` via `cargo zigbuild`. Despite the `-gnu` triple, the resulting DLL imports the `api-ms-win-crt-*` API sets — i.e. UCRT, the same CRT MSVC has shipped against since VS 2015 — so it's ABI-compatible with Unity Editor on Windows 10+. Win7/8.1 are out of scope (not supported by current Unity LTS). Verify CRT linkage post-build with `strings unity_sprite_author.dll | grep -i 'api-ms-win-crt'` (no `msvcrt.dll`, no `vcruntime`).
 - `[profile.release] panic = "unwind"` (required by `catch_unwind`). The outermost extern fn is the only `catch_unwind` site; inner code returns `Result`. `unwrap`/`expect` reserved for genuine bugs.
 - Custom Unity-flavor YAML emitter; no `serde_yaml`. `unity_float_format` matches C# `ToString("R")` — table-driven tests seeded from every distinct float in the golden corpus.
 - Golden-file `assert_eq!` over committed Unity-emitted samples. `.gitattributes` pins `*.asset binary` and `*.asset.meta binary` to prevent CRLF conversion.
@@ -223,9 +213,9 @@ codesign --sign - --force --timestamp=none Assets/Plugins/Editor/libunity_sprite
 
 ## Migration
 
-Shell script with `--dry-run`. Walks each `.tpsheet.meta` with non-empty `_prefix`, copies the value to the corresponding `.tps.meta` (consumed by the new `ScriptedImporter` on `.tps`). Idempotent; reversible via git.
+One-shot rollout shipped (meow-tower commits `0d9143ec…668fd2eb`). The `.tpsheet.meta` `_prefix` was relocated to `.tps.meta` (the new `TPSImporter` `ScriptedImporter`'s home) by `scripts/migrate-tpsheet-meta.sh` — idempotent, `--dry-run` flag, reversible via git. Re-run is safe; skips already-migrated `.tps.meta`.
 
-## Layout (planned)
+## Layout
 
 ```
 unity-sprite-author/
