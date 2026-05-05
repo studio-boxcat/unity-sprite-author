@@ -4,7 +4,17 @@ Deferred items surfaced during planning. Address before shipping, not before M1.
 
 ## Byte-exactness gaps to validate
 
-- **`m_Offset` formula incomplete.** Probed against AC_IC_Orgel (`pivot=0.485437, w=103, m_Offset.x=-1.4999886`): the eval order `pivot * size − size * 0.5` reproduces the f32 bits exactly (0xbfbfffa0). But against AC_PT_Icon_Gift (`pivot=0.45726, h=81, m_Offset.y=-3.4619446`): every evaluation order tried (`pivot*h − h*.5`, `(pivot-.5)*h`, `(2p-1)*h*.5`, FMA paths, f64-internal-then-cast) lands on -3.4619408 (0xc05d9070); target is -3.4619446 (0xc05d9080), 16 ULPs apart. Unity is not just doing pivot×size arithmetic — likely uses original (untrimmed) sprite size from the `.tps`, or per-vertex bbox of the geometry. Need to read Unity engine source (`Sprite.CreateSprite` C++) to derive. After migration runs once, Unity-emitted goldens will be byte-stable for our formula — but currently the e2e shows ~36% sprites diverging at `m_Offset` for non-(0.5,0.5) pivots.
+- **`m_Offset` formula — X solved, Y unsolved.** `pivot.x * w − w * 0.5` reproduces f32 bits byte-exactly across all 9 fixtures probed (AC_IC_Orgel, AC_Platform_Apple, OE_Calendar, OE_Icon_Sun, OA_DC_Autumn2, OA_Lock, OA_ArrowBrown, OA_ArrowWhite). The Y axis fails on non-(0.5,0.5)-pivot sprites by varying ULP gaps that don't follow a single pattern:
+  - AC_PT_Icon_Gift (h=81, py=0.45726): target -3.4619446 (0xc05d9080); my A: 0xc05d9070; matching pivot bits exist at delta -2 or -3 ULPs from canonical f32 parse of "0.45726" (0x3eea1dfc → 0x3eea1df9/dfa).
+  - OE_Calendar (h=75, py=0.653333): target 0x4137ffe0; matching pivot delta -1.
+  - OE_Icon_Sun (h=102, py=0.470588): target 0xc0400080; matching pivot delta -2.
+  - OA_DC_Autumn2 (h=78, py=0.381443): target 0xc113f590; matching pivot delta -2.
+  - OA_Lock (h=115, py=0.817391): target 0x4211fff8; matching pivot delta +1.
+  - **AC_Platform_Apple** (h=76, py=0.5125): target 0x3f733300; **NO matching pivot bits within ±32 ULP** with formula A. Matching `h` exists in range 75.99994..76 (delta -3..-8 ULPs); rect.h is integer 76 in tpsheet. Suggests Unity does not multiply by stored `rect.h` directly.
+  
+  Tried evaluation orders: `p*s − s*.5`, `(p-.5)*s`, `(.5-o)*s`, `s*.5 − o*s`, `s*(.5-o)`, `-(o-.5)*s`, FMA variants, f64-internal-then-cast, ppu round-trip via local units (with ppu=80/100), `1 − orig` precision paths. None reproduces target Y consistently. AC_Platform_Apple breaks every f32 formula attempted.
+  
+  Hypothesis to test next: Unity internally stores pivot as something other than the .tpsheet-parsed f32 (maybe higher-precision via a different ingestion path), or computes m_Offset via `Sprite.CreateSprite`'s native C++ which may use Vector2 components with hidden f64 precision. Or m_Offset uses the sprite's actual mesh bbox computed in Unity's local-space transform, not the rect. Probe scripts at `examples/probe_offset.rs` and `examples/probe_formulas.rs`. After migration runs once, regenerated goldens will reflect our formula and become byte-stable — but the legacy goldens diverge.
 
 
 
