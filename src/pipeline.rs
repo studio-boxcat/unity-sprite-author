@@ -99,11 +99,17 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
     // For each sprite, gather (asset_path, asset_bytes, meta_path, meta_bytes).
     let mut writes: Vec<(PathBuf, Vec<u8>)> = Vec::with_capacity(sheet.sprites.len() * 2);
     let mut written_asset_paths: Vec<PathBuf> = Vec::with_capacity(sheet.sprites.len());
-    let mut current_asset_names: HashSet<String> = HashSet::with_capacity(sheet.sprites.len());
+    // Case-insensitive: macOS APFS / Windows NTFS treat `Foo.asset` and
+    // `foo.asset` as the same file. A case-sensitive set would mis-flag an
+    // existing `foo.asset` as orphan when the tpsheet says `Foo`, and the
+    // prune step would then delete the file we just wrote (case-insensitive
+    // rename folds onto the existing inode). Same fold also makes
+    // `Foo`/`foo` collide as duplicates.
+    let mut current_asset_names_ci: HashSet<String> = HashSet::with_capacity(sheet.sprites.len());
 
     for sprite in &sheet.sprites {
         let asset_name = format!("{}{}", input.prefix, sprite.name);
-        if !current_asset_names.insert(asset_name.clone()) {
+        if !current_asset_names_ci.insert(asset_name.to_ascii_lowercase()) {
             return Err(Error::DuplicateSpriteName(asset_name));
         }
 
@@ -165,7 +171,7 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
                 Some(s) => s,
                 None => continue,
             };
-            if !current_asset_names.contains(stem) {
+            if !current_asset_names_ci.contains(&stem.to_ascii_lowercase()) {
                 deleted_paths.push(path.clone());
                 let mut meta_path = path.clone();
                 meta_path.as_mut_os_string().push(".meta");
@@ -380,6 +386,95 @@ mod tests {
              wrote {} paths",
             second.written_paths.len()
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pipeline_rejects_case_only_duplicate_sprite_names() {
+        // Two sprites whose names differ only in case can't coexist on
+        // case-insensitive filesystems (macOS APFS, Windows NTFS) — they'd
+        // alias to one file. The duplicate guard must catch this before
+        // phase 2 silently clobbers one with the other.
+        let dir = copy_orgel_to_temp("case_dup");
+        let tpsheet = dir.join("Orgel.tpsheet");
+        let text = fs::read_to_string(&tpsheet).unwrap();
+        // Rename the DecoRight sprite line to a case-variant of DecoLeft.
+        let mutated = text.replace(
+            "Cake__DecoRight;",
+            "cake__decoleft;",
+        );
+        assert_ne!(text, mutated, "fixture must contain Cake__DecoRight");
+        fs::write(&tpsheet, &mutated).unwrap();
+
+        let inputs = GenerateInputs {
+            tpsheet_path: &tpsheet,
+            tps_path: &dir.join("Orgel.tps"),
+            atlas_png_path: &dir.join("Orgel.png"),
+            sprite_dir: &dir.join("sprites"),
+            prefix: "",
+            ppu: 80.0,
+        };
+        match generate(&inputs) {
+            Err(Error::DuplicateSpriteName(name)) => {
+                assert!(
+                    name.eq_ignore_ascii_case("cake__decoleft"),
+                    "expected duplicate guard to fire on case variant of Cake__DecoLeft, got {name:?}"
+                );
+            }
+            other => panic!("expected DuplicateSpriteName, got {other:?}"),
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pipeline_preserves_existing_asset_under_case_mismatched_filename() {
+        // Regression for the macOS/Windows case-insensitive-FS bug: tpsheet
+        // says `Cake__DecoLeft`, on-disk file is `cake__decoleft.asset`.
+        // Before the case-insensitive fix the orphan-pruner queued the
+        // lowercase file for deletion; phase 2 then wrote the new file
+        // (which APFS folded onto the same inode) and immediately deleted
+        // it. Assert the asset survives a generate() run.
+        let dir = copy_orgel_to_temp("case_mismatch");
+        let sprites = dir.join("sprites");
+        let canonical = sprites.join("Cake__DecoLeft.asset");
+        let canonical_meta = sprites.join("Cake__DecoLeft.asset.meta");
+        let lowered = sprites.join("cake__decoleft.asset");
+        let lowered_meta = sprites.join("cake__decoleft.asset.meta");
+        // Rename committed fixture files to lowercase to simulate the
+        // mismatched on-disk casing. On case-insensitive filesystems this
+        // is a no-op for inode but updates the directory entry casing.
+        fs::rename(&canonical, &lowered).unwrap();
+        fs::rename(&canonical_meta, &lowered_meta).unwrap();
+
+        let inputs = GenerateInputs {
+            tpsheet_path: &dir.join("Orgel.tpsheet"),
+            tps_path: &dir.join("Orgel.tps"),
+            atlas_png_path: &dir.join("Orgel.png"),
+            sprite_dir: &sprites,
+            prefix: "",
+            ppu: 80.0,
+        };
+        let out = generate(&inputs).unwrap();
+
+        // Some entry exists at the canonical-or-folded path after the run.
+        // (Case-insensitive FS: same inode either casing; case-sensitive
+        // FS: the renamed lowercase file still exists, plus a new
+        // canonical-cased file written by phase 2 — both fine.)
+        assert!(
+            sprites.join("Cake__DecoLeft.asset").exists()
+                || sprites.join("cake__decoleft.asset").exists(),
+            "Cake__DecoLeft.asset should survive the run"
+        );
+        // Critically: the deleted_paths list must NOT include the lowercase
+        // variant — that's the bug we're guarding against.
+        for p in &out.deleted_paths {
+            let s = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            assert!(
+                !s.eq_ignore_ascii_case("cake__decoleft.asset")
+                    && !s.eq_ignore_ascii_case("cake__decoleft.asset.meta"),
+                "Cake__DecoLeft must not be queued for deletion (case-insensitive match), got {p:?}"
+            );
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 
