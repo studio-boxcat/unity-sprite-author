@@ -126,6 +126,12 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
         // and mainObjectFileID). Preserve both axes to avoid byte churn.
         let (own_guid, meta_shape) = meta::resolve_sprite_meta(&meta_path).map_err(Error::Meta)?;
 
+        // Preserve textureRect from the on-disk .asset when present. For
+        // FullRect atlases this equals (rect.w, rect.h). For Tight atlases
+        // Unity emits a sub-pixel-shrunk size that we can't reproduce
+        // without engine source — preserving avoids byte churn.
+        let texture_rect_size = meta::read_existing_texture_rect_size(&asset_path);
+
         let sprite_asset = SpriteAsset {
             name: asset_name.clone(),
             rect: sprite.rect,
@@ -135,6 +141,7 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
             own_guid,
             atlas_guid,
             render_data: rd,
+            texture_rect_size,
         };
 
         let asset_bytes = emit::emit(&sprite_asset).map_err(Error::Emit)?.into_bytes();

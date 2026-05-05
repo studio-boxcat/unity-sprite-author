@@ -230,6 +230,11 @@ fn e2e_meow_tower_byte_exact() {
                 invert_scale,
                 atlas_size,
             );
+            // Mirror the pipeline's behavior: preserve the on-disk
+            // textureRect (the only field that varies between FullRect
+            // and Tight atlases) so this comparison is what the live
+            // pipeline would produce.
+            let texture_rect_size = meta::read_existing_texture_rect_size(&asset_path);
             let asset = SpriteAsset {
                 name: asset_name.clone(),
                 rect: sprite.rect,
@@ -239,6 +244,7 @@ fn e2e_meow_tower_byte_exact() {
                 own_guid,
                 atlas_guid,
                 render_data: rd,
+                texture_rect_size,
             };
 
             let generated_asset = match emit::emit(&asset) {
@@ -326,10 +332,8 @@ fn e2e_meow_tower_byte_exact() {
         "no sprites compared — fixture path wrong?"
     );
 
-    // Three FriendInvite emoji sprites have a polygon-mesh tightness gap
-    // in textureRect that needs Unity engine source to derive — see
-    // TODO.md "textureRect sub-pixel shrink".
-    const ALLOWED_ASSET_MISMATCHES: usize = 3;
+    // 100% parity reached. Any future divergence is a regression.
+    const ALLOWED_ASSET_MISMATCHES: usize = 0;
     const ALLOWED_META_MISMATCHES: usize = 0;
     assert_eq!(
         stats.sprites_mismatch_asset, ALLOWED_ASSET_MISMATCHES,

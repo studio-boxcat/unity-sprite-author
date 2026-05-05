@@ -158,6 +158,7 @@ fn main() {
                 own_guid,
                 atlas_guid,
                 render_data: rd,
+                texture_rect_size: None,
             };
             // emit::emit is currently infallible (EmitError is uninhabited),
             // but go through the Result so this stays valid if a hard-fail

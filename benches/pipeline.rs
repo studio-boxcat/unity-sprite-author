@@ -144,6 +144,7 @@ fn bench_emit_one_sprite(c: &mut Criterion) {
         own_guid,
         atlas_guid,
         render_data: rd,
+        texture_rect_size: None,
     };
     c.bench_function("emit_cake_decoleft", |b| {
         b.iter(|| emit::emit(&asset).unwrap());

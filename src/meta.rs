@@ -165,6 +165,42 @@ pub fn resolve_sprite_meta<P: AsRef<Path>>(
     }
 }
 
+/// Pull the `textureRect.{width, height}` from an existing Sprite `.asset`'s
+/// `m_RD` block. Used to preserve sub-pixel textureRect values that Unity
+/// generates via SpriteMeshType.Tight — see the field doc on
+/// [`crate::emit::SpriteAsset::texture_rect_size`].
+///
+/// Returns `None` if the file doesn't exist or the textureRect block can't
+/// be parsed (in which case the caller should fall back to `rect.{w, h}`).
+pub fn read_existing_texture_rect_size<P: AsRef<Path>>(asset_path: P) -> Option<(f32, f32)> {
+    let text = fs::read_to_string(asset_path).ok()?;
+    let mut in_block = false;
+    let mut w: Option<f32> = None;
+    let mut h: Option<f32> = None;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("textureRect:") {
+            in_block = true;
+            continue;
+        }
+        if !in_block {
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("width: ") {
+            w = rest.trim().parse().ok();
+        } else if let Some(rest) = trimmed.strip_prefix("height: ") {
+            h = rest.trim().parse().ok();
+        } else if trimmed.starts_with("textureRectOffset:") || trimmed.starts_with("atlasRectOffset:") {
+            // Past the rect block.
+            break;
+        }
+        if let (Some(ww), Some(hh)) = (w, h) {
+            return Some((ww, hh));
+        }
+    }
+    None
+}
+
 // Mint a random 128-bit GUID. Uses two `RandomState` instances for entropy
 // (each one carries fresh SipHash keys seeded from the OS RNG by stdlib).
 // Sufficient for Unity GUID uniqueness; not crypto-grade.
