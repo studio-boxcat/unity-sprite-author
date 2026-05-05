@@ -146,7 +146,7 @@ fn bench_emit_one_sprite(c: &mut Criterion) {
         render_data: rd,
     };
     c.bench_function("emit_cake_decoleft", |b| {
-        b.iter(|| emit::emit(&asset));
+        b.iter(|| emit::emit(&asset).unwrap());
     });
 }
 

@@ -3,11 +3,44 @@
 // m_SpriteID, single LF at EOF, _typelessdata as one unbroken hex line,
 // m_RenderDataKey as the only non-flow nested mapping.
 
+use std::fmt;
 use std::fmt::Write;
 
 use crate::render_data::RenderData;
 use crate::tpsheet::{Border, Pivot, Rect};
 use crate::yaml::{float, guid_hex};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmitError {
+    // Hard-fail until this code path has explicit byte-exact test coverage.
+    // The order/eval-rules were verified once (NonogramSkins/30_Orgel/Frame:
+    // tpsheet `0;88;94;108` → asset `{x: 0, y: 108, z: 88, w: 94}`,
+    // OrgelContents/0203/DomeDecor__H: tpsheet `0;0;0;-3` → asset
+    // `{x: 0, y: -3, z: 0, w: 0}`), but a single fixture isn't golden
+    // coverage. Re-enable by adding non-zero-border fixtures + tests, then
+    // delete this guard. Tracked in TODO.md.
+    NonZeroBorderUnsupported {
+        sprite_name: String,
+        border: Border,
+    },
+}
+
+impl fmt::Display for EmitError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NonZeroBorderUnsupported {
+                sprite_name,
+                border,
+            } => write!(
+                f,
+                "non-zero m_Border on sprite {sprite_name:?} not yet supported \
+                 (border={border:?}); see TODO.md to enable"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for EmitError {}
 
 #[derive(Debug, Clone)]
 pub struct SpriteAsset {
@@ -24,7 +57,13 @@ pub struct SpriteAsset {
 // Cake__DecoLeft.asset is ~5.2 KB; larger sprite geometry adds ~16 bytes per
 // extra vertex/triangle. 8 KB capacity covers nearly every observed sprite
 // without reallocation.
-pub fn emit(asset: &SpriteAsset) -> String {
+pub fn emit(asset: &SpriteAsset) -> Result<String, EmitError> {
+    if asset.border != Border::default() {
+        return Err(EmitError::NonZeroBorderUnsupported {
+            sprite_name: asset.name.clone(),
+            border: asset.border,
+        });
+    }
     let mut s = String::with_capacity(8192);
 
     // Header — fixed.
@@ -94,7 +133,7 @@ pub fn emit(asset: &SpriteAsset) -> String {
     s.push_str("  m_ScriptableObjects: []\n");
     s.push_str("  m_SpriteID: \n"); // trailing space + final LF — verified
 
-    s
+    Ok(s)
 }
 
 fn write_rect_fields(s: &mut String, indent: &str, rect: Rect) {
@@ -261,7 +300,7 @@ mod tests {
             atlas_guid: parse_guid_from_meta(ATLAS_META),
             render_data: rd,
         };
-        let got = emit(&asset);
+        let got = emit(&asset).expect("emit succeeded");
         if got != CAKE_DECOLEFT_GOLDEN {
             // Write both for easy diffing on failure.
             let _ = std::fs::create_dir_all("target/diff");

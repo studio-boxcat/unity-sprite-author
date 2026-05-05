@@ -14,7 +14,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::emit::{self, SpriteAsset};
+use crate::emit::{self, EmitError, SpriteAsset};
 use crate::meta;
 use crate::render_data::{self, AtlasSize};
 use crate::tps;
@@ -26,6 +26,7 @@ pub enum Error {
     Tpsheet(tpsheet::ParseError),
     Tps(tps::TpsError),
     Meta(meta::MetaError),
+    Emit(EmitError),
     AtlasSizeUnknown,
     EmptySheet,
     DuplicateSpriteName(String),
@@ -38,6 +39,7 @@ impl fmt::Display for Error {
             Self::Tpsheet(e) => write!(f, "tpsheet parse: {e}"),
             Self::Tps(e) => write!(f, "tps parse: {e}"),
             Self::Meta(e) => write!(f, "meta: {e}"),
+            Self::Emit(e) => write!(f, "emit: {e}"),
             Self::AtlasSizeUnknown => write!(f, "atlas size missing from tpsheet header"),
             Self::EmptySheet => write!(f, "tpsheet has zero sprites; refusing to delete it"),
             Self::DuplicateSpriteName(name) => write!(
@@ -133,7 +135,8 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
             render_data: rd,
         };
 
-        writes.push((asset_path.clone(), emit::emit(&sprite_asset).into_bytes()));
+        let asset_bytes = emit::emit(&sprite_asset).map_err(Error::Emit)?.into_bytes();
+        writes.push((asset_path.clone(), asset_bytes));
         writes.push((meta_path, meta::render_asset_meta(&own_guid).into_bytes()));
         written_asset_paths.push(asset_path);
     }

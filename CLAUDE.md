@@ -185,7 +185,7 @@ Do **not** port: `prefab-saloon/src/lib/prefab/{parser,serializer,templates}.ts`
 - `_typelessdata` is one unbroken hex line, never folded.
 - `m_RenderDataKey` is the only non-flow nested mapping; everything else is flow `{x: ..., y: ...}`.
 - `atlasRectOffset: {x: -1, y: -1}` — that `-1` is a Unity default, not zero.
-- `m_Border` field order is `{x: L, y: B, z: R, w: T}` per Unity `Sprite.cs`. No non-zero-border fixture exists in the corpus; need to author one through Unity to validate.
+- `m_Border` field order is `{x: L, y: B, z: R, w: T}` per Unity `Sprite.cs`. Verified against two real fixtures (`NonogramSkins/30_Orgel/Frame.asset`: tpsheet `0;88;94;108` → asset `{x: 0, y: 108, z: 88, w: 94}`; `OrgelContents/0203/DomeDecor__H`: tpsheet `0;0;0;-3` → asset `{x: 0, y: -3, z: 0, w: 0}`). Despite this, `emit::emit` **hard-fails** with `EmitError::NonZeroBorderUnsupported` whenever the border is non-default — until proper golden-test coverage exists for non-zero borders, the safer default is to refuse.
 - Float formatting must match C# `ToString("R")`. Build a `unity_float_format` with a unit-test table seeded from every distinct float in the golden corpus before milestone-3.
 - `m_AtlasRD == m_RD` only valid for non-SpriteAtlas sprites — guard with hard panic on `m_SpriteAtlas != {fileID:0}`.
 - LF line endings; pin via `.gitattributes` (`*.asset binary`, `*.asset.meta binary`).
