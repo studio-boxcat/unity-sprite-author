@@ -2,15 +2,24 @@
 // `ToString("R")` is fixable in one place when a future corpus value
 // breaks the assumption.
 
-use std::fmt::Write;
+// Bulk lowercase hex encoder, used by both GUID rendering and the typeless
+// data / index buffer in render_data. format!("{:02x}") via write! is ~5x
+// slower per byte (measured); the LUT path matters because we encode ~152
+// bytes of typelessdata + 16 bytes of GUID per sprite, four times per sprite.
+const HEX_LUT: &[u8; 16] = b"0123456789abcdef";
+
+pub fn hex_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(HEX_LUT[(b >> 4) as usize] as char);
+        out.push(HEX_LUT[(b & 0xf) as usize] as char);
+    }
+    out
+}
 
 // Format a 16-byte GUID as 32 lowercase hex characters (Unity convention).
 pub fn guid_hex(guid: &[u8; 16]) -> String {
-    let mut s = String::with_capacity(32);
-    for b in guid {
-        write!(&mut s, "{b:02x}").unwrap();
-    }
-    s
+    hex_encode(guid)
 }
 
 // Unity emits floats via C# ToString("R") which is shortest-roundtrip with no

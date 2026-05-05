@@ -21,8 +21,11 @@ pub struct SpriteAsset {
     pub render_data: RenderData,
 }
 
+// Cake__DecoLeft.asset is ~5.2 KB; larger sprite geometry adds ~16 bytes per
+// extra vertex/triangle. 8 KB capacity covers nearly every observed sprite
+// without reallocation.
 pub fn emit(asset: &SpriteAsset) -> String {
-    let mut s = String::with_capacity(4096);
+    let mut s = String::with_capacity(8192);
 
     // Header — fixed.
     s.push_str("%YAML 1.1\n");
@@ -153,22 +156,34 @@ fn write_render_data(
 // stream 1) populated. Verified across Orgel corpus.
 fn write_vertex_channels(s: &mut String, indent: &str) {
     let inner = format!("{indent}  ");
-    let inner = inner.as_str();
-    let entry = |stream: u8, dim: u8| {
-        format!(
-            "{indent}- stream: {stream}\n\
-             {inner}offset: 0\n\
-             {inner}format: 0\n\
-             {inner}dimension: {dim}\n",
-        )
+    let mut write_entry = |stream: u8, dim: u8| {
+        // Direct writes into the parent buffer avoid 14 (×2 RD blocks)
+        // intermediate String allocations per sprite.
+        s.push_str(indent);
+        if stream == 0 {
+            s.push_str("- stream: 0\n");
+        } else {
+            s.push_str("- stream: 1\n");
+        }
+        s.push_str(&inner);
+        s.push_str("offset: 0\n");
+        s.push_str(&inner);
+        s.push_str("format: 0\n");
+        s.push_str(&inner);
+        match dim {
+            0 => s.push_str("dimension: 0\n"),
+            2 => s.push_str("dimension: 2\n"),
+            3 => s.push_str("dimension: 3\n"),
+            _ => unreachable!("only dim 0/2/3 used in Unity Sprite vertex channels"),
+        }
     };
-    s.push_str(&entry(0, 3)); // position
+    write_entry(0, 3); // position
     for _ in 0..3 {
-        s.push_str(&entry(0, 0));
+        write_entry(0, 0);
     }
-    s.push_str(&entry(1, 2)); // uv
+    write_entry(1, 2); // uv
     for _ in 0..9 {
-        s.push_str(&entry(0, 0));
+        write_entry(0, 0);
     }
 }
 

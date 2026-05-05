@@ -269,11 +269,13 @@ fn parse_sprite_line(
     tex: &mut TexInfo,
 ) -> Result<SpriteEntry, ParseError> {
     let tokens: Vec<&str> = line.split(';').collect();
-    let need = if tex.pivot_points_enabled { 11 } else { 11 };
-    if tokens.len() < need {
+    // 11 tokens minimum either way: name + 4 rect + 2 pivot (consumed even when
+    // pivotpoints=disabled, mirroring SheetLoader.cs:117-121) + 4 border.
+    const MIN_TOKENS: usize = 11;
+    if tokens.len() < MIN_TOKENS {
         return Err(ParseError::ShortSpriteLine {
             line: line_no,
-            expected: need,
+            expected: MIN_TOKENS,
             got: tokens.len(),
         });
     }

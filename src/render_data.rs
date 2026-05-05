@@ -4,6 +4,7 @@
 // inputs that round-trip.
 
 use crate::tpsheet::{Pivot, Rect, Vertex};
+use crate::yaml::hex_encode;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Position3 {
@@ -89,7 +90,7 @@ pub fn encode_typelessdata(positions: &[Position3], uvs: &[Uv]) -> (String, usiz
         buf[off + 4..off + 8].copy_from_slice(&uv.v.to_le_bytes());
     }
 
-    (hex_lower(&buf), total)
+    (hex_encode(&buf), total)
 }
 
 pub fn encode_index_buffer(indices: &[u16]) -> String {
@@ -97,17 +98,7 @@ pub fn encode_index_buffer(indices: &[u16]) -> String {
     for &i in indices {
         buf.extend_from_slice(&i.to_le_bytes());
     }
-    hex_lower(&buf)
-}
-
-fn hex_lower(bytes: &[u8]) -> String {
-    static HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for &b in bytes {
-        out.push(HEX[(b >> 4) as usize] as char);
-        out.push(HEX[(b & 0xf) as usize] as char);
-    }
-    out
+    hex_encode(&buf)
 }
 
 #[derive(Debug, Clone, Copy)]
