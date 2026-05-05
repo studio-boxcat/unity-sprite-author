@@ -4,6 +4,8 @@ Deferred items surfaced during planning. Address before shipping, not before M1.
 
 ## Byte-exactness gaps to validate
 
+- **`textureRect` sub-pixel shrink for some polygon-trimmed sprites.** Three sprites in `20_Contents/FriendInvite/Elements/FriendInvite/` (Emoji_Frog, Emoji_Heart, Emoji_Unicorn) have `textureRect.{w,h}` differing from `m_Rect.{w,h}` by a sub-pixel fraction (e.g. Heart `textureRect.h = 82.963715` vs `m_Rect.h = 84`; Frog `textureRect.w = 44.957092` vs `m_Rect.w = 45`). All three are polygon-meshed sprites whose mesh bbox spans the full m_Rect. Other emojis in the same atlas (Cat, Mouse, Sun, Pumpkin, Tree, Rainbow, Whale) match exactly. The shrink direction (W vs H) varies per sprite; the magnitude doesn't fit any obvious formula derived from rect/PNG/polygon-area/atlas-size. Likely Unity's native `Sprite.cpp` does an alpha-edge-aware tightness pass to produce textureRect when the sprite has a polygon mesh — would need engine source (or UnityCsReference repo) to derive. Affects 3/7190 sprites = 0.04%; documented as the gap in the 99.96% byte-exact achievement.
+
 - ~~**`m_Offset` formula — X solved, Y unsolved.**~~ **SOLVED** in iteration 3: `m_Offset = (rect.pos + pivot * rect.size) - (rect.pos + rect.size * 0.5)`. The `rect.x`/`rect.y` mathematically cancel but introduce f32 rounding noise that exactly matches Unity. Verified across all 6 stuck fixtures; e2e byte-exact rate jumped 64% → 81% across the meow-tower corpus.
 
 - ~~**Non-zero `m_Border` hard-fail guard.**~~ **REMOVED** in iteration 3: 50/51 non-zero-border sprites in meow-tower emit byte-exactly under the current formula. The lone outlier is .tps drift (golden has zero borders, current tpsheet has non-zero) — not a formula bug.
