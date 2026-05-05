@@ -134,13 +134,15 @@ fn e2e_meow_tower_byte_exact() {
         let parent = tpsheet_path.parent().unwrap();
         let png_meta_path = parent.join(format!("{base}.png.meta"));
         let tps_path = parent.join(format!("{base}.tps"));
-        // Tower_SpriteAtlas.tpsheet pairs with Tower.tps (different stem) and
-        // its .asset siblings are 96-byte stubs, not real Sprite emissions.
-        // These are Unity SpriteAtlas placeholders, not our pipeline's
-        // territory — skip when .tps is missing.
-        if !tps_path.exists() {
-            continue;
-        }
+        // Every non-legacy atlas should have a same-stem .tps. The earlier
+        // exception was Unity's native SpriteAtlas (Tower_SpriteAtlas.tpsheet
+        // paired with Tower.tps under a different stem), but that case has
+        // been consolidated. If a missing .tps shows up again, fail loudly
+        // rather than silently skip — the caller wants to know.
+        assert!(
+            tps_path.exists(),
+            "missing .tps for {tpsheet_path:?} (stem mismatch?)"
+        );
         let tpsheet_meta_path = parent.join(format!("{base}.tpsheet.meta"));
         let sprite_dir = parent.join(&base);
 
@@ -314,14 +316,28 @@ fn e2e_meow_tower_byte_exact() {
     }
     eprintln!();
 
-    // The bar for now: every atlas at least parses cleanly. Byte-exactness
-    // mismatches are reported but not asserted, since the meow-tower repo
-    // contains atlases whose .tps has drifted away from their committed
-    // .asset siblings (documented in TODO.md). When the user regenerates
-    // those atlases, the test naturally tightens.
+    // Hard parity gates. Anything outside the explicit allowlist below
+    // counts as a regression. Allowlist owners: when the underlying gap
+    // is fixed, remove the entry — the test will fail until it's gone,
+    // forcing a confirmation.
     assert_eq!(stats.atlases_parse_failed, 0, "tpsheet/tps parse failures");
     assert!(
         stats.sprites_compared > 0,
         "no sprites compared — fixture path wrong?"
+    );
+
+    // Three FriendInvite emoji sprites have a polygon-mesh tightness gap
+    // in textureRect that needs Unity engine source to derive — see
+    // TODO.md "textureRect sub-pixel shrink".
+    const ALLOWED_ASSET_MISMATCHES: usize = 3;
+    const ALLOWED_META_MISMATCHES: usize = 0;
+    assert_eq!(
+        stats.sprites_mismatch_asset, ALLOWED_ASSET_MISMATCHES,
+        ".asset mismatches changed (allowed {ALLOWED_ASSET_MISMATCHES}); regression or progress — \
+         update the constant after auditing"
+    );
+    assert_eq!(
+        stats.sprites_mismatch_meta, ALLOWED_META_MISMATCHES,
+        ".meta mismatches changed (allowed {ALLOWED_META_MISMATCHES})"
     );
 }

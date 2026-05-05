@@ -114,9 +114,15 @@ foreach (var path in output.DeletedPaths)
 - `m_RenderDataKey` in the `.asset` body uses the SAME GUID as the sibling `.asset.meta` (verified against `Cake__DecoLeft.asset.meta` corpus, 3645 files: `m_RenderDataKey` always equals own meta GUID).
 - Renames must be done in tpsheet AND Unity at the same time by the developer. This design does not detect renames automatically.
 
-### `.asset.meta` canonical template
+### `.asset.meta` shape
 
-Verified across 3645 sprite `.asset.meta` files in `meow-tower/Assets/21_Collections/`: every file is exactly **189 bytes**, schema-identical, only `guid` varies. Template (LF endings, trailing space after each empty value, single trailing LF):
+Two trailing-space variants exist in the corpus and one varying field:
+
+- **Legacy189** (older Unity emit): trailing space after `userData:`, `assetBundleName:`, `assetBundleVariant:`. 189 bytes.
+- **Modern186** (current Unity emit): no trailing spaces. 186 bytes.
+- **`mainObjectFileID`**: usually `21300000` (Sprite class fileID). Some incompletely-imported sprites carry `0` instead.
+
+To avoid byte churn on existing metas the pipeline preserves both axes when present (`meta::detect_shape`). Fresh mints use Modern186 + `21300000`. Schema (Legacy189 form shown):
 
 ```
 fileFormatVersion: 2
@@ -128,8 +134,6 @@ NativeFormatImporter:
   assetBundleName: 
   assetBundleVariant: 
 ```
-
-`mainObjectFileID: 21300000` is constant for sprites (Unity class ID 213). Pin as compile-time constant; do not parameterize.
 
 ### Test strategy for GUID determinism
 

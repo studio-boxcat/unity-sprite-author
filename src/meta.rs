@@ -134,8 +134,9 @@ pub fn render_asset_meta_with_shape(guid: &[u8; 16], shape: MetaShape) -> String
     s
 }
 
-// Backward-compat shims (keeps the older API surface for callers that don't
-// care about mainObjectFileID).
+// Render in a specific format with the default mainObjectFileID. Used by
+// the legacy-format byte-equality test against Cake__DecoLeft; production
+// pipeline goes through render_asset_meta_with_shape.
 pub fn render_asset_meta_with_format(guid: &[u8; 16], format: MetaFormat) -> String {
     render_asset_meta_with_shape(
         guid,
@@ -148,6 +149,20 @@ pub fn render_asset_meta_with_format(guid: &[u8; 16], format: MetaFormat) -> Str
 
 pub fn render_asset_meta(guid: &[u8; 16]) -> String {
     render_asset_meta_with_shape(guid, MetaShape::FRESH)
+}
+
+// Resolve `(guid, shape)` for a sprite. If the .asset.meta exists, both
+// are read from it; otherwise mint a fresh GUID with `MetaShape::FRESH`.
+// Used by the pipeline so the inline read+detect doesn't drift from the
+// helper API.
+pub fn resolve_sprite_meta<P: AsRef<Path>>(
+    asset_meta_path: P,
+) -> Result<([u8; 16], MetaShape), MetaError> {
+    match fs::read_to_string(asset_meta_path) {
+        Ok(text) => Ok((parse_guid(&text)?, detect_shape(&text))),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok((mint_guid(), MetaShape::FRESH)),
+        Err(e) => Err(MetaError::Io(e)),
+    }
 }
 
 // Mint a random 128-bit GUID. Uses two `RandomState` instances for entropy
@@ -182,18 +197,27 @@ mod tests {
     const ATLAS_META: &str = include_str!("../tests/golden/orgel/Orgel.png.meta");
 
     #[test]
-    fn render_emits_186_bytes_and_round_trips_guid() {
-        // Cake__DecoLeft was emitted by an older Unity with trailing
-        // spaces (189 bytes). Current Unity emits 186 bytes (no trailing
-        // spaces). We target the current format; tested below by parsing
-        // the rendered meta back and round-tripping the GUID.
+    fn render_legacy189_byte_exact_against_cake_decoleft() {
+        // Cake__DecoLeft was emitted by older Unity (189-byte trailing-space
+        // form). Render in the matching format and assert full byte equality.
+        let shape = detect_shape(CAKE_DECOLEFT_META);
+        assert_eq!(shape.format, MetaFormat::Legacy189);
+        let guid = parse_guid(CAKE_DECOLEFT_META).unwrap();
+        let rendered = render_asset_meta_with_shape(&guid, shape);
+        assert_eq!(rendered, CAKE_DECOLEFT_META);
+        assert_eq!(rendered.len(), 189);
+    }
+
+    #[test]
+    fn render_modern186_size_and_round_trip() {
+        // The current Unity output. We don't have a 186-byte fixture
+        // bundled with the crate (Cake is 189), so check the size + round-
+        // trip the parse. The full-corpus byte-exactness is covered by the
+        // meow-tower e2e (which detects per-file format).
         let guid = parse_guid(CAKE_DECOLEFT_META).unwrap();
         let rendered = render_asset_meta(&guid);
-        assert_eq!(rendered.len(), 186, "current Unity emits 186-byte metas");
-        let round_trip = parse_guid(&rendered).unwrap();
-        assert_eq!(round_trip, guid);
-        // Schema invariants pinned regardless of trailing-space variant.
-        assert!(rendered.starts_with("fileFormatVersion: 2\n"));
+        assert_eq!(rendered.len(), 186);
+        assert_eq!(parse_guid(&rendered).unwrap(), guid);
         assert!(rendered.contains("mainObjectFileID: 21300000\n"));
         assert!(rendered.ends_with("assetBundleVariant:\n"));
     }

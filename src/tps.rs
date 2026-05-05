@@ -14,12 +14,16 @@ use std::path::Path;
 #[derive(Debug)]
 pub enum TpsError {
     Io(io::Error),
+    BadSpriteScale { line: usize, value: String },
 }
 
 impl fmt::Display for TpsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(e) => write!(f, "tps io error: {e}"),
+            Self::BadSpriteScale { line, value } => {
+                write!(f, "malformed spriteScale at line {line}: {value:?}")
+            }
         }
     }
 }
@@ -66,10 +70,10 @@ const DOUBLE_END: &str = "</double>";
 
 pub fn parse<P: AsRef<Path>>(path: P) -> Result<TpsData, TpsError> {
     let text = fs::read_to_string(path).map_err(TpsError::Io)?;
-    Ok(parse_str(&text))
+    parse_str(&text)
 }
 
-pub fn parse_str(text: &str) -> TpsData {
+pub fn parse_str(text: &str) -> Result<TpsData, TpsError> {
     let mut invert_scales = HashMap::new();
     let mut pending_filenames: Vec<String> = Vec::new();
     let mut in_settings = false;
@@ -104,13 +108,16 @@ pub fn parse_str(text: &str) -> TpsData {
                 && let Some(rest) = v.trim_start().strip_prefix(DOUBLE_START.trim_start())
                 && let Some(num) = rest.strip_suffix(DOUBLE_END)
             {
-                current_scale = num.parse().ok();
+                current_scale = Some(num.parse().map_err(|_| TpsError::BadSpriteScale {
+                    line: i + 1,
+                    value: num.to_string(),
+                })?);
             }
         }
         i += 1;
     }
 
-    TpsData { invert_scales }
+    Ok(TpsData { invert_scales })
 }
 
 fn filename_stem(rel_path: &str) -> String {
@@ -147,5 +154,18 @@ mod tests {
     fn unknown_sprite_falls_back_to_one() {
         let data = TpsData::default();
         assert_eq!(data.invert_scale("nonexistent"), 1.0);
+    }
+
+    #[test]
+    fn malformed_sprite_scale_errors() {
+        let bogus = r#"<key type="filename">x.png</key>
+            <struct type="IndividualSpriteSettings">
+                <key>spriteScale</key>
+                <double>not-a-number</double>
+            </struct>"#;
+        match parse_str(bogus).unwrap_err() {
+            TpsError::BadSpriteScale { value, .. } => assert!(value.contains("not-a-number")),
+            e => panic!("expected BadSpriteScale, got {e:?}"),
+        }
     }
 }

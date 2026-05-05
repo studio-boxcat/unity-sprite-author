@@ -13,12 +13,19 @@ pub struct Sheet {
     pub sprites: Vec<SpriteEntry>,
 }
 
+// Mirrors the C# `TexInfo` struct (SheetLoader.cs:26-42). Only `width` and
+// `height` feed the Sprite `.asset` emit; the rest belong to the texture
+// importer side (which our pipeline doesn't touch). Retained so the parser
+// is a faithful 1:1 of the C# parse, which matters when diff-checking.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TexInfo {
     pub width: u32,
     pub height: u32,
     pub pivot_points_enabled: bool,
+    /// Set to true when any sprite line carries polygon data; not currently
+    /// consumed by emit (the per-sprite `Geometry` already encodes this).
     pub polygons_enabled: bool,
+    /// Texture-importer flag, not consumed by Sprite emit.
     pub alpha_is_transparency: bool,
 }
 
@@ -39,6 +46,9 @@ pub struct SpriteEntry {
     pub name: String,
     pub rect: Rect,
     pub pivot: Pivot,
+    /// Computed via `pivot_to_alignment`. Sprite `.asset` files carry only
+    /// the resolved pivot, not an alignment field — this is retained to
+    /// mirror the SheetLoader.cs parse surface.
     pub alignment: SpriteAlignment,
     pub border: Border,
     pub geometry: Geometry,

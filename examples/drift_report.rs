@@ -159,7 +159,13 @@ fn main() {
                 atlas_guid,
                 render_data: rd,
             };
-            let Ok(ours) = emit::emit(&asset) else { continue };
+            // emit::emit is currently infallible (EmitError is uninhabited),
+            // but go through the Result so this stays valid if a hard-fail
+            // condition is added later.
+            let ours = match emit::emit(&asset) {
+                Ok(s) => s,
+                Err(e) => match e {},
+            };
             if ours == golden {
                 continue;
             }

@@ -177,7 +177,12 @@ fn write_render_data(
     write_rect_fields(s, &format!("{indent}  "), rect);
     writeln!(s, "{indent}textureRectOffset: {{x: 0, y: 0}}").unwrap();
     writeln!(s, "{indent}atlasRectOffset: {{x: -1, y: -1}}").unwrap(); // Unity default, NOT zero
-    writeln!(s, "{indent}settingsRaw: 192").unwrap(); // hardcoded; panic-guarded if a future corpus diverges
+    // settingsRaw is a packed bitfield representing TextureImporter settings
+    // (filterMode, wrap, alpha, etc.). 192 (0xC0) is the value that 7187/7190
+    // sprites in meow-tower carry — the entire corpus we've sampled. There's
+    // no surface guard here; if a future corpus diverges, the e2e mismatch
+    // count goes up and the allowlist in tests/e2e_meow_tower.rs blocks merge.
+    writeln!(s, "{indent}settingsRaw: 192").unwrap();
     writeln!(
         s,
         "{indent}uvTransform: {{x: {}, y: {}, z: {}, w: {}}}",

@@ -124,21 +124,7 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
 
         // Resolve existing meta: GUID + full shape (trailing-space variant
         // and mainObjectFileID). Preserve both axes to avoid byte churn.
-        let (own_guid, meta_shape) = match fs::read_to_string(&meta_path) {
-            Ok(text) => (
-                meta::parse_guid(&text).map_err(Error::Meta)?,
-                meta::detect_shape(&text),
-            ),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                (meta::mint_guid(), meta::MetaShape::FRESH)
-            }
-            Err(e) => {
-                return Err(Error::Io {
-                    path: meta_path.clone(),
-                    source: e,
-                });
-            }
-        };
+        let (own_guid, meta_shape) = meta::resolve_sprite_meta(&meta_path).map_err(Error::Meta)?;
 
         let sprite_asset = SpriteAsset {
             name: asset_name.clone(),
@@ -326,12 +312,11 @@ mod tests {
     }
 
     #[test]
-    fn pipeline_skips_write_when_bytes_equal_then_deletes_tpsheet() {
-        // The current .tps has drifted from the .asset goldens (per TODO),
-        // so a real run would change every .asset. To get a clean
-        // skip-write-if-equal signal, we do a first run, then a second run,
-        // and assert the second run writes nothing.
-        let dir = copy_orgel_to_temp("skip_write");
+    fn pipeline_deletes_tpsheet_after_successful_run() {
+        // First-pass observable: the consumed .tpsheet is gone after a
+        // successful generate(). The companion skip-write-if-equal claim
+        // is exercised by `pipeline_second_run_is_idempotent` below.
+        let dir = copy_orgel_to_temp("delete_tpsheet");
         let inputs = GenerateInputs {
             tpsheet_path: &dir.join("Orgel.tpsheet"),
             tps_path: &dir.join("Orgel.tps"),
@@ -340,9 +325,54 @@ mod tests {
             prefix: "",
             ppu: 80.0,
         };
-        // First run: tpsheet exists, run pipeline. .tpsheet gets deleted.
-        let _out1 = generate(&inputs).unwrap();
-        assert!(!inputs.tpsheet_path.exists(), "tpsheet should be deleted after run");
+        let _ = generate(&inputs).unwrap();
+        assert!(
+            !inputs.tpsheet_path.exists(),
+            "tpsheet should be deleted after run"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pipeline_second_run_is_idempotent_for_unchanged_inputs() {
+        // After one successful run, a second run with identical inputs
+        // should report zero `written_paths` (the skip-write-if-equal
+        // path took every output). Restore the .tpsheet between runs
+        // since the first run consumed it.
+        let dir = copy_orgel_to_temp("skip_write_idempotent");
+        let tpsheet = dir.join("Orgel.tpsheet");
+        let inputs = GenerateInputs {
+            tpsheet_path: &tpsheet,
+            tps_path: &dir.join("Orgel.tps"),
+            atlas_png_path: &dir.join("Orgel.png"),
+            sprite_dir: &dir.join("sprites"),
+            prefix: "",
+            ppu: 80.0,
+        };
+        // Stash the tpsheet text so we can restore it for the second pass.
+        let saved_tpsheet =
+            fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/orgel/Orgel.tpsheet"))
+                .unwrap();
+        let saved_meta = fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/golden/orgel/Orgel.tpsheet.meta"),
+        )
+        .unwrap();
+        let _first = generate(&inputs).unwrap();
+
+        // Restore the tpsheet pair and run again.
+        fs::write(&tpsheet, &saved_tpsheet).unwrap();
+        let mut tpsheet_meta = tpsheet.clone();
+        tpsheet_meta.as_mut_os_string().push(".meta");
+        fs::write(&tpsheet_meta, &saved_meta).unwrap();
+
+        let second = generate(&inputs).unwrap();
+        assert!(
+            second.written_paths.is_empty(),
+            "second pass should write nothing when inputs are unchanged; \
+             wrote {} paths",
+            second.written_paths.len()
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

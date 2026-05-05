@@ -173,7 +173,7 @@ pub fn build(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tpsheet::{self, Border, SpriteAlignment};
+    use crate::tpsheet;
 
     const ORGEL: &str = include_str!("../tests/golden/orgel/Orgel.tpsheet");
 
@@ -274,11 +274,4 @@ mod tests {
         assert_eq!(rd.uv_transform.w, 567.5);
     }
 
-    #[test]
-    fn alignment_unused_silences_warning() {
-        // Defensive: keep a reference so unused-import warnings don't flag
-        // the alignment/border imports needed in higher-level tests later.
-        let _ = SpriteAlignment::Center;
-        let _ = Border::default();
-    }
 }
