@@ -85,13 +85,18 @@ pub fn emit(asset: &SpriteAsset) -> Result<String, EmitError> {
     write_rect_fields(&mut s, "    ", asset.rect);
 
     // m_Offset is the pivot's distance from the rect center, in pixel units.
-    // Empirically derived eval order to match Unity's f32 rounding (probed
-    // against AC_IC_Orgel.asset where pivot.x=0.485437, rect.w=103 →
-    // m_Offset.x=-1.4999886, bits=0xbfbfffa0). `pivot * size - size * 0.5`
-    // matches; `(pivot - 0.5) * size` and `(2*pivot - 1) * size * 0.5` round
-    // differently and diverge by 1 ULP.
-    let off_x = asset.pivot.x * asset.rect.w as f32 - asset.rect.w as f32 * 0.5;
-    let off_y = asset.pivot.y * asset.rect.h as f32 - asset.rect.h as f32 * 0.5;
+    // Unity computes this in atlas-pixel coordinates (NOT relative to rect
+    // origin), so `rect.x` / `rect.y` are added to both the pivot pixel and
+    // the center pixel before subtracting. Mathematically `rect.y` cancels,
+    // but in f32 the intermediate sums round differently than the relative
+    // formulation — verified byte-exact across 6 fixtures spanning
+    // rect.y ∈ {30, 149, 151, 164, 190, 385} and h ∈ {75, 76, 78, 81, 102, 115}.
+    let rx = asset.rect.x as f32;
+    let ry = asset.rect.y as f32;
+    let w = asset.rect.w as f32;
+    let h = asset.rect.h as f32;
+    let off_x = (rx + asset.pivot.x * w) - (rx + w * 0.5);
+    let off_y = (ry + asset.pivot.y * h) - (ry + h * 0.5);
     writeln!(
         s,
         "  m_Offset: {{x: {}, y: {}}}",
