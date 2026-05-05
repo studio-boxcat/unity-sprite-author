@@ -45,7 +45,21 @@ pub fn emit(asset: &SpriteAsset) -> String {
     s.push_str("    serializedVersion: 2\n");
     write_rect_fields(&mut s, "    ", asset.rect);
 
-    s.push_str("  m_Offset: {x: 0, y: 0}\n");
+    // m_Offset is the pivot's distance from the rect center, in pixel units.
+    // Empirically derived eval order to match Unity's f32 rounding (probed
+    // against AC_IC_Orgel.asset where pivot.x=0.485437, rect.w=103 →
+    // m_Offset.x=-1.4999886, bits=0xbfbfffa0). `pivot * size - size * 0.5`
+    // matches; `(pivot - 0.5) * size` and `(2*pivot - 1) * size * 0.5` round
+    // differently and diverge by 1 ULP.
+    let off_x = asset.pivot.x * asset.rect.w as f32 - asset.rect.w as f32 * 0.5;
+    let off_y = asset.pivot.y * asset.rect.h as f32 - asset.rect.h as f32 * 0.5;
+    writeln!(
+        s,
+        "  m_Offset: {{x: {}, y: {}}}",
+        float(off_x),
+        float(off_y)
+    )
+    .unwrap();
     writeln!(
         s,
         "  m_Border: {{x: {}, y: {}, z: {}, w: {}}}",

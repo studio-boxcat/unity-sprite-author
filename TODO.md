@@ -4,6 +4,10 @@ Deferred items surfaced during planning. Address before shipping, not before M1.
 
 ## Byte-exactness gaps to validate
 
+- **`m_Offset` formula incomplete.** Probed against AC_IC_Orgel (`pivot=0.485437, w=103, m_Offset.x=-1.4999886`): the eval order `pivot * size − size * 0.5` reproduces the f32 bits exactly (0xbfbfffa0). But against AC_PT_Icon_Gift (`pivot=0.45726, h=81, m_Offset.y=-3.4619446`): every evaluation order tried (`pivot*h − h*.5`, `(pivot-.5)*h`, `(2p-1)*h*.5`, FMA paths, f64-internal-then-cast) lands on -3.4619408 (0xc05d9070); target is -3.4619446 (0xc05d9080), 16 ULPs apart. Unity is not just doing pivot×size arithmetic — likely uses original (untrimmed) sprite size from the `.tps`, or per-vertex bbox of the geometry. Need to read Unity engine source (`Sprite.CreateSprite` C++) to derive. After migration runs once, Unity-emitted goldens will be byte-stable for our formula — but currently the e2e shows ~36% sprites diverging at `m_Offset` for non-(0.5,0.5) pivots.
+
+
+
 - **Bootstrap experiment**: verify Unity preserves a Rust-supplied GUID across `AssetDatabase.ImportAsset`. Procedure: delete `Cake__DecoLeft.asset` + `.asset.meta` from a clean Unity-closed checkout; boot Unity, trigger postprocessor; assert the new `.asset.meta` GUID equals `m_RenderDataKey` GUID in the new `.asset`. Repeat with `Library/` cleared. If GUIDs diverge, the FFI contract needs a second-pass write of `m_RenderDataKey` after Unity stabilizes the meta. — gating risk
 - **Non-zero-border fixture**: corpus has zero non-zero `m_Border` examples across 1000+ assets. Author one through Unity (manually edit a sprite to have non-zero L/R/T/B, save, capture the resulting `.asset` as a fixture) to validate the field order `{x: L, y: B, z: R, w: T}`.
 - **Non-1.0 spriteScale fixture**: 54 of 62 Orgel sprites have non-1 `spriteScale` in the current `Orgel.tps`, but the committed `.asset` goldens were emitted with the old `.tps` state. The byte-exact integration test currently skips these. Either re-import in Unity (regenerate `.asset` goldens) or capture a fresh consistent fixture pair `(Foo.tps, Foo.tpsheet, Foo/*.asset)` from a different atlas.

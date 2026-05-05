@@ -60,12 +60,13 @@ pub struct Pivot {
 
 // Tokens appear in tpsheet order: bL, bR, bT, bB.
 // Asset emission order is `{x: L, y: B, z: R, w: T}` per Unity Sprite.cs.
+// Signed because real fixtures (e.g. OrgelGallery) carry negative borders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Border {
-    pub left: u32,
-    pub right: u32,
-    pub top: u32,
-    pub bottom: u32,
+    pub left: i32,
+    pub right: i32,
+    pub top: i32,
+    pub bottom: i32,
 }
 
 // Mirrors UnityEngine.SpriteAlignment. 9 = Custom (used when pivot is non-canonical).
@@ -311,10 +312,10 @@ fn parse_sprite_line(
     };
 
     let border = Border {
-        left: take_u32(&tokens, &mut idx, line_no, "border.L")?,
-        right: take_u32(&tokens, &mut idx, line_no, "border.R")?,
-        top: take_u32(&tokens, &mut idx, line_no, "border.T")?,
-        bottom: take_u32(&tokens, &mut idx, line_no, "border.B")?,
+        left: take_i32(&tokens, &mut idx, line_no, "border.L")?,
+        right: take_i32(&tokens, &mut idx, line_no, "border.R")?,
+        top: take_i32(&tokens, &mut idx, line_no, "border.T")?,
+        bottom: take_i32(&tokens, &mut idx, line_no, "border.B")?,
     };
 
     let geometry = if idx < tokens.len() && !tokens[idx].trim().is_empty() {
@@ -376,6 +377,25 @@ fn take_usize(
     kind: &'static str,
 ) -> Result<usize, ParseError> {
     take_u32(tokens, idx, line, kind).map(|n| n as usize)
+}
+
+fn take_i32(
+    tokens: &[&str],
+    idx: &mut usize,
+    line: usize,
+    kind: &'static str,
+) -> Result<i32, ParseError> {
+    let t = tokens.get(*idx).ok_or_else(|| ParseError::ShortSpriteLine {
+        line,
+        expected: *idx + 1,
+        got: tokens.len(),
+    })?;
+    *idx += 1;
+    t.trim().parse().map_err(|_| ParseError::BadNumber {
+        line,
+        token: t.to_string(),
+        kind,
+    })
 }
 
 fn take_u16(
