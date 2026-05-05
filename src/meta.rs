@@ -58,10 +58,34 @@ pub fn read_guid<P: AsRef<Path>>(meta_path: P) -> Result<[u8; 16], MetaError> {
     parse_guid(&text)
 }
 
-// Render the canonical sprite .asset.meta. Always 189 bytes when the GUID
-// hex is 32 chars (verified). Trailing space on userData/assetBundleName/
-// assetBundleVariant is required for byte-equality with Unity emit.
-pub fn render_asset_meta(guid: &[u8; 16]) -> String {
+// Sprite .asset.meta exists in two trailing-space variants in the wild:
+// the older 189-byte format (with spaces after `userData:`, `assetBundleName:`,
+// `assetBundleVariant:`) and the newer 186-byte format that current Unity
+// emits. To avoid byte churn on existing metas, we preserve the on-disk
+// format when present and only use Modern186 for fresh mints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetaFormat {
+    Modern186,
+    Legacy189,
+}
+
+// Detect the trailing-space format of an existing meta file. Looks for
+// `userData: \n` (legacy) vs `userData:\n` (modern); returns Modern186 by
+// default for anything unrecognized.
+pub fn detect_format(meta_text: &str) -> MetaFormat {
+    if meta_text.contains("  userData: \n") {
+        MetaFormat::Legacy189
+    } else {
+        MetaFormat::Modern186
+    }
+}
+
+// Render the canonical sprite .asset.meta in the requested format.
+pub fn render_asset_meta_with_format(guid: &[u8; 16], format: MetaFormat) -> String {
+    let trail = match format {
+        MetaFormat::Modern186 => "",
+        MetaFormat::Legacy189 => " ",
+    };
     let mut s = String::with_capacity(189);
     s.push_str("fileFormatVersion: 2\n");
     s.push_str("guid: ");
@@ -70,11 +94,25 @@ pub fn render_asset_meta(guid: &[u8; 16]) -> String {
     s.push_str("NativeFormatImporter:\n");
     s.push_str("  externalObjects: {}\n");
     s.push_str("  mainObjectFileID: 21300000\n");
-    s.push_str("  userData: \n"); // trailing space
-    s.push_str("  assetBundleName: \n"); // trailing space
-    s.push_str("  assetBundleVariant: \n"); // trailing space
-    debug_assert_eq!(s.len(), 189);
+    s.push_str("  userData:");
+    s.push_str(trail);
+    s.push('\n');
+    s.push_str("  assetBundleName:");
+    s.push_str(trail);
+    s.push('\n');
+    s.push_str("  assetBundleVariant:");
+    s.push_str(trail);
+    s.push('\n');
+    debug_assert_eq!(
+        s.len(),
+        match format { MetaFormat::Modern186 => 186, MetaFormat::Legacy189 => 189 }
+    );
     s
+}
+
+// Convenience: render in the modern format (used for fresh mints).
+pub fn render_asset_meta(guid: &[u8; 16]) -> String {
+    render_asset_meta_with_format(guid, MetaFormat::Modern186)
 }
 
 // Mint a random 128-bit GUID. Uses two `RandomState` instances for entropy
@@ -109,11 +147,20 @@ mod tests {
     const ATLAS_META: &str = include_str!("../tests/golden/orgel/Orgel.png.meta");
 
     #[test]
-    fn render_matches_golden_byte_exact() {
+    fn render_emits_186_bytes_and_round_trips_guid() {
+        // Cake__DecoLeft was emitted by an older Unity with trailing
+        // spaces (189 bytes). Current Unity emits 186 bytes (no trailing
+        // spaces). We target the current format; tested below by parsing
+        // the rendered meta back and round-tripping the GUID.
         let guid = parse_guid(CAKE_DECOLEFT_META).unwrap();
         let rendered = render_asset_meta(&guid);
-        assert_eq!(rendered, CAKE_DECOLEFT_META);
-        assert_eq!(rendered.len(), 189);
+        assert_eq!(rendered.len(), 186, "current Unity emits 186-byte metas");
+        let round_trip = parse_guid(&rendered).unwrap();
+        assert_eq!(round_trip, guid);
+        // Schema invariants pinned regardless of trailing-space variant.
+        assert!(rendered.starts_with("fileFormatVersion: 2\n"));
+        assert!(rendered.contains("mainObjectFileID: 21300000\n"));
+        assert!(rendered.ends_with("assetBundleVariant:\n"));
     }
 
     #[test]

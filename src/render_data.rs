@@ -135,11 +135,29 @@ pub fn build(
     let (typelessdata_hex, data_size) = encode_typelessdata(&positions, &uvs);
     let index_buffer_hex = encode_index_buffer(indices);
 
+    // uvTransform.y/w is the pivot's atlas-pixel position. Unity reaches
+    // it via `m_Offset + rect.center` rather than directly `rect.pos +
+    // size * pivot`. The two are mathematically identical but route
+    // through different f32 intermediates and round 1 ULP apart on edge
+    // cases. Reusing the same atlas-coord chain that solved m_Offset:
+    //   uv.w = ((ry + py*h) - (ry + h*0.5)) + (ry + h*0.5)
+    // Verified against Cake__DecoLeft (round numbers), AC_IC_Orgel
+    // (small rect.y, near-center pivot), Outline/0204/02 (small h*py with
+    // pivot near 0). Reverting to the direct formula regressed 200
+    // sprites in the meow-tower e2e.
+    let rx = rect.x as f32;
+    let ry = rect.y as f32;
+    let w_f32 = rect.w as f32;
+    let h_f32 = rect.h as f32;
+    let center_x = rx + w_f32 * 0.5;
+    let center_y = ry + h_f32 * 0.5;
+    let off_x_atlas = (rx + pivot.x * w_f32) - center_x;
+    let off_y_atlas = (ry + pivot.y * h_f32) - center_y;
     let uv_transform = UvTransform {
         x: pixels_to_units,
-        y: rect.x as f32 + rect.w as f32 * pivot.x,
+        y: off_x_atlas + center_x,
         z: pixels_to_units,
-        w: rect.y as f32 + rect.h as f32 * pivot.y,
+        w: off_y_atlas + center_y,
     };
 
     RenderData {

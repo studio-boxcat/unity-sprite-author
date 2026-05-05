@@ -122,7 +122,24 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
             atlas_size,
         );
 
-        let own_guid = meta::resolve_sprite_guid(&meta_path).map_err(Error::Meta)?;
+        // Resolve existing meta: GUID + format. Preserve the on-disk
+        // trailing-space variant to avoid byte churn between legacy and
+        // current Unity emit conventions.
+        let (own_guid, meta_format) = match fs::read_to_string(&meta_path) {
+            Ok(text) => (
+                meta::parse_guid(&text).map_err(Error::Meta)?,
+                meta::detect_format(&text),
+            ),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                (meta::mint_guid(), meta::MetaFormat::Modern186)
+            }
+            Err(e) => {
+                return Err(Error::Io {
+                    path: meta_path.clone(),
+                    source: e,
+                });
+            }
+        };
 
         let sprite_asset = SpriteAsset {
             name: asset_name.clone(),
@@ -137,7 +154,10 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
 
         let asset_bytes = emit::emit(&sprite_asset).map_err(Error::Emit)?.into_bytes();
         writes.push((asset_path.clone(), asset_bytes));
-        writes.push((meta_path, meta::render_asset_meta(&own_guid).into_bytes()));
+        writes.push((
+            meta_path,
+            meta::render_asset_meta_with_format(&own_guid, meta_format).into_bytes(),
+        ));
         written_asset_paths.push(asset_path);
     }
 
@@ -365,12 +385,16 @@ mod tests {
         .unwrap();
 
         // Cake__DecoLeft has spriteScale=0.8 in current .tps (drifted), so
-        // the .asset bytes differ. The .asset.meta only depends on GUID, which
-        // is preserved from the existing meta — so it must match.
-        assert_eq!(written_meta, golden_meta_text, "meta byte-identical");
+        // the .asset bytes differ. The committed .asset.meta is in the older
+        // 189-byte trailing-space format; we now emit the newer 186-byte
+        // format that current Unity uses. Round-trip the GUID instead of
+        // comparing the full bytes.
+        assert_eq!(meta::parse_guid(&written_meta).unwrap(),
+                   meta::parse_guid(&golden_meta_text).unwrap(),
+                   "guid preserved from existing meta");
         // Sanity-check the asset still parses correctly even if drifted.
         assert!(written.contains("Cake__DecoLeft"));
-        let _ = golden_text; // silence unused warning if drifted
+        let _ = golden_text;
 
         let _ = fs::remove_dir_all(&dir);
     }

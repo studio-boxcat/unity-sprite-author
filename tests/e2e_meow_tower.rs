@@ -134,6 +134,13 @@ fn e2e_meow_tower_byte_exact() {
         let parent = tpsheet_path.parent().unwrap();
         let png_meta_path = parent.join(format!("{base}.png.meta"));
         let tps_path = parent.join(format!("{base}.tps"));
+        // Tower_SpriteAtlas.tpsheet pairs with Tower.tps (different stem) and
+        // its .asset siblings are 96-byte stubs, not real Sprite emissions.
+        // These are Unity SpriteAtlas placeholders, not our pipeline's
+        // territory — skip when .tps is missing.
+        if !tps_path.exists() {
+            continue;
+        }
         let tpsheet_meta_path = parent.join(format!("{base}.tpsheet.meta"));
         let sprite_dir = parent.join(&base);
 
@@ -208,6 +215,7 @@ fn e2e_meow_tower_byte_exact() {
             let Ok(own_guid) = meta::parse_guid(golden_meta_text) else {
                 continue;
             };
+            let meta_format = meta::detect_format(golden_meta_text);
 
             let invert_scale = tps_data.invert_scale(&sprite.name);
             let pixels_to_units = ppu / invert_scale;
@@ -235,7 +243,7 @@ fn e2e_meow_tower_byte_exact() {
                 Ok(s) => s.into_bytes(),
                 Err(e) => match e {}, // EmitError is uninhabited
             };
-            let generated_meta = meta::render_asset_meta(&own_guid).into_bytes();
+            let generated_meta = meta::render_asset_meta_with_format(&own_guid, meta_format).into_bytes();
 
             stats.sprites_compared += 1;
             let asset_match = generated_asset == golden_asset;

@@ -36,9 +36,23 @@ pub struct TpsData {
 
 impl TpsData {
     // Returns InvertScale for the sprite. Falls back to 1.0 if not found
-    // (mirrors TPSData.GetInvertedScale).
+    // (mirrors TPSData.GetInvertedScale + TryGetSpriteInfo at
+    // TexturePackerUtils.cs:31-41).
+    //
+    // The fallback split on '-' handles aliases for sprites packed from
+    // sub-folders: TexturePacker writes `OrgelEvent~/BG/Day_Brush.png` as
+    // a filename in the .tps but emits `BG-Day_Brush` as the alias in the
+    // .tpsheet. Direct lookup misses; `Tail('-')` recovers the filename.
     pub fn invert_scale(&self, sprite_alias: &str) -> f32 {
-        self.invert_scales.get(sprite_alias).copied().unwrap_or(1.0)
+        if let Some(s) = self.invert_scales.get(sprite_alias) {
+            return *s;
+        }
+        if let Some(idx) = sprite_alias.rfind('-')
+            && let Some(s) = self.invert_scales.get(&sprite_alias[idx + 1..])
+        {
+            return *s;
+        }
+        1.0
     }
 }
 
