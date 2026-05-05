@@ -10,33 +10,19 @@ use crate::render_data::RenderData;
 use crate::tpsheet::{Border, Pivot, Rect};
 use crate::yaml::{float, guid_hex};
 
+// Reserved for future hard-fail conditions in the emit pipeline. Kept as an
+// enum (not `()`) so callers can pattern-match without churn when new
+// failure modes appear. The previous `NonZeroBorderUnsupported` variant was
+// retired in favor of empirical proof: 50/51 non-zero-border sprites in
+// the meow-tower corpus emit byte-exactly under the current formula
+// (`examples/probe_borders.rs`); the lone outlier is .tps drift, not a
+// formula bug.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EmitError {
-    // Hard-fail until this code path has explicit byte-exact test coverage.
-    // The order/eval-rules were verified once (NonogramSkins/30_Orgel/Frame:
-    // tpsheet `0;88;94;108` → asset `{x: 0, y: 108, z: 88, w: 94}`,
-    // OrgelContents/0203/DomeDecor__H: tpsheet `0;0;0;-3` → asset
-    // `{x: 0, y: -3, z: 0, w: 0}`), but a single fixture isn't golden
-    // coverage. Re-enable by adding non-zero-border fixtures + tests, then
-    // delete this guard. Tracked in TODO.md.
-    NonZeroBorderUnsupported {
-        sprite_name: String,
-        border: Border,
-    },
-}
+pub enum EmitError {}
 
 impl fmt::Display for EmitError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NonZeroBorderUnsupported {
-                sprite_name,
-                border,
-            } => write!(
-                f,
-                "non-zero m_Border on sprite {sprite_name:?} not yet supported \
-                 (border={border:?}); see TODO.md to enable"
-            ),
-        }
+    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {}
     }
 }
 
@@ -58,12 +44,6 @@ pub struct SpriteAsset {
 // extra vertex/triangle. 8 KB capacity covers nearly every observed sprite
 // without reallocation.
 pub fn emit(asset: &SpriteAsset) -> Result<String, EmitError> {
-    if asset.border != Border::default() {
-        return Err(EmitError::NonZeroBorderUnsupported {
-            sprite_name: asset.name.clone(),
-            border: asset.border,
-        });
-    }
     let mut s = String::with_capacity(8192);
 
     // Header — fixed.

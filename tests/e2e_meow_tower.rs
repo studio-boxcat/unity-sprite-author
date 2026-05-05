@@ -16,7 +16,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use unity_sprite_author::{
-    emit::{self, EmitError, SpriteAsset},
+    emit::{self, SpriteAsset},
     meta,
     render_data::{self, AtlasSize},
     tps, tpsheet,
@@ -110,7 +110,6 @@ struct Stats {
     sprites_mismatch_asset: usize,
     sprites_mismatch_meta: usize,
     sprites_missing_golden: usize,
-    sprites_border_refused: usize, // hard-fail by design until borders are validated
     drift_atlases: BTreeMap<String, usize>, // atlas → mismatch count
     parse_failures: Vec<(PathBuf, String)>, // for diagnosis
 }
@@ -234,10 +233,7 @@ fn e2e_meow_tower_byte_exact() {
 
             let generated_asset = match emit::emit(&asset) {
                 Ok(s) => s.into_bytes(),
-                Err(EmitError::NonZeroBorderUnsupported { .. }) => {
-                    stats.sprites_border_refused += 1;
-                    continue;
-                }
+                Err(e) => match e {}, // EmitError is uninhabited
             };
             let generated_meta = meta::render_asset_meta(&own_guid).into_bytes();
 
@@ -295,7 +291,6 @@ fn e2e_meow_tower_byte_exact() {
     eprintln!("  mismatch (.asset):    {}", stats.sprites_mismatch_asset);
     eprintln!("  mismatch (.meta):     {}", stats.sprites_mismatch_meta);
     eprintln!("  golden missing:       {}", stats.sprites_missing_golden);
-    eprintln!("  border refused (non-zero, hard-fail by design): {}", stats.sprites_border_refused);
     eprintln!("drift atlases:          {}", stats.drift_atlases.len());
     for (atlas, n) in stats.drift_atlases.iter().take(10) {
         eprintln!("  {n:>4} mismatches  {atlas}");

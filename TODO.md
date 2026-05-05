@@ -4,6 +4,12 @@ Deferred items surfaced during planning. Address before shipping, not before M1.
 
 ## Byte-exactness gaps to validate
 
+- ~~**`m_Offset` formula — X solved, Y unsolved.**~~ **SOLVED** in iteration 3: `m_Offset = (rect.pos + pivot * rect.size) - (rect.pos + rect.size * 0.5)`. The `rect.x`/`rect.y` mathematically cancel but introduce f32 rounding noise that exactly matches Unity. Verified across all 6 stuck fixtures; e2e byte-exact rate jumped 64% → 81% across the meow-tower corpus.
+
+- ~~**Non-zero `m_Border` hard-fail guard.**~~ **REMOVED** in iteration 3: 50/51 non-zero-border sprites in meow-tower emit byte-exactly under the current formula. The lone outlier is .tps drift (golden has zero borders, current tpsheet has non-zero) — not a formula bug.
+
+Old m_Offset analysis (kept for history; ignore the "unsolved" framing):
+
 - **`m_Offset` formula — X solved, Y unsolved.** `pivot.x * w − w * 0.5` reproduces f32 bits byte-exactly across all 9 fixtures probed (AC_IC_Orgel, AC_Platform_Apple, OE_Calendar, OE_Icon_Sun, OA_DC_Autumn2, OA_Lock, OA_ArrowBrown, OA_ArrowWhite). The Y axis fails on non-(0.5,0.5)-pivot sprites by varying ULP gaps that don't follow a single pattern:
   - AC_PT_Icon_Gift (h=81, py=0.45726): target -3.4619446 (0xc05d9080); my A: 0xc05d9070; matching pivot bits exist at delta -2 or -3 ULPs from canonical f32 parse of "0.45726" (0x3eea1dfc → 0x3eea1df9/dfa).
   - OE_Calendar (h=75, py=0.653333): target 0x4137ffe0; matching pivot delta -1.
