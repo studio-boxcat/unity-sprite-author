@@ -8,7 +8,7 @@ use std::fmt::Write;
 
 use crate::render_data::RenderData;
 use crate::tpsheet::{Border, Pivot, Rect};
-use crate::yaml::{float, guid_hex};
+use crate::yaml::{float, guid_hex, yaml_string};
 
 // Reserved for future hard-fail conditions in the emit pipeline. Kept as an
 // enum (not `()`) so callers can pattern-match without churn when new
@@ -57,7 +57,7 @@ pub fn emit(asset: &SpriteAsset) -> Result<String, EmitError> {
     s.push_str("  m_CorrespondingSourceObject: {fileID: 0}\n");
     s.push_str("  m_PrefabInstance: {fileID: 0}\n");
     s.push_str("  m_PrefabAsset: {fileID: 0}\n");
-    writeln!(s, "  m_Name: {}", asset.name).unwrap();
+    writeln!(s, "  m_Name: {}", yaml_string(&asset.name)).unwrap();
 
     // m_Rect block.
     s.push_str("  m_Rect:\n");

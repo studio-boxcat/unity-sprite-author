@@ -122,16 +122,15 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
             atlas_size,
         );
 
-        // Resolve existing meta: GUID + format. Preserve the on-disk
-        // trailing-space variant to avoid byte churn between legacy and
-        // current Unity emit conventions.
-        let (own_guid, meta_format) = match fs::read_to_string(&meta_path) {
+        // Resolve existing meta: GUID + full shape (trailing-space variant
+        // and mainObjectFileID). Preserve both axes to avoid byte churn.
+        let (own_guid, meta_shape) = match fs::read_to_string(&meta_path) {
             Ok(text) => (
                 meta::parse_guid(&text).map_err(Error::Meta)?,
-                meta::detect_format(&text),
+                meta::detect_shape(&text),
             ),
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                (meta::mint_guid(), meta::MetaFormat::Modern186)
+                (meta::mint_guid(), meta::MetaShape::FRESH)
             }
             Err(e) => {
                 return Err(Error::Io {
@@ -156,7 +155,7 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
         writes.push((asset_path.clone(), asset_bytes));
         writes.push((
             meta_path,
-            meta::render_asset_meta_with_format(&own_guid, meta_format).into_bytes(),
+            meta::render_asset_meta_with_shape(&own_guid, meta_shape).into_bytes(),
         ));
         written_asset_paths.push(asset_path);
     }

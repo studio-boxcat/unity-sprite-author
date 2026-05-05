@@ -31,6 +31,37 @@ pub fn float(v: f32) -> String {
     format!("{v}")
 }
 
+// Unity's YAML emitter quotes strings containing non-ASCII characters and
+// escapes the non-ASCII codepoints as \uXXXX (UTF-16). Codepoints above
+// U+FFFF use surrogate pairs. ASCII-only strings are emitted unquoted.
+// Verified against `m_Name: "OG_0503_Signboard__티켓"` (Korean
+// "티켓" = U+D2F0 U+CF13).
+pub fn yaml_string(s: &str) -> String {
+    if s.bytes().all(|b| b.is_ascii() && b != b'"' && b != b'\\') {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        let cp = c as u32;
+        if cp < 0x80 {
+            out.push(c);
+        } else if cp <= 0xFFFF {
+            use std::fmt::Write;
+            write!(&mut out, "\\u{:04X}", cp).unwrap();
+        } else {
+            // Surrogate pair
+            let v = cp - 0x10000;
+            let high = 0xD800 + (v >> 10);
+            let low = 0xDC00 + (v & 0x3FF);
+            use std::fmt::Write;
+            write!(&mut out, "\\u{:04X}\\u{:04X}", high, low).unwrap();
+        }
+    }
+    out.push('"');
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

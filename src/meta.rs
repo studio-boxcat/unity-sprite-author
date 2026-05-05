@@ -58,20 +58,32 @@ pub fn read_guid<P: AsRef<Path>>(meta_path: P) -> Result<[u8; 16], MetaError> {
     parse_guid(&text)
 }
 
-// Sprite .asset.meta exists in two trailing-space variants in the wild:
-// the older 189-byte format (with spaces after `userData:`, `assetBundleName:`,
-// `assetBundleVariant:`) and the newer 186-byte format that current Unity
-// emits. To avoid byte churn on existing metas, we preserve the on-disk
-// format when present and only use Modern186 for fresh mints.
+// Sprite .asset.meta varies along two independent axes:
+//   1. Trailing-space style: legacy emits `userData: \n` (with space);
+//      modern emits `userData:\n` (without). 3 bytes difference per line.
+//   2. mainObjectFileID: usually 21300000 (the Sprite class fileID), but
+//      transient/incompletely-imported sprites carry 0 instead.
+// To avoid churn on existing metas we preserve both axes when present.
+// Fresh mints use Modern186 + 21300000.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MetaFormat {
     Modern186,
     Legacy189,
 }
 
-// Detect the trailing-space format of an existing meta file. Looks for
-// `userData: \n` (legacy) vs `userData:\n` (modern); returns Modern186 by
-// default for anything unrecognized.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MetaShape {
+    pub format: MetaFormat,
+    pub main_object_file_id: i64,
+}
+
+impl MetaShape {
+    pub const FRESH: Self = Self {
+        format: MetaFormat::Modern186,
+        main_object_file_id: 21300000,
+    };
+}
+
 pub fn detect_format(meta_text: &str) -> MetaFormat {
     if meta_text.contains("  userData: \n") {
         MetaFormat::Legacy189
@@ -80,20 +92,36 @@ pub fn detect_format(meta_text: &str) -> MetaFormat {
     }
 }
 
-// Render the canonical sprite .asset.meta in the requested format.
-pub fn render_asset_meta_with_format(guid: &[u8; 16], format: MetaFormat) -> String {
-    let trail = match format {
+pub fn detect_shape(meta_text: &str) -> MetaShape {
+    let mut id = 21300000_i64;
+    for line in meta_text.lines() {
+        if let Some(rest) = line.trim_start().strip_prefix("mainObjectFileID: ")
+            && let Ok(parsed) = rest.trim().parse::<i64>()
+        {
+            id = parsed;
+            break;
+        }
+    }
+    MetaShape {
+        format: detect_format(meta_text),
+        main_object_file_id: id,
+    }
+}
+
+pub fn render_asset_meta_with_shape(guid: &[u8; 16], shape: MetaShape) -> String {
+    let trail = match shape.format {
         MetaFormat::Modern186 => "",
         MetaFormat::Legacy189 => " ",
     };
-    let mut s = String::with_capacity(189);
+    let mut s = String::with_capacity(192);
     s.push_str("fileFormatVersion: 2\n");
     s.push_str("guid: ");
     s.push_str(&guid_hex(guid));
     s.push('\n');
     s.push_str("NativeFormatImporter:\n");
     s.push_str("  externalObjects: {}\n");
-    s.push_str("  mainObjectFileID: 21300000\n");
+    use std::fmt::Write;
+    writeln!(s, "  mainObjectFileID: {}", shape.main_object_file_id).unwrap();
     s.push_str("  userData:");
     s.push_str(trail);
     s.push('\n');
@@ -103,16 +131,23 @@ pub fn render_asset_meta_with_format(guid: &[u8; 16], format: MetaFormat) -> Str
     s.push_str("  assetBundleVariant:");
     s.push_str(trail);
     s.push('\n');
-    debug_assert_eq!(
-        s.len(),
-        match format { MetaFormat::Modern186 => 186, MetaFormat::Legacy189 => 189 }
-    );
     s
 }
 
-// Convenience: render in the modern format (used for fresh mints).
+// Backward-compat shims (keeps the older API surface for callers that don't
+// care about mainObjectFileID).
+pub fn render_asset_meta_with_format(guid: &[u8; 16], format: MetaFormat) -> String {
+    render_asset_meta_with_shape(
+        guid,
+        MetaShape {
+            format,
+            main_object_file_id: 21300000,
+        },
+    )
+}
+
 pub fn render_asset_meta(guid: &[u8; 16]) -> String {
-    render_asset_meta_with_format(guid, MetaFormat::Modern186)
+    render_asset_meta_with_shape(guid, MetaShape::FRESH)
 }
 
 // Mint a random 128-bit GUID. Uses two `RandomState` instances for entropy
