@@ -40,6 +40,7 @@
     {
       "name": "Silloutte3",
       "canvasScale": 0.01,
+      "rootAnchored": [141.8, 370.875],
       "parts": [
         { "polygonSprite": "Color_32264DBD",
           "vertices": [[-58.75, -66.875], [58.75, -66.875], [-58.75, 66.875], [58.75, 66.875]],

@@ -136,7 +136,15 @@ the SpriteAtlas data through.
 (no-op)" or a list of divergent fields with example bytes for one
 sprite — that list becomes the spec for the new emit branch.
 
-## E. Silloutte3 — root-anchored y-shift
+## ~~E. Silloutte3 — root-anchored y-shift~~ — SOLVED
+
+The matrix-chain hypothesis was confirmed via the decompiler stack and the
+crate now reproduces Silloutte3 byte-exactly. The fix lives in
+`combine::compute_m13_axis` (FMA-fused `m13` precomputed once per part) plus
+the new `Combined.rootAnchored` schema field. The procedure below is kept
+for archaeology; if a future fab manifest exposes a residual that this
+chain still doesn't capture, run it to capture the exact native matrix
+state.
 
 **Question.** With root `m_AnchoredPosition = (141.8, 370.875)`, every typelessdata
 y-coordinate in `Silloutte3.asset` is shifted by ~1 ULP (at scale 1.0, = 2⁻²³)

@@ -29,6 +29,15 @@ pub struct Combined {
     /// the per-author `_scaleFactor` field. Necessary for byte-exact f32
     /// reproduction of the ×100/×0.01 round-trip Unity does.
     pub canvas_scale: f32,
+    /// CanvasSpriteAuthor root's `RectTransform.anchoredPosition` (in canvas
+    /// pixels). Defaults to `(0, 0)`. Only matters for reproducing Unity's
+    /// `Mesh.CombineMeshes` op chain when the root sits at non-origin: the
+    /// per-`CombineInstance` matrix carries an FMA-fused residual through
+    /// `m13 = fma(canvas_scale, root + child_offset, -canvas_scale * root)`
+    /// that the algebraically-equivalent `offset * canvas_scale` form
+    /// doesn't capture. For SpriteRenderer / Box prefabs and any Canvas
+    /// hierarchy whose root sits at origin, leave at default.
+    pub root_anchored: [f32; 2],
     pub parts: Vec<Part>,
 }
 
@@ -244,6 +253,7 @@ mod raw {
         pub pivot: Option<[f32; 2]>,
         pub border: Option<[f32; 4]>,
         pub canvas_scale: Option<f32>,
+        pub root_anchored: Option<[f32; 2]>,
         #[serde(default)]
         pub parts: Vec<Part>,
     }
@@ -313,6 +323,7 @@ fn translate(raw: raw::Manifest) -> Result<Manifest, FabError> {
             pivot: c.pivot.unwrap_or([0.5, 0.5]),
             border: c.border.unwrap_or([0.0; 4]),
             canvas_scale: c.canvas_scale.unwrap_or(1.0),
+            root_anchored: c.root_anchored.unwrap_or([0.0, 0.0]),
             parts,
         });
     }

@@ -40,6 +40,13 @@ absent, behavior is unchanged. No new `pipeline::generate` parameter.
       "canvasScale": 1.0,                    // optional. CanvasSpriteAuthor._scaleFactor (post-mul).
                                              //   Default 1 (SpriteRenderer / Box prefab path).
                                              //   Canvas hierarchies set 0.01 to undo UIIcon's 100×.
+      "rootAnchored": [0, 0],                // optional. CanvasSpriteAuthor root's
+                                             //   RectTransform.anchoredPosition. Only matters
+                                             //   for reproducing the FMA-fused residual Unity's
+                                             //   Mesh.CombineMeshes leaves on each per-instance
+                                             //   matrix when the root isn't at origin. Default
+                                             //   [0, 0] collapses the FMA chain to the plain
+                                             //   `offset × canvas_scale` form.
       "parts": [
         // --- atlas-sprite part ---
         {

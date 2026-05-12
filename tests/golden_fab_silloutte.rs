@@ -116,11 +116,8 @@ fn silloutte2_byte_exact() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-// Currently fails with a uniform ~1-ULP y-shift on every position-stream f32;
-// see TODO.md's `.tps.fab.json` follow-ups and `docs/unity-probes.md#e-silloutte3`
-// for the root-anchored hypothesis. Run with `--include-ignored` to attempt.
 #[test]
-#[ignore = "Silloutte3 1-ULP y-shift unsolved; needs Unity matrix probe"]
+#[ignore = "byte-exact target; run with --include-ignored to attempt"]
 fn silloutte3_byte_exact() {
     let dir = run_pipeline("silloutte3");
     assert_silloutte_byte_exact("Silloutte3", &dir);
