@@ -181,7 +181,7 @@ path.
 4. `MX` / `MY` / `MXY` mirror duplication (dual-strategy: native-scale via
    `UIIconMeshGen` or slice-fitted via `UISliceMeshGen` depending on `width`/
    `height` presence). ✓
-5. `TX` / `TY` / `TX_MC3` tiling. Pending.
+5. `TX` / `TY` tiling. ✓ `TX_MC3` pending.
 6. Slice-grid family — `R1C3`, `R3C3*`, then `MX_*`, `MY_*`, `MXY_*`.
    Pending.
 7. Pipeline integration: fab.json discovery, combined emission, part

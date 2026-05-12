@@ -93,7 +93,7 @@ pub fn calc_rect_and_pivot(verts: &[[f32; 2]], ppu: f32) -> ((f32, f32), (f32, f
 }
 
 fn is_method_supported(m: Method) -> bool {
-    matches!(m, Method::Id | Method::Mx | Method::My | Method::Mxy)
+    matches!(m, Method::Id | Method::Mx | Method::My | Method::Mxy | Method::Tx | Method::Ty)
 }
 
 /// Build the mesh for a single polygon part.
@@ -173,6 +173,8 @@ pub fn atlas_sprite_mesh(
             Some(sz) => slice_mirror(&src, &ctx, sz, MirrorAxis::Xy),
             None     => icon_mirror(&src, &ctx, MirrorAxis::Xy),
         },
+        Method::Tx  => tile_axis(entry, atlas, ppu, &ctx, size.expect("tx size"), TileAxis::X),
+        Method::Ty  => tile_axis(entry, atlas, ppu, &ctx, size.expect("ty size"), TileAxis::Y),
         _ => panic!("method {method} not implemented"),
     }
 }
@@ -236,6 +238,220 @@ fn slice_vertex_translation(
 }
 
 enum MirrorAxis { X, Y, Xy }
+
+// --- tiling (TX / TY) — port of meow-tower's Tiling.cs ----------------------
+
+#[derive(Clone, Copy)]
+enum TileAxis { X, Y }
+
+struct TileLayout {
+    tail_fract: f32,
+    has_tail: bool,
+    cols_half: usize,  // tile columns per side, excluding the centre seam
+    vert_half: usize,  // verts per side (cols_half * 2 + 1)
+    vert_count: usize, // total verts (vert_half * 2)
+}
+
+const TAIL_EPSILON: f32 = 0.0001;
+
+fn calc_tile_layout(tile_w: f32, rect_w: f32) -> TileLayout {
+    // `tiles` is per-side; we ping-pong outward from the centre seam.
+    let tiles = (rect_w / tile_w) * 0.5;
+    let half_tiles = tiles.floor() as usize;
+    let tail_fract = tiles - half_tiles as f32;
+    let has_tail = tail_fract > TAIL_EPSILON;
+    let cols_half = half_tiles + if has_tail { 1 } else { 0 };
+    let vert_half = cols_half * 2 + 1;
+    let vert_count = vert_half * 2;
+    TileLayout { tail_fract, has_tail, cols_half, vert_half, vert_count }
+}
+
+// Lerp matching C# Mathf.Lerp's clamped semantics. Used to sample partial-tail UVs.
+fn sample_partial_uv(min: f32, max: f32, tail_fract: f32, forward: bool) -> f32 {
+    let t = tail_fract.clamp(0.0, 1.0);
+    if forward { max + (min - max) * t } else { min + (max - min) * t }
+}
+
+// TX/TY produce a strap of axis-aligned quads in the target rect, with the
+// source sprite ping-ponging outward from the rect centre. The opposite side
+// is a mirror of the forward side (geometry + UVs both).
+//
+// Layout (per BuildStrapIndices in Tiling.cs): vert pairs go
+//   [centre, forward_1, forward_2, ..., forward_colsHalf,
+//    backward_1, backward_2, ..., backward_colsHalf]
+// with `quadCount = colsHalf * 2` quads stitched outward then around the
+// centre seam.
+fn tile_axis(
+    entry: &SpriteEntry,
+    atlas: AtlasSize,
+    ppu: f32,
+    ctx: &SliceCtx,
+    target: (f32, f32),
+    axis: TileAxis,
+) -> PartMesh {
+    let (target_w, target_h) = target;
+    let part_pivot = ctx.part_pivot;
+
+    // Rect bounds in target-rect local space (origin at part pivot point).
+    let x_min = -target_w * part_pivot.0;
+    let x_max = target_w * (1.0 - part_pivot.0);
+    let y_min = -target_h * part_pivot.1;
+    let y_max = target_h * (1.0 - part_pivot.1);
+
+    // Outer UV bounds for the source sprite (atlas-normalized).
+    let aw = atlas.width as f32;
+    let ah = atlas.height as f32;
+    let u_min = entry.rect.x as f32 / aw;
+    let u_max = (entry.rect.x + entry.rect.w) as f32 / aw;
+    let v_min = entry.rect.y as f32 / ah;
+    let v_max = (entry.rect.y + entry.rect.h) as f32 / ah;
+
+    // Tile size + rect size along the tiling axis. Both in world units.
+    let (tile_size, rect_size, axis_min, axis_max) = match axis {
+        TileAxis::X => (entry.rect.w as f32 / ppu, target_w, x_min, x_max),
+        TileAxis::Y => (entry.rect.h as f32 / ppu, target_h, y_min, y_max),
+    };
+    let layout = calc_tile_layout(tile_size, rect_size);
+
+    let mut verts = vec![[0.0f32; 2]; layout.vert_count];
+    let mut uvs = vec![[0.0f32; 2]; layout.vert_count];
+
+    // Fixed (non-axis) coordinate + UV — the cross-axis edges of every column.
+    // C# TileX runs with poses[i*2].y = yMin, poses[i*2+1].y = yMax.
+    // TileY swaps roles (X is the cross-axis, with x_max/x_min winding flipped
+    // to keep CCW). We mirror that here.
+    let (cross_lo, cross_hi, cross_uv_lo, cross_uv_hi) = match axis {
+        TileAxis::X => (y_min, y_max, v_min, v_max),
+        TileAxis::Y => (x_max, x_min, u_min, u_max),
+    };
+    for i in 0..layout.vert_half {
+        let idx0 = i * 2;
+        let idx1 = idx0 + 1;
+        write_cross(&mut verts[idx0], axis, cross_lo);
+        write_cross(&mut verts[idx1], axis, cross_hi);
+        uvs[idx0] = uv_set_cross(axis, cross_uv_lo);
+        uvs[idx1] = uv_set_cross(axis, cross_uv_hi);
+    }
+
+    // Centre seam: position at the rect midpoint, UV at sprite uMin/vMin.
+    let mid = (axis_min + axis_max) * 0.5;
+    let centre_uv = match axis { TileAxis::X => u_min, TileAxis::Y => v_min };
+    write_axis(&mut verts[0], axis, mid);
+    write_axis(&mut verts[1], axis, mid);
+    uvs[0] = uv_set_axis(axis, centre_uv, uvs[0]);
+    uvs[1] = uv_set_axis(axis, centre_uv, uvs[1]);
+
+    // Forward side (rises from centre toward axis_max).
+    let mut vp = 2;
+    let mut cursor = mid;
+    let (uv_lo, uv_hi) = match axis {
+        TileAxis::X => (u_min, u_max),
+        TileAxis::Y => (v_min, v_max),
+    };
+    for col in 1..=layout.cols_half {
+        let flow_forward = col % 2 == 0; // C# .IsEven() on col index
+        let is_partial = col == layout.cols_half && layout.has_tail;
+        let (delta, u) = if is_partial {
+            (
+                layout.tail_fract * tile_size,
+                sample_partial_uv(uv_lo, uv_hi, layout.tail_fract, flow_forward),
+            )
+        } else {
+            (tile_size, if flow_forward { uv_lo } else { uv_hi })
+        };
+        cursor += delta;
+        write_axis(&mut verts[vp], axis, cursor);
+        write_axis(&mut verts[vp + 1], axis, cursor);
+        uvs[vp] = uv_set_axis(axis, u, uvs[vp]);
+        uvs[vp + 1] = uv_set_axis(axis, u, uvs[vp + 1]);
+        vp += 2;
+    }
+
+    // Backward side: positions mirror around mid; UVs mirror by copying
+    // forward UV pairs starting at offset 2.
+    let pos_offset = mid * 2.0;
+    for i in 1..=layout.cols_half {
+        let src_pos = match axis { TileAxis::X => verts[i * 2][0], TileAxis::Y => verts[i * 2][1] };
+        let dst = pos_offset - src_pos;
+        write_axis(&mut verts[vp], axis, dst);
+        write_axis(&mut verts[vp + 1], axis, dst);
+        // C# MirrorUV: copy forward UVs (indices 2..vert_half) verbatim into
+        // the backward block. Same texel is sampled — geometry handles the flip.
+        uvs[vp]     = uvs[i * 2];
+        uvs[vp + 1] = uvs[i * 2 + 1];
+        vp += 2;
+    }
+
+    // Triangulate: forward strap + centre-seam quad + backward strap.
+    let tris = build_strap_indices(layout.cols_half);
+
+    // Apply affine after all positions are laid out.
+    let verts: Vec<[f32; 2]> = verts.iter().map(|v| apply_affine(*v, ctx.affine)).collect();
+
+    PartMesh { verts, uvs, tris }
+}
+
+fn write_axis(v: &mut [f32; 2], axis: TileAxis, value: f32) {
+    match axis {
+        TileAxis::X => v[0] = value,
+        TileAxis::Y => v[1] = value,
+    }
+}
+
+fn write_cross(v: &mut [f32; 2], axis: TileAxis, value: f32) {
+    match axis {
+        TileAxis::X => v[1] = value,
+        TileAxis::Y => v[0] = value,
+    }
+}
+
+fn uv_set_axis(axis: TileAxis, value: f32, existing: [f32; 2]) -> [f32; 2] {
+    match axis {
+        TileAxis::X => [value, existing[1]],
+        TileAxis::Y => [existing[0], value],
+    }
+}
+
+fn uv_set_cross(axis: TileAxis, value: f32) -> [f32; 2] {
+    match axis {
+        TileAxis::X => [0.0, value],
+        TileAxis::Y => [value, 0.0],
+    }
+}
+
+fn build_strap_indices(cols_half: usize) -> Vec<u16> {
+    // Quads laid out per BuildStrapIndices in Tiling.cs: forward strap, centre
+    // join, backward strap. 6 indices per quad.
+    let mut tris: Vec<u16> = Vec::with_capacity(cols_half * 2 * 6);
+
+    // Forward strap.
+    for i in 0..cols_half {
+        let a = (i * 2) as u16;
+        let b = a + 1;
+        let c = a + 2;
+        let d = a + 3;
+        push_quad(&mut tris, a, b, c, d);
+    }
+
+    // Centre-seam quad (joins the last forward column back to the centre).
+    let offset = (cols_half * 2 + 2) as u16;
+    push_quad(&mut tris, offset, offset + 1, 0, 1);
+
+    // Backward strap.
+    for i in 1..cols_half {
+        let a = offset + (i * 2) as u16;
+        let b = a + 1;
+        let c = a - 2;
+        let d = a - 1;
+        push_quad(&mut tris, a, b, c, d);
+    }
+
+    tris
+}
+
+fn push_quad(tris: &mut Vec<u16>, a: u16, b: u16, c: u16, d: u16) {
+    tris.extend_from_slice(&[a, b, d, a, d, c]);
+}
 
 // Native-scale mirror duplication, matching UIIconMeshGen.{MX, MY, MXY}.
 // No target rect: each src vert is taken at its native pivot-relative
@@ -667,6 +883,84 @@ mod tests {
         assert!((py - 0.40551946).abs() < 1e-6, "got {py}");
     }
 
+    // --- tiling ---
+
+    #[test]
+    fn calc_tile_layout_exact_2_tiles_per_side_no_tail() {
+        // rect_w = 4, tile_w = 1 ⇒ tiles_per_side = 4/1 * 0.5 = 2. No tail.
+        let l = calc_tile_layout(1.0, 4.0);
+        assert!(!l.has_tail);
+        assert_eq!(l.cols_half, 2);
+        assert_eq!(l.vert_half, 5);  // 2 cols * 2 + 1 (centre)
+        assert_eq!(l.vert_count, 10);
+    }
+
+    #[test]
+    fn calc_tile_layout_with_partial_tail() {
+        // rect_w = 5, tile_w = 1 ⇒ tiles_per_side = 2.5 ⇒ 2 full + 1 partial tail.
+        let l = calc_tile_layout(1.0, 5.0);
+        assert!(l.has_tail);
+        assert!((l.tail_fract - 0.5).abs() < 1e-5);
+        assert_eq!(l.cols_half, 3);
+        assert_eq!(l.vert_half, 7);  // 3 cols * 2 + 1
+        assert_eq!(l.vert_count, 14);
+    }
+
+    #[test]
+    fn tx_basic_two_tiles_each_side_no_tail() {
+        // 1×1 sprite at atlas (0,0,1,1), PPU 1. Target rect 4×2 ⇒ 2 tiles per
+        // side ⇒ vert_count = 10 (5 vert pairs along X).
+        let entry = quad_entry(0, 0, 1, 1, (0.5, 0.5));
+        let m = atlas_sprite_mesh(
+            &entry, Method::Tx, Some((4.0, 2.0)), [0.5, 0.5], Affine::default(),
+            AtlasSize { width: 8, height: 8 }, 1.0,
+        );
+        assert_eq!(m.verts.len(), 10, "5 vert pairs for cols_half=2");
+        // BuildStrapIndices: 2 forward + 1 centre-seam + 1 backward = 4 quads
+        // (the backward loop starts at i=1, so cols_half=2 yields just 1 backward
+        // quad). 4 quads * 6 indices = 24.
+        assert_eq!(m.tris.len(), 24);
+        // Verts span the full target rect on X (-2..2) at Y bounds (-1..1).
+        let xs: Vec<f32> = m.verts.iter().map(|v| v[0]).collect();
+        let ys: Vec<f32> = m.verts.iter().map(|v| v[1]).collect();
+        assert!((xs.iter().copied().fold(f32::INFINITY, f32::min) + 2.0).abs() < 1e-5);
+        assert!((xs.iter().copied().fold(f32::NEG_INFINITY, f32::max) - 2.0).abs() < 1e-5);
+        assert!((ys.iter().copied().fold(f32::INFINITY, f32::min) + 1.0).abs() < 1e-5);
+        assert!((ys.iter().copied().fold(f32::NEG_INFINITY, f32::max) - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn ty_mirrors_tx_along_y_axis() {
+        // 1×1 sprite, target 2×4. Should produce the same shape rotated 90°
+        // (5 vert pairs along Y).
+        let entry = quad_entry(0, 0, 1, 1, (0.5, 0.5));
+        let m = atlas_sprite_mesh(
+            &entry, Method::Ty, Some((2.0, 4.0)), [0.5, 0.5], Affine::default(),
+            AtlasSize { width: 8, height: 8 }, 1.0,
+        );
+        assert_eq!(m.verts.len(), 10);
+        assert_eq!(m.tris.len(), 24);
+        let xs: Vec<f32> = m.verts.iter().map(|v| v[0]).collect();
+        let ys: Vec<f32> = m.verts.iter().map(|v| v[1]).collect();
+        assert!((xs.iter().copied().fold(f32::INFINITY, f32::min) + 1.0).abs() < 1e-5);
+        assert!((xs.iter().copied().fold(f32::NEG_INFINITY, f32::max) - 1.0).abs() < 1e-5);
+        assert!((ys.iter().copied().fold(f32::INFINITY, f32::min) + 2.0).abs() < 1e-5);
+        assert!((ys.iter().copied().fold(f32::NEG_INFINITY, f32::max) - 2.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn tx_centre_seam_uv_is_atlas_u_min() {
+        // The centre seam (verts 0, 1) should sample uMin of the source rect.
+        let entry = quad_entry(10, 0, 2, 2, (0.5, 0.5));
+        let m = atlas_sprite_mesh(
+            &entry, Method::Tx, Some((4.0, 2.0)), [0.5, 0.5], Affine::default(),
+            AtlasSize { width: 100, height: 100 }, 1.0,
+        );
+        // u_min = rect.x / atlas_w = 10 / 100 = 0.1.
+        assert!((m.uvs[0][0] - 0.1).abs() < 1e-6);
+        assert!((m.uvs[1][0] - 0.1).abs() < 1e-6);
+    }
+
     #[test]
     fn icon_mx_duplicates_with_native_origin_mirror() {
         // 2×2 sprite at pivot (0.5, 0.5), PPU 1, no target size.
@@ -798,11 +1092,11 @@ mod tests {
 
     #[test]
     fn build_combined_errors_on_unimplemented_method() {
-        // Use a method that hasn't landed yet (Tx is phase 5).
+        // Use a method that hasn't landed yet (R3C3 is phase 6).
         let combined = make_combined("BX", vec![Part::AtlasSprite {
             sprite: "A".into(),
-            method: Method::Tx,
-            size: Some((4.0, 1.0)),
+            method: Method::R3c3,
+            size: Some((4.0, 4.0)),
             part_pivot: [0.5, 0.5],
             border_mult: 1.0,
             affine: Affine::default(),
@@ -814,7 +1108,7 @@ mod tests {
             AtlasSize { width: 16, height: 16 },
             1.0,
         ).unwrap_err();
-        assert!(matches!(err, CombineError::MethodUnimplemented { method: Method::Tx, .. }), "{err:?}");
+        assert!(matches!(err, CombineError::MethodUnimplemented { method: Method::R3c3, .. }), "{err:?}");
     }
 
     #[test]
