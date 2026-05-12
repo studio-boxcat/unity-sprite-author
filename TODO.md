@@ -6,7 +6,7 @@ Deferred items surfaced during planning.
 
 ## Byte-exactness gaps to validate
 
-- ~~**`textureRect` sub-pixel shrink for some polygon-trimmed sprites.**~~ **SOLVED** (commit `285f264`), then **SUPERSEDED**: the preserve branch defended exactly 3 sprites (FriendInvite emoji), all legacy `spriteMode: 2 → 1` migration artifacts. To-do: drop preserve and return a hard error from `generate()` naming the divergent sprite, per the `.tps.fab.json` follow-ups section below. After the 3 sprites are deleted + re-emitted under the new path, the corpus stays 100% byte-exact with one less code path.
+- ~~**`textureRect` sub-pixel shrink for some polygon-trimmed sprites.**~~ **SOLVED** (commit `285f264`), then **SUPERSEDED** (commit `17659b1`): preserve replaced with a hard `Error::TextureRectDivergence`. The 3 FriendInvite emoji sprites that had defended the preserve branch have been regenerated under `spriteMode: 1` (textureRect == m_Rect). Corpus is 100% byte-exact with one less code path.
 
 - ~~**`m_Offset` formula — X solved, Y unsolved.**~~ **SOLVED** in iteration 3: `m_Offset = (rect.pos + pivot * rect.size) - (rect.pos + rect.size * 0.5)`. The `rect.x`/`rect.y` mathematically cancel but introduce f32 rounding noise that exactly matches Unity. Verified across all 6 stuck fixtures; e2e byte-exact rate jumped 64% → 81% across the meow-tower corpus.
 

@@ -31,12 +31,10 @@ pub enum Error {
     EmptySheet,
     DuplicateSpriteName(String),
     // On-disk .asset's textureRect.{w,h} doesn't match the rect we'd emit.
-    // Historically this happened only on Unity sprites authored under
-    // SpriteMeshType.Tight + spriteMode: Multiple, which ran an alpha-edge
-    // tightness pass we can't reproduce. 3 sprites in the meow-tower corpus
-    // (FriendInvite emoji) were legacy artifacts from a spriteMode 2→1 flip.
-    // Resolution: delete the offending .asset so Unity re-emits it under
-    // the current spriteMode:1 path (which doesn't sub-pixel-shrink).
+    // Only seen on Unity sprites authored under SpriteMeshType.Tight +
+    // spriteMode: Multiple, which ran an alpha-edge tightness pass we can't
+    // reproduce. Resolution: delete the offending .asset so Unity re-emits
+    // it under the current spriteMode:1 path (textureRect snaps to m_Rect).
     TextureRectDivergence {
         sprite: String,
         on_disk: (f32, f32),
