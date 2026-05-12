@@ -27,15 +27,15 @@ impl fmt::Display for EmitError {
 
 impl std::error::Error for EmitError {}
 
-/// How the sprite was produced. Affects three fields:
+/// How the sprite was produced. Affects the `m_Rect.{w, h}` /
+/// `textureRect.{w, h}` integer-vs-float emit; both variants emit
+/// `atlasRectOffset: {x: -1, y: -1}` (Unity's sentinel for non-SpriteAtlas
+/// sprites, verified against both TexturePacker imports and
+/// `SpriteFactory.CreateFromMesh` outputs).
 ///
-/// - `Tpsheet`: emits `atlasRectOffset: {x: -1, y: -1}` (Unity's default
-///   for atlas-packed sprites) and uses `rect.{w, h}` (integer pixels) for
-///   `m_Rect.{w, h}` + `textureRect.{w, h}`.
-/// - `Fabricated`: emits `atlasRectOffset: {x: 0, y: 0}` (matches
-///   `SpriteFactory.CreateFromMesh` output) and uses the supplied
-///   `rect_w_f`/`rect_h_f` (f32, sub-pixel-able) for `m_Rect.{w, h}` +
-///   `textureRect.{w, h}`. `rect.{x, y}` should be `(0, 0)`.
+/// - `Tpsheet`: uses `rect.{w, h}` (integer pixels).
+/// - `Fabricated`: uses the supplied `rect_w_f` / `rect_h_f` (f32, sub-
+///   pixel-able). `rect.{x, y}` should be `(0, 0)`.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub enum SpriteSource {
     #[default]

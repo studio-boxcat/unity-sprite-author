@@ -228,13 +228,21 @@ fn check_method_constraints(
     Ok(())
 }
 
-/// Build the mesh for a single polygon part.
+/// Build the mesh for a single polygon part with default canvas-chain
+/// identity (`uiScale = 1`, `m13 = (0, 0)`, `canvasScale = 1`) — the
+/// SpriteRenderer / Box-prefab path. CanvasSpriteAuthor callers go through
+/// `build_combined`, which passes non-identity canvas-chain values through
+/// `polygon_mesh_with_tris` directly.
 ///
-/// - `vertices` come from the manifest in world units. The polygon is
-///   triangulated via ear-clip (auto-handles winding).
+/// - `vertices` are caller-supplied (interpreted in whatever frame the
+///   caller wants — world units for the default path, canvas pixels under
+///   the fab/Canvas path). The polygon is triangulated via ear-clip
+///   (auto-handles winding).
 /// - All UVs sample the center pixel of `polygon_sprite_rect`, normalized
 ///   against the atlas size — matches `SolidUVCache.Get` in meow-tower.
-/// - The affine `T · R · S` is applied to each vert *after* triangulation.
+/// - `apply_transform` runs each vert through the affine chain *after*
+///   triangulation. With identity canvas-chain values it collapses to
+///   plain `T · R · S`.
 ///
 /// Triangulator output preserves the relative ordering of input verts; the
 /// crate emits the polygon's own verts (not a re-triangulated subset), so the
