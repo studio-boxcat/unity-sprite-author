@@ -363,12 +363,22 @@ struct SliceCtx {
 }
 
 // (px, py) → pivot-relative world units (matches Unity's Sprite.vertices).
+//
+// Critical: Unity stores `pixel * (1/ppu)` (multiplication by a precomputed
+// f32 reciprocal), NOT direct `pixel / ppu`. The two differ by 1 ULP on
+// common inputs — verified via llm-bridge:
+//   18.0f / 80.0f      = 0x3e666666  (Rust default; standard IEEE division)
+//   18.0f * (1.0f/80f) = 0x3e666667  (what Unity's Sprite.vertices stores)
+// Bit-exact matching of the typelessdata block requires reproducing this
+// op order. Likely Unity's native sprite-creator precomputes `1/ppu` once
+// for SIMD efficiency.
 fn local_src_verts(entry: &SpriteEntry, ppu: f32) -> Vec<[f32; 2]> {
     let pw = entry.rect.w as f32;
     let ph = entry.rect.h as f32;
     let pivot_px = (pw * entry.pivot.x, ph * entry.pivot.y);
+    let inv_ppu = 1.0_f32 / ppu;
     entry.geometry.vertices.iter()
-        .map(|v| [(v.x - pivot_px.0) / ppu, (v.y - pivot_px.1) / ppu])
+        .map(|v| [(v.x - pivot_px.0) * inv_ppu, (v.y - pivot_px.1) * inv_ppu])
         .collect()
 }
 
