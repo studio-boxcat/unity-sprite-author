@@ -239,6 +239,7 @@ fn e2e_meow_tower_byte_exact() {
                 own_guid,
                 atlas_guid,
                 render_data: rd,
+                source: emit::SpriteSource::Tpsheet,
             };
 
             let generated_asset = match emit::emit(&asset) {

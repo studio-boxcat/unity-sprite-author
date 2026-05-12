@@ -28,6 +28,22 @@ impl fmt::Display for EmitError {
 
 impl std::error::Error for EmitError {}
 
+/// How the sprite was produced. Affects three fields:
+///
+/// - `Tpsheet`: emits `atlasRectOffset: {x: -1, y: -1}` (Unity's default
+///   for atlas-packed sprites) and uses `rect.{w, h}` (integer pixels) for
+///   `m_Rect.{w, h}` + `textureRect.{w, h}`.
+/// - `Fabricated`: emits `atlasRectOffset: {x: 0, y: 0}` (matches
+///   `SpriteFactory.CreateFromMesh` output) and uses the supplied
+///   `rect_w_f`/`rect_h_f` (f32, sub-pixel-able) for `m_Rect.{w, h}` +
+///   `textureRect.{w, h}`. `rect.{x, y}` should be `(0, 0)`.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub enum SpriteSource {
+    #[default]
+    Tpsheet,
+    Fabricated { rect_w_f: f32, rect_h_f: f32 },
+}
+
 #[derive(Debug, Clone)]
 pub struct SpriteAsset {
     pub name: String,
@@ -38,6 +54,7 @@ pub struct SpriteAsset {
     pub own_guid: [u8; 16],   // also written to m_RenderDataKey
     pub atlas_guid: [u8; 16], // texture reference inside m_RD/m_AtlasRD
     pub render_data: RenderData,
+    pub source: SpriteSource,
 }
 
 // Cake__DecoLeft.asset is ~5.2 KB; larger sprite geometry adds ~16 bytes per
@@ -62,7 +79,7 @@ pub fn emit(asset: &SpriteAsset) -> Result<String, EmitError> {
     // m_Rect block.
     s.push_str("  m_Rect:\n");
     s.push_str("    serializedVersion: 2\n");
-    write_rect_fields(&mut s, "    ", asset.rect);
+    write_rect_fields(&mut s, "    ", asset.rect, asset.source);
 
     // m_Offset is the pivot's distance from the rect center, in pixel units.
     // Unity computes this in atlas-pixel coordinates (NOT relative to rect
@@ -109,9 +126,9 @@ pub fn emit(asset: &SpriteAsset) -> Result<String, EmitError> {
     // m_RD and m_AtlasRD are byte-identical for non-SpriteAtlas sprites
     // (verified across Orgel corpus). Guarded against SpriteAtlas use upstream.
     s.push_str("  m_RD:\n");
-    write_render_data(&mut s, "    ", &asset.atlas_guid, &asset.render_data, asset.rect);
+    write_render_data(&mut s, "    ", &asset.atlas_guid, &asset.render_data, asset.rect, asset.source);
     s.push_str("  m_AtlasRD:\n");
-    write_render_data(&mut s, "    ", &asset.atlas_guid, &asset.render_data, asset.rect);
+    write_render_data(&mut s, "    ", &asset.atlas_guid, &asset.render_data, asset.rect, asset.source);
 
     s.push_str("  m_PhysicsShape: []\n");
     s.push_str("  m_Bones: []\n");
@@ -121,11 +138,19 @@ pub fn emit(asset: &SpriteAsset) -> Result<String, EmitError> {
     Ok(s)
 }
 
-fn write_rect_fields(s: &mut String, indent: &str, rect: Rect) {
+fn write_rect_fields(s: &mut String, indent: &str, rect: Rect, source: SpriteSource) {
     writeln!(s, "{indent}x: {}", rect.x).unwrap();
     writeln!(s, "{indent}y: {}", rect.y).unwrap();
-    writeln!(s, "{indent}width: {}", rect.w).unwrap();
-    writeln!(s, "{indent}height: {}", rect.h).unwrap();
+    match source {
+        SpriteSource::Tpsheet => {
+            writeln!(s, "{indent}width: {}", rect.w).unwrap();
+            writeln!(s, "{indent}height: {}", rect.h).unwrap();
+        }
+        SpriteSource::Fabricated { rect_w_f, rect_h_f } => {
+            writeln!(s, "{indent}width: {}", float(rect_w_f)).unwrap();
+            writeln!(s, "{indent}height: {}", float(rect_h_f)).unwrap();
+        }
+    }
 }
 
 fn write_render_data(
@@ -134,6 +159,7 @@ fn write_render_data(
     atlas_guid: &[u8; 16],
     rd: &RenderData,
     rect: Rect,
+    source: SpriteSource,
 ) {
     writeln!(s, "{indent}serializedVersion: 3").unwrap();
     writeln!(
@@ -177,10 +203,21 @@ fn write_render_data(
     let inner_rect = format!("{indent}  ");
     writeln!(s, "{inner_rect}x: {}", rect.x).unwrap();
     writeln!(s, "{inner_rect}y: {}", rect.y).unwrap();
-    writeln!(s, "{inner_rect}width: {}", rect.w).unwrap();
-    writeln!(s, "{inner_rect}height: {}", rect.h).unwrap();
+    match source {
+        SpriteSource::Tpsheet => {
+            writeln!(s, "{inner_rect}width: {}", rect.w).unwrap();
+            writeln!(s, "{inner_rect}height: {}", rect.h).unwrap();
+        }
+        SpriteSource::Fabricated { rect_w_f, rect_h_f } => {
+            writeln!(s, "{inner_rect}width: {}", float(rect_w_f)).unwrap();
+            writeln!(s, "{inner_rect}height: {}", float(rect_h_f)).unwrap();
+        }
+    }
     writeln!(s, "{indent}textureRectOffset: {{x: 0, y: 0}}").unwrap();
-    writeln!(s, "{indent}atlasRectOffset: {{x: -1, y: -1}}").unwrap(); // Unity default, NOT zero
+    // Unity's TexturePacker atlas slicer emits (-1, -1) as a sentinel; sprites
+    // produced by SpriteFactory.CreateFromMesh ship with (0, 0).
+    let aro = match source { SpriteSource::Tpsheet => -1, SpriteSource::Fabricated { .. } => 0 };
+    writeln!(s, "{indent}atlasRectOffset: {{x: {aro}, y: {aro}}}").unwrap();
     // settingsRaw is a packed bitfield representing TextureImporter settings
     // (filterMode, wrap, alpha, etc.). 192 (0xC0) is the value that 7187/7190
     // sprites in meow-tower carry — the entire corpus we've sampled. There's
@@ -293,6 +330,7 @@ mod tests {
             own_guid: parse_guid_from_meta(CAKE_DECOLEFT_META),
             atlas_guid: parse_guid_from_meta(ATLAS_META),
             render_data: rd,
+            source: SpriteSource::Tpsheet,
         };
         let got = emit(&asset).expect("emit succeeded");
         if got != CAKE_DECOLEFT_GOLDEN {
@@ -322,5 +360,43 @@ mod tests {
                 String::from_utf8_lossy(&e_bytes[lo..hi_e]),
             );
         }
+    }
+
+    #[test]
+    fn fabricated_emits_zero_atlas_rect_offset_and_subpixel_dimensions() {
+        // Build a minimal SpriteAsset with source=Fabricated and verify the
+        // differential fields against the Tpsheet path. The rest of the
+        // body is covered by cake_decoleft_full_byte_exact and not re-asserted
+        // here.
+        let asset = SpriteAsset {
+            name: "Foo".into(),
+            rect: Rect { x: 0, y: 0, w: 0, h: 0 }, // Fabricated ignores w/h
+            border: Border::default(),
+            pivot: Pivot { x: 0.5, y: 0.5 },
+            pixels_to_units: 100.0,
+            own_guid: [0u8; 16],
+            atlas_guid: [0u8; 16],
+            render_data: RenderData {
+                index_buffer_hex: String::new(),
+                typelessdata_hex: String::new(),
+                index_count: 0,
+                vertex_count: 0,
+                data_size: 0,
+                uv_transform: crate::render_data::UvTransform { x: 0.0, y: 0.0, z: 0.0, w: 0.0 },
+            },
+            source: SpriteSource::Fabricated { rect_w_f: 282.5, rect_h_f: 770.0 },
+        };
+        let out = emit(&asset).unwrap();
+        // m_Rect picks up the f32 dimensions, including the half-pixel value.
+        assert!(out.contains("    width: 282.5\n"), "missing fabricated m_Rect width: {out:?}");
+        assert!(out.contains("    height: 770\n"), "missing fabricated m_Rect height");
+        // atlasRectOffset flips from Unity's TexturePacker sentinel (-1) to 0.
+        assert!(out.contains("atlasRectOffset: {x: 0, y: 0}"),
+                "fabricated should emit zero atlasRectOffset");
+        // textureRect mirrors m_Rect's dimensions.
+        let texrect_start = out.find("textureRect:").unwrap();
+        let texrect_window = &out[texrect_start..texrect_start + 120];
+        assert!(texrect_window.contains("width: 282.5\n"), "{texrect_window}");
+        assert!(texrect_window.contains("height: 770\n"));
     }
 }

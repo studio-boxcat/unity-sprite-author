@@ -172,6 +172,7 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
             own_guid,
             atlas_guid,
             render_data: rd,
+            source: emit::SpriteSource::Tpsheet,
         };
 
         let asset_bytes = emit::emit(&sprite_asset).map_err(Error::Emit)?.into_bytes();
