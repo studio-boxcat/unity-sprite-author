@@ -287,15 +287,22 @@ pub fn atlas_sprite_mesh(
     affine: Affine,
     atlas: AtlasSize,
     ppu: f32,
+    invert_scale: f32,
 ) -> PartMesh {
+    // The sprite's effective PPU = ppu / invert_scale = ppu * spriteScale.
+    // Sprite.vertices in Unity are stored in world units = pixel /
+    // effective_ppu; we have to mirror that so verts match byte-for-byte.
+    // (TexturePacker's per-sprite spriteScale, parsed in tps.rs, is the
+    //  source of `invert_scale` = 1 / spriteScale.)
+    let effective_ppu = ppu / invert_scale;
     let src = SrcMesh {
-        verts: local_src_verts(entry, ppu),
+        verts: local_src_verts(entry, effective_ppu),
         uvs: atlas_uvs(entry, atlas),
         tris: entry.geometry.triangles.clone(),
     };
     let ctx = SliceCtx {
         sprite_pivot_norm: (entry.pivot.x, entry.pivot.y),
-        sprite_bound_size: (entry.rect.w as f32 / ppu, entry.rect.h as f32 / ppu),
+        sprite_bound_size: (entry.rect.w as f32 / effective_ppu, entry.rect.h as f32 / effective_ppu),
         part_pivot: (part_pivot[0], part_pivot[1]),
         border_mult,
         affine,
@@ -1457,7 +1464,10 @@ pub fn build_combined<F>(
     ppu: f32,
 ) -> Result<CombinedMesh, CombineError>
 where
-    F: FnMut(&str) -> Option<SpriteEntry>,
+    // Returns (sprite_entry, invert_scale = 1 / .tps spriteScale) for each
+    // referenced part name. Both pieces come from the same pipeline tier
+    // (tpsheet + tps), so the caller can resolve them together.
+    F: FnMut(&str) -> Option<(SpriteEntry, f32)>,
 {
     let mut all_verts: Vec<[f32; 2]> = Vec::new();
     let mut all_uvs: Vec<[f32; 2]> = Vec::new();
@@ -1469,7 +1479,7 @@ where
             Part::AtlasSprite { sprite, .. } => sprite,
             Part::Polygon { polygon_sprite, .. } => polygon_sprite,
         };
-        let entry = resolve(source_name).ok_or_else(|| CombineError::SpriteNotFound {
+        let (entry, invert_scale) = resolve(source_name).ok_or_else(|| CombineError::SpriteNotFound {
             combined: combined.name.clone(),
             sprite: source_name.clone(),
         })?;
@@ -1486,7 +1496,7 @@ where
         let part_mesh = match part {
             Part::AtlasSprite { method, size, part_pivot, border_mult, affine, .. } => {
                 check_method_constraints(*method, &entry, &combined.name, source_name)?;
-                atlas_sprite_mesh(&entry, *method, *size, *part_pivot, *border_mult, *affine, atlas, ppu)
+                atlas_sprite_mesh(&entry, *method, *size, *part_pivot, *border_mult, *affine, atlas, ppu, invert_scale)
             }
             Part::Polygon { vertices, triangles, affine, .. } => {
                 polygon_mesh_with_tris(vertices, triangles.as_deref(), *affine, entry.rect, atlas)
@@ -1626,7 +1636,7 @@ mod tests {
         let m = atlas_sprite_mesh(
             &entry, Method::Id, None, [0.5, 0.5], 1.0, Affine::default(),
             AtlasSize { width: 100, height: 100 },
-            100.0,
+            100.0, 1.0,
         );
         assert_eq!(m.verts, vec![
             [-0.01, -0.02], [0.01, -0.02], [-0.01, 0.02], [0.01, 0.02],
@@ -1644,7 +1654,7 @@ mod tests {
             &entry, Method::Id, None, [0.5, 0.5], 1.0,
             Affine { tx: 5.0, ty: 7.0, ..Affine::default() },
             AtlasSize { width: 16, height: 16 },
-            1.0,
+            1.0, 1.0,
         );
         // pivot pixel = (1, 1). local verts pre-translate:
         //   (-1, -1), (1, -1), (-1, 1), (1, 1).
@@ -1663,7 +1673,7 @@ mod tests {
         let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
             &entry, Method::Mx, Some((4.0, 2.0)), [0.5, 0.5], 1.0, Affine::default(),
-            AtlasSize { width: 8, height: 8 }, 1.0,
+            AtlasSize { width: 8, height: 8 }, 1.0, 1.0,
         );
         assert_eq!(m.verts.len(), 8, "2× source verts");
         assert_eq!(m.tris.len(), 12, "2× indices");
@@ -1681,7 +1691,7 @@ mod tests {
         let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
             &entry, Method::Mx, Some((4.0, 2.0)), [0.5, 0.5], 1.0, Affine::default(),
-            AtlasSize { width: 8, height: 8 }, 1.0,
+            AtlasSize { width: 8, height: 8 }, 1.0, 1.0,
         );
         // First copy bottom-left: src (0,0) → pivot-rel (-1,-1) → scale (1,1) → translate (1,1) → slice (0,0) → offset (0,-1) → (0,-1).
         assert_eq!(m.verts[0], [0.0, -1.0]);
@@ -1697,7 +1707,7 @@ mod tests {
         let entry = quad_entry(10, 20, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
             &entry, Method::Mx, Some((4.0, 2.0)), [0.5, 0.5], 1.0, Affine::default(),
-            AtlasSize { width: 100, height: 100 }, 1.0,
+            AtlasSize { width: 100, height: 100 }, 1.0, 1.0,
         );
         assert_eq!(m.uvs[..4], m.uvs[4..]);
     }
@@ -1707,7 +1717,7 @@ mod tests {
         let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
             &entry, Method::My, Some((2.0, 4.0)), [0.5, 0.5], 1.0, Affine::default(),
-            AtlasSize { width: 8, height: 8 }, 1.0,
+            AtlasSize { width: 8, height: 8 }, 1.0, 1.0,
         );
         // First copy (Y+): src (0,0) → (-1,-1) * (1,1) + (1,1) = (0,0); + offset (-1,0) → (-1, 0). Wait, mirror_pivot = (0, 0.5), rect_pivot = (0.5, 0.5).
         // offset = (0 - 0.5, 0.5 - 0.5) * (2, 4) = (-1, 0).
@@ -1727,7 +1737,7 @@ mod tests {
         let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
             &entry, Method::Mxy, Some((4.0, 4.0)), [0.5, 0.5], 1.0, Affine::default(),
-            AtlasSize { width: 8, height: 8 }, 1.0,
+            AtlasSize { width: 8, height: 8 }, 1.0, 1.0,
         );
         assert_eq!(m.verts.len(), 16, "4× source");
         assert_eq!(m.tris.len(), 24);
@@ -1814,7 +1824,7 @@ mod tests {
         let entry = quad_entry(0, 0, 1, 1, (0.5, 0.5));
         let m = atlas_sprite_mesh(
             &entry, Method::Tx, Some((4.0, 2.0)), [0.5, 0.5], 1.0, Affine::default(),
-            AtlasSize { width: 8, height: 8 }, 1.0,
+            AtlasSize { width: 8, height: 8 }, 1.0, 1.0,
         );
         assert_eq!(m.verts.len(), 10, "5 vert pairs for cols_half=2");
         // BuildStrapIndices: 2 forward + 1 centre-seam + 1 backward = 4 quads
@@ -1837,7 +1847,7 @@ mod tests {
         let entry = quad_entry(0, 0, 1, 1, (0.5, 0.5));
         let m = atlas_sprite_mesh(
             &entry, Method::Ty, Some((2.0, 4.0)), [0.5, 0.5], 1.0, Affine::default(),
-            AtlasSize { width: 8, height: 8 }, 1.0,
+            AtlasSize { width: 8, height: 8 }, 1.0, 1.0,
         );
         assert_eq!(m.verts.len(), 10);
         assert_eq!(m.tris.len(), 24);
@@ -1855,7 +1865,7 @@ mod tests {
         let entry = quad_entry(10, 0, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
             &entry, Method::Tx, Some((4.0, 2.0)), [0.5, 0.5], 1.0, Affine::default(),
-            AtlasSize { width: 100, height: 100 }, 1.0,
+            AtlasSize { width: 100, height: 100 }, 1.0, 1.0,
         );
         // u_min = rect.x / atlas_w = 10 / 100 = 0.1.
         assert!((m.uvs[0][0] - 0.1).abs() < 1e-6);
@@ -1885,7 +1895,7 @@ mod tests {
             border_mult: 1.0, affine: Affine::default(),
         }]);
         let err = build_combined(
-            &combined, |_| Some(entry.clone()),
+            &combined, |_| Some((entry.clone(), 1.0)),
             AtlasSize { width: 16, height: 16 }, 1.0,
         ).unwrap_err();
         assert!(matches!(err, CombineError::SliceConstraint { method: Method::TxMc3, .. }), "{err:?}");
@@ -1900,7 +1910,7 @@ mod tests {
             border_mult: 1.0, affine: Affine::default(),
         }]);
         let err = build_combined(
-            &combined, |_| Some(entry.clone()),
+            &combined, |_| Some((entry.clone(), 1.0)),
             AtlasSize { width: 16, height: 16 }, 1.0,
         ).unwrap_err();
         assert!(matches!(err, CombineError::SliceConstraint { .. }), "{err:?}");
@@ -1914,7 +1924,7 @@ mod tests {
         let entry = quad_entry_with_border(0, 0, 4, 4, (0.5, 0.5), 0, 4);
         let m = atlas_sprite_mesh(
             &entry, Method::TxMc3, Some((8.0, 4.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0,
         );
         assert_eq!(m.verts.len(), 8);
         assert_eq!(m.tris.len(), 18);
@@ -1931,7 +1941,7 @@ mod tests {
         let entry = quad_entry_with_border(0, 0, 4, 4, (0.5, 0.5), 0, 4);
         let m = atlas_sprite_mesh(
             &entry, Method::TxMc3, Some((8.0, 4.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0,
         );
         // u_max = (0 + 4) / 16 = 0.25. Verts 0/1 are col 0 (left outer).
         assert!((m.uvs[0][0] - 0.25).abs() < 1e-6, "{:?}", m.uvs[0]);
@@ -1950,7 +1960,7 @@ mod tests {
         entry.border = crate::tpsheet::Border { left: 2, bottom: 0, right: 2, top: 0 };
         let m = atlas_sprite_mesh(
             &entry, Method::R1c3, Some((8.0, 2.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0,
         );
         assert_eq!(m.verts.len(), 8);
         assert_eq!(m.tris.len(), 18, "3 quads × 6 indices");
@@ -1962,7 +1972,7 @@ mod tests {
         entry.border = crate::tpsheet::Border { left: 2, bottom: 0, right: 2, top: 0 };
         let m = atlas_sprite_mesh(
             &entry, Method::R1c3, Some((8.0, 2.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0,
         );
         // Verts 1 and 2 (inner cols on bottom row) share U.
         assert_eq!(m.uvs[1][0], m.uvs[2][0]);
@@ -1981,7 +1991,7 @@ mod tests {
             border_mult: 1.0, affine: Affine::default(),
         }]);
         let err = build_combined(
-            &combined, |_| Some(entry.clone()),
+            &combined, |_| Some((entry.clone(), 1.0)),
             AtlasSize { width: 16, height: 16 }, 1.0,
         ).unwrap_err();
         assert!(matches!(err, CombineError::SliceConstraint { method: Method::R1c3, .. }), "{err:?}");
@@ -2005,7 +2015,7 @@ mod tests {
             size: Some((8.0, 8.0)), part_pivot: [0.5, 0.5],
             border_mult: 1.0, affine: Affine::default(),
         }]);
-        let err = build_combined(&combined, |_| Some(e.clone()),
+        let err = build_combined(&combined, |_| Some((e.clone(), 1.0)),
             AtlasSize { width: 16, height: 16 }, 1.0).unwrap_err();
         assert!(matches!(err, CombineError::SliceConstraint { method: Method::MxyR3c3, .. }));
     }
@@ -2015,7 +2025,7 @@ mod tests {
         let e = mxy_satisfying_entry();
         let m = atlas_sprite_mesh(
             &e, Method::MxyR3c3, Some((8.0, 8.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0,
         );
         assert_eq!(m.verts.len(), 16);
         assert_eq!(m.tris.len(), 54);
@@ -2026,7 +2036,7 @@ mod tests {
         let e = mxy_satisfying_entry();
         let m = atlas_sprite_mesh(
             &e, Method::MxyR3c3Nf, Some((8.0, 8.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0,
         );
         assert_eq!(m.tris.len(), 48, "8 quads × 6 indices");
     }
@@ -2037,7 +2047,7 @@ mod tests {
         let e = mxy_satisfying_entry();
         let m = atlas_sprite_mesh(
             &e, Method::MxyR3c3, Some((8.0, 8.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0,
         );
         let grid = UvGrid::for_entry(&e, AtlasSize { width: 16, height: 16 }, 1.0);
         for uv in &m.uvs {
@@ -2064,7 +2074,7 @@ mod tests {
         e.border = crate::tpsheet::Border { left: 0, bottom: 0, right: 2, top: 0 };
         let m = atlas_sprite_mesh(
             &e, Method::MxR1c4, Some((10.0, 4.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0,
         );
         assert_eq!(m.verts.len(), 10);
         assert_eq!(m.tris.len(), 24, "4 quads × 6 indices");
@@ -2076,7 +2086,7 @@ mod tests {
         e.border = crate::tpsheet::Border { left: 0, bottom: 0, right: 2, top: 0 };
         let m = atlas_sprite_mesh(
             &e, Method::MxR1c4, Some((10.0, 4.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0,
         );
         // Bottom row: u3, u2, u0, u2, u3 (mirror around col index 2).
         let grid = UvGrid::for_entry(&e, AtlasSize { width: 16, height: 16 }, 1.0);
@@ -2093,7 +2103,7 @@ mod tests {
         e.border = crate::tpsheet::Border { left: 0, bottom: 1, right: 4, top: 3 };
         let m = atlas_sprite_mesh(
             &e, Method::MxR3c2, Some((8.0, 8.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0,
         );
         assert_eq!(m.verts.len(), 12);
         assert_eq!(m.tris.len(), 36);
@@ -2105,7 +2115,7 @@ mod tests {
         e.border = crate::tpsheet::Border { left: 0, bottom: 1, right: 2, top: 1 };
         let m = atlas_sprite_mesh(
             &e, Method::MxR3c4, Some((10.0, 8.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0,
         );
         assert_eq!(m.verts.len(), 20);
         assert_eq!(m.tris.len(), 72, "12 quads × 6 indices");
@@ -2117,7 +2127,7 @@ mod tests {
         e.border = crate::tpsheet::Border { left: 1, bottom: 1, right: 1, top: 1 };
         let m = atlas_sprite_mesh(
             &e, Method::MxR3c6, Some((10.0, 8.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0,
         );
         assert_eq!(m.verts.len(), 28);
         assert_eq!(m.tris.len(), 108, "18 quads × 6 indices");
@@ -2132,7 +2142,7 @@ mod tests {
             size: Some((10.0, 4.0)), part_pivot: [0.5, 0.5],
             border_mult: 1.0, affine: Affine::default(),
         }]);
-        let err = build_combined(&combined, |_| Some(e.clone()),
+        let err = build_combined(&combined, |_| Some((e.clone(), 1.0)),
             AtlasSize { width: 16, height: 16 }, 1.0).unwrap_err();
         assert!(matches!(err, CombineError::SliceConstraint { method: Method::MxR1c4, .. }));
     }
@@ -2145,7 +2155,7 @@ mod tests {
         e.border = crate::tpsheet::Border { left: 0, bottom: 0, right: 0, top: 4 };
         let m = atlas_sprite_mesh(
             &e, Method::MyR3c1, Some((4.0, 8.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0,
         );
         assert_eq!(m.verts.len(), 8);
         assert_eq!(m.tris.len(), 18);
@@ -2157,7 +2167,7 @@ mod tests {
         e.border = crate::tpsheet::Border { left: 0, bottom: 0, right: 0, top: 4 };
         let m = atlas_sprite_mesh(
             &e, Method::MyR3c1, Some((4.0, 8.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0,
         );
         let grid = UvGrid::for_entry(&e, AtlasSize { width: 16, height: 16 }, 1.0);
         // Outer rows (0/3) sample v3; inner rows (1/2) sample v0.
@@ -2175,7 +2185,7 @@ mod tests {
         e.border = crate::tpsheet::Border { left: 0, bottom: 0, right: 4, top: 4 };
         let m = atlas_sprite_mesh(
             &e, Method::MyR2c2, Some((8.0, 8.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0,
         );
         assert_eq!(m.verts.len(), 9);
         assert_eq!(m.tris.len(), 24, "4 quads × 6 indices");
@@ -2187,7 +2197,7 @@ mod tests {
         e.border = crate::tpsheet::Border { left: 0, bottom: 0, right: 4, top: 4 };
         let m = atlas_sprite_mesh(
             &e, Method::MyR2c2, Some((8.0, 8.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0,
         );
         let grid = UvGrid::for_entry(&e, AtlasSize { width: 16, height: 16 }, 1.0);
         for row in 0..3 {
@@ -2204,7 +2214,7 @@ mod tests {
         e.border = crate::tpsheet::Border { left: 1, bottom: 0, right: 3, top: 4 };
         let m = atlas_sprite_mesh(
             &e, Method::MyR2c3, Some((8.0, 4.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0,
         );
         assert_eq!(m.verts.len(), 12);
         assert_eq!(m.tris.len(), 36, "6 quads × 6 indices");
@@ -2216,7 +2226,7 @@ mod tests {
         e.border = crate::tpsheet::Border { left: 0, bottom: 0, right: 4, top: 4 };
         let m = atlas_sprite_mesh(
             &e, Method::MyR3c2, Some((8.0, 8.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0,
         );
         assert_eq!(m.verts.len(), 12);
         assert_eq!(m.tris.len(), 36);
@@ -2232,7 +2242,7 @@ mod tests {
             size: Some((4.0, 8.0)), part_pivot: [0.5, 0.5],
             border_mult: 1.0, affine: Affine::default(),
         }]);
-        let err = build_combined(&combined, |_| Some(e.clone()),
+        let err = build_combined(&combined, |_| Some((e.clone(), 1.0)),
             AtlasSize { width: 16, height: 16 }, 1.0).unwrap_err();
         assert!(matches!(err, CombineError::SliceConstraint { method: Method::MyR3c1, .. }));
     }
@@ -2256,7 +2266,7 @@ mod tests {
             size: Some((8.0, 8.0)), part_pivot: [0.5, 0.5],
             border_mult: 1.0, affine: Affine::default(),
         }]);
-        let err = build_combined(&combined, |_| Some(e.clone()),
+        let err = build_combined(&combined, |_| Some((e.clone(), 1.0)),
             AtlasSize { width: 16, height: 16 }, 1.0).unwrap_err();
         assert!(matches!(err, CombineError::SliceConstraint { method: Method::MyR3c3, .. }));
     }
@@ -2266,7 +2276,7 @@ mod tests {
         let e = my_satisfying_entry(4);
         let m = atlas_sprite_mesh(
             &e, Method::MyR3c3, Some((8.0, 8.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0,
         );
         assert_eq!(m.verts.len(), 16);
         assert_eq!(m.tris.len(), 54);
@@ -2277,7 +2287,7 @@ mod tests {
         let e = my_satisfying_entry(4);
         let m = atlas_sprite_mesh(
             &e, Method::MyR3c3, Some((8.0, 8.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0,
         );
         let grid = UvGrid::for_entry(&e, AtlasSize { width: 16, height: 16 }, 1.0);
         // Row 0 (bottom-of-target) samples v3 (atlas-top); same for row 3 (top).
@@ -2315,7 +2325,7 @@ mod tests {
             size: Some((8.0, 2.0)), part_pivot: [0.5, 0.5],
             border_mult: 1.0, affine: Affine::default(),
         }]);
-        let err = build_combined(&combined, |_| Some(e.clone()),
+        let err = build_combined(&combined, |_| Some((e.clone(), 1.0)),
             AtlasSize { width: 16, height: 16 }, 1.0).unwrap_err();
         assert!(matches!(err, CombineError::SliceConstraint { method: Method::MxR1c3, .. }));
     }
@@ -2325,7 +2335,7 @@ mod tests {
         let e = mx_satisfying_entry(4);
         let m = atlas_sprite_mesh(
             &e, Method::MxR1c3, Some((8.0, 2.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0,
         );
         let grid = UvGrid::for_entry(&e, AtlasSize { width: 16, height: 16 }, 1.0);
         // Bottom row: outer-cols 0,3 → u3; inner-cols 1,2 → u0.
@@ -2343,7 +2353,7 @@ mod tests {
         let e = mx_satisfying_entry(4);
         let m = atlas_sprite_mesh(
             &e, Method::MxR3c3, Some((8.0, 4.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0,
         );
         assert_eq!(m.verts.len(), 16);
         assert_eq!(m.tris.len(), 54);
@@ -2354,7 +2364,7 @@ mod tests {
         let e = mx_satisfying_entry(4);
         let m = atlas_sprite_mesh(
             &e, Method::MxR3c3, Some((8.0, 4.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0,
         );
         let grid = UvGrid::for_entry(&e, AtlasSize { width: 16, height: 16 }, 1.0);
         // Each row's UVs: outer cols → u3, inner cols → u0.
@@ -2385,7 +2395,7 @@ mod tests {
         };
         let m = atlas_sprite_mesh(
             &entry, Method::R3c3, Some((16.0, 16.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0,
         );
         assert_eq!(m.verts.len(), 16, "4×4 grid");
         // 3×3 = 9 quads, 54 indices.
@@ -2402,7 +2412,7 @@ mod tests {
         };
         let m = atlas_sprite_mesh(
             &entry, Method::R3c3, Some((16.0, 16.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0,
         );
         // Bottom-left corner of grid (index 0) = target rect BL = (-8, -8).
         assert_eq!(m.verts[0], [-8.0, -8.0]);
@@ -2425,7 +2435,7 @@ mod tests {
         };
         let m = atlas_sprite_mesh(
             &entry, Method::R3c3, Some((16.0, 16.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0,
         );
         // (col=0, row=0) outer-min, outer-min
         assert_eq!(m.uvs[0], [0.0, 0.0]);
@@ -2444,7 +2454,7 @@ mod tests {
         };
         let m = atlas_sprite_mesh(
             &entry, Method::R3c3Nf, Some((16.0, 16.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0,
         );
         // 8 quads * 6 indices = 48 (vs R3C3's 54).
         assert_eq!(m.tris.len(), 48);
@@ -2470,7 +2480,7 @@ mod tests {
         let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
             &entry, Method::Mx, None, [0.5, 0.5], 1.0, Affine::default(),
-            AtlasSize { width: 8, height: 8 }, 1.0,
+            AtlasSize { width: 8, height: 8 }, 1.0, 1.0,
         );
         assert_eq!(m.verts.len(), 8);
         assert_eq!(m.tris.len(), 12);
@@ -2487,7 +2497,7 @@ mod tests {
         let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
             &entry, Method::My, None, [0.5, 0.5], 1.0, Affine::default(),
-            AtlasSize { width: 8, height: 8 }, 1.0,
+            AtlasSize { width: 8, height: 8 }, 1.0, 1.0,
         );
         assert_eq!(m.verts.len(), 8);
         assert_eq!(m.verts[4..], [[-1.0, 1.0], [1.0, 1.0], [-1.0, -1.0], [1.0, -1.0]]);
@@ -2498,7 +2508,7 @@ mod tests {
         let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
             &entry, Method::Mxy, None, [0.5, 0.5], 1.0, Affine::default(),
-            AtlasSize { width: 8, height: 8 }, 1.0,
+            AtlasSize { width: 8, height: 8 }, 1.0, 1.0,
         );
         assert_eq!(m.verts.len(), 16);
         assert_eq!(m.tris.len(), 24);
@@ -2531,7 +2541,7 @@ mod tests {
         ]);
         let m = build_combined(
             &combined,
-            |n| match n { "A" => Some(a.clone()), "B" => Some(b.clone()), _ => None },
+            |n| match n { "A" => Some((a.clone(), 1.0)), "B" => Some((b.clone(), 1.0)), _ => None },
             AtlasSize { width: 16, height: 16 },
             1.0,
         ).unwrap();
@@ -2552,7 +2562,7 @@ mod tests {
         ]);
         let m = build_combined(
             &combined,
-            |n| match n { "A" => Some(a.clone()), "B" => Some(b.clone()), _ => None },
+            |n| match n { "A" => Some((a.clone(), 1.0)), "B" => Some((b.clone(), 1.0)), _ => None },
             AtlasSize { width: 64, height: 64 },
             1.0,
         ).unwrap();
@@ -2569,7 +2579,7 @@ mod tests {
         ]);
         let m = build_combined(
             &combined,
-            |_| Some(a.clone()),
+            |_| Some((a.clone(), 1.0)),
             AtlasSize { width: 16, height: 16 },
             1.0,
         ).unwrap();

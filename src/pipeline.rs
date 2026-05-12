@@ -214,6 +214,7 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
         emit_combined_sprites(
             manifest,
             &sheet,
+            &tps_data,
             input,
             atlas_size,
             &atlas_guid,
@@ -394,6 +395,7 @@ fn collect_part_names(m: &fab::Manifest) -> HashSet<String> {
 fn emit_combined_sprites(
     manifest: &fab::Manifest,
     sheet: &tpsheet::Sheet,
+    tps_data: &tps::TpsData,
     input: &GenerateInputs,
     atlas_size: AtlasSize,
     atlas_guid: &[u8; 16],
@@ -418,7 +420,7 @@ fn emit_combined_sprites(
 
         let mesh = combine::build_combined(
             c,
-            |name| sprite_by_name.get(name).map(|s| (*s).clone()),
+            |name| sprite_by_name.get(name).map(|s| ((*s).clone(), tps_data.invert_scale(name))),
             combine_atlas,
             input.ppu,
         ).map_err(Error::Combine)?;

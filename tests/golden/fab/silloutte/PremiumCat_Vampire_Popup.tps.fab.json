@@ -9,13 +9,13 @@
           "triangles": [0, 2, 3, 3, 1, 0],
           "tx": 0, "ty": -0.2225 },
         { "sprite": "Mansion_Silloutte__1__B", "method": "MX",
-          "sx": 1.25, "sy": 1.25, "tx": 0, "ty": -2.9475 },
+          "tx": 0, "ty": -2.9475 },
         { "sprite": "Mansion_Silloutte__1__S", "method": "ID",
-          "sx": 1.25, "sy": 1.25, "tx": 1.0625, "ty": -0.265 },
+          "tx": 1.0625, "ty": -0.265 },
         { "sprite": "Mansion_Silloutte__1__S", "method": "ID",
-          "sx": -1.25, "sy": 1.25, "tx": -1.0625, "ty": -0.265 },
+          "sx": -1, "tx": -1.0625, "ty": -0.265 },
         { "sprite": "Mansion_Silloutte__1__T", "method": "MX",
-          "sx": 1.25, "sy": 1.25, "tx": 0, "ty": 2.5025 }
+          "tx": 0, "ty": 2.5025 }
       ]
     }
   ]
