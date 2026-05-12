@@ -1,6 +1,6 @@
 # unity-sprite-author
 
-> **Related:** [[TODO.md]], [[BENCHMARKS.md]], [[fab.md]]
+> **Related:** [[TODO.md]], [[BENCHMARKS.md]], [[fab.md]], [[unity-probes.md]]
 
 Rust `rlib` consumed by meow-tower via the shared **BoxcatBridge** cdylib (see `Packages/com.boxcat.libs/Native~/bridge/` in `meow-tower`). Authors Unity Sprite `.asset` files byte-exactly from a TexturePacker `.tpsheet` + `.tps` + atlas `.png`.
 
