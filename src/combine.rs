@@ -40,7 +40,6 @@ pub struct AtlasSize {
 #[derive(Debug)]
 pub enum CombineError {
     SpriteNotFound { combined: String, sprite: String },
-    MethodUnimplemented { combined: String, sprite: String, method: Method },
     SliceConstraint { combined: String, sprite: String, method: Method, reason: &'static str },
 }
 
@@ -49,9 +48,6 @@ impl fmt::Display for CombineError {
         match self {
             Self::SpriteNotFound { combined, sprite } => write!(
                 f, "combined {combined:?}: sprite {sprite:?} not found in tpsheet",
-            ),
-            Self::MethodUnimplemented { combined, sprite, method } => write!(
-                f, "combined {combined:?} part {sprite:?}: method {method} not implemented yet",
             ),
             Self::SliceConstraint { combined, sprite, method, reason } => write!(
                 f, "combined {combined:?} part {sprite:?} (method {method}): {reason}",
@@ -96,16 +92,6 @@ pub fn calc_rect_and_pivot(verts: &[[f32; 2]], ppu: f32) -> ((f32, f32), (f32, f
     ((w * ppu, h * ppu), (pivot_x, pivot_y))
 }
 
-fn is_method_supported(m: Method) -> bool {
-    matches!(m, Method::Id | Method::Mx | Method::My | Method::Mxy
-              | Method::Tx | Method::Ty | Method::TxMc3
-              | Method::R1c3 | Method::R3c3 | Method::R3c3Nf
-              | Method::MxR1c3 | Method::MxR3c3
-              | Method::MyR2c2 | Method::MyR2c3 | Method::MyR3c1
-              | Method::MyR3c2 | Method::MyR3c3
-              | Method::MxyR3c3 | Method::MxyR3c3Nf)
-}
-
 // Source-rect / border constraints asserted by each slice method in
 // UISliceMeshGen.cs + Tiling.cs. The fab.rs parser has no tpsheet access,
 // so these checks fire at build time instead — same `fail loud` outcome,
@@ -138,6 +124,37 @@ fn check_method_constraints(
         // atlas region).
         if entry.border.left + entry.border.right != entry.rect.w as i32 {
             return Err(err("R1C3 requires border.left + border.right == sprite.rect.width"));
+        }
+    }
+    if matches!(method, Method::MxR1c4) {
+        // border: left=0, right>0, bottom=0, top=0.
+        if entry.border.left != 0 || entry.border.bottom != 0 || entry.border.top != 0 {
+            return Err(err("MX_R1C4 requires border.{left, bottom, top} == 0"));
+        }
+        if entry.border.right <= 0 {
+            return Err(err("MX_R1C4 requires border.right > 0"));
+        }
+    }
+    if matches!(method, Method::MxR3c2) {
+        // X: left=0, right=width. Y: top+bottom == height.
+        if entry.border.left != 0 || entry.border.right as u32 != entry.rect.w {
+            return Err(err("MX_R3C2 requires border.left == 0 AND border.right == sprite.rect.width"));
+        }
+        if entry.border.bottom + entry.border.top != entry.rect.h as i32 {
+            return Err(err("MX_R3C2 requires border.bottom + border.top == sprite.rect.height"));
+        }
+    }
+    if matches!(method, Method::MxR3c4) {
+        // X: left=0, right>0. Y: free (uses bottom/top as 9-slice).
+        if entry.border.left != 0 || entry.border.right <= 0 {
+            return Err(err("MX_R3C4 requires border.left == 0 AND border.right > 0"));
+        }
+    }
+    if matches!(method, Method::MxR3c6) {
+        // No explicit C# asserts; we still need a sensible default. Require
+        // positive right border so x1/x5 don't collapse.
+        if entry.border.right <= 0 {
+            return Err(err("MX_R3C6 requires border.right > 0"));
         }
     }
     if matches!(method, Method::MxR1c3 | Method::MxR3c3) {
@@ -293,7 +310,11 @@ pub fn atlas_sprite_mesh(
         Method::R3c3 => slice_r3c3(entry, atlas, ppu, &ctx, size.expect("r3c3 size"), false),
         Method::R3c3Nf => slice_r3c3(entry, atlas, ppu, &ctx, size.expect("r3c3_nf size"), true),
         Method::MxR1c3 => slice_mx_r1c3(entry, atlas, ppu, &ctx, size.expect("mx_r1c3 size")),
+        Method::MxR1c4 => slice_mx_r1c4(entry, atlas, ppu, &ctx, size.expect("mx_r1c4 size")),
+        Method::MxR3c2 => slice_mx_r3c2(entry, atlas, ppu, &ctx, size.expect("mx_r3c2 size")),
         Method::MxR3c3 => slice_mx_r3c3(entry, atlas, ppu, &ctx, size.expect("mx_r3c3 size")),
+        Method::MxR3c4 => slice_mx_r3c4(entry, atlas, ppu, &ctx, size.expect("mx_r3c4 size")),
+        Method::MxR3c6 => slice_mx_r3c6(entry, atlas, ppu, &ctx, size.expect("mx_r3c6 size")),
         Method::MyR3c1 => slice_my_r3c1(entry, atlas, ppu, &ctx, size.expect("my_r3c1 size")),
         Method::MyR2c2 => slice_my_r2c2(entry, atlas, ppu, &ctx, size.expect("my_r2c2 size")),
         Method::MyR2c3 => slice_my_r2c3(entry, atlas, ppu, &ctx, size.expect("my_r2c3 size")),
@@ -301,7 +322,6 @@ pub fn atlas_sprite_mesh(
         Method::MyR3c3 => slice_my_r3c3(entry, atlas, ppu, &ctx, size.expect("my_r3c3 size")),
         Method::MxyR3c3 => slice_mxy_r3c3(entry, atlas, ppu, &ctx, size.expect("mxy_r3c3 size"), false),
         Method::MxyR3c3Nf => slice_mxy_r3c3(entry, atlas, ppu, &ctx, size.expect("mxy_r3c3_nf size"), true),
-        _ => panic!("method {method} not implemented"),
     }
 }
 
@@ -836,6 +856,182 @@ fn slice_mxy_r3c3(
     PartMesh { verts, uvs, tris }
 }
 
+// MX_R1C4: 2 rows × 5 cols, mirror-X with double centre column. 10 verts,
+// 4 quads. C# ignores borderMult (hardcodes 1); we honor ctx.border_mult
+// for consistency with sibling methods. Constraint: borders all 0 except
+// right > 0.
+fn slice_mx_r1c4(
+    entry: &SpriteEntry,
+    atlas: AtlasSize,
+    ppu: f32,
+    ctx: &SliceCtx,
+    target: (f32, f32),
+) -> PartMesh {
+    let (target_w, target_h) = target;
+    let x_min = -target_w * ctx.part_pivot.0;
+    let x_max = target_w * (1.0 - ctx.part_pivot.0);
+    let y_min = -target_h * ctx.part_pivot.1;
+    let y_max = target_h * (1.0 - ctx.part_pivot.1);
+    let br = entry.border.right as f32 * ctx.border_mult / ppu;
+
+    let xs = [x_min, x_min + br, (x_min + x_max) * 0.5, x_max - br, x_max];
+    let ys = [y_min, y_max];
+    let mut verts_local: Vec<[f32; 2]> = Vec::with_capacity(10);
+    for &yy in &ys {
+        for &xx in &xs {
+            verts_local.push([xx, yy]);
+        }
+    }
+
+    let grid = UvGrid::for_entry(entry, atlas, ctx.border_mult);
+    // Row 0: u3, u2, u0, u2, u3 (mirror about centre at u0).
+    // Row 1: same pattern with v3.
+    let col_u = [grid.u[3], grid.u[2], grid.u[0], grid.u[2], grid.u[3]];
+    let row_v = [grid.v[0], grid.v[3]];
+    let mut uvs: Vec<[f32; 2]> = Vec::with_capacity(10);
+    for &vv in &row_v {
+        for &uu in &col_u {
+            uvs.push([uu, vv]);
+        }
+    }
+
+    let tris = create_grid_indices(1, 4);
+    let verts: Vec<[f32; 2]> = verts_local.iter().map(|v| apply_affine(*v, ctx.affine)).collect();
+    PartMesh { verts, uvs, tris }
+}
+
+// MX_R3C2: 4 rows × 3 cols, mirror-X + vertical 9-slice. 12 verts, 6 quads.
+// Constraint: X left=0, right=width; Y bottom+top=height.
+fn slice_mx_r3c2(
+    entry: &SpriteEntry,
+    atlas: AtlasSize,
+    ppu: f32,
+    ctx: &SliceCtx,
+    target: (f32, f32),
+) -> PartMesh {
+    let (target_w, target_h) = target;
+    let x_min = -target_w * ctx.part_pivot.0;
+    let x_max = target_w * (1.0 - ctx.part_pivot.0);
+    let y_min = -target_h * ctx.part_pivot.1;
+    let y_max = target_h * (1.0 - ctx.part_pivot.1);
+    let bb = entry.border.bottom as f32 * ctx.border_mult / ppu;
+    let bt = entry.border.top as f32 * ctx.border_mult / ppu;
+
+    let xs = [x_min, (x_min + x_max) * 0.5, x_max];
+    let ys = [y_min, y_min + bb, y_max - bt, y_max];
+    let mut verts_local: Vec<[f32; 2]> = Vec::with_capacity(12);
+    for &yy in &ys {
+        for &xx in &xs {
+            verts_local.push([xx, yy]);
+        }
+    }
+
+    let grid = UvGrid::for_entry(entry, atlas, ctx.border_mult);
+    // Cols (3): outer=u3, centre=u0, outer=u3 (mirror around centre).
+    let col_u = [grid.u[3], grid.u[0], grid.u[3]];
+    let mut uvs: Vec<[f32; 2]> = Vec::with_capacity(12);
+    for row in 0..4 {
+        let vv = grid.v[row];
+        for &uu in &col_u {
+            uvs.push([uu, vv]);
+        }
+    }
+
+    let tris = create_grid_indices(3, 2);
+    let verts: Vec<[f32; 2]> = verts_local.iter().map(|v| apply_affine(*v, ctx.affine)).collect();
+    PartMesh { verts, uvs, tris }
+}
+
+// MX_R3C4: 4 rows × 5 cols, mirror-X + full vertical 9-slice. 20 verts,
+// 12 quads. Constraint: X left=0, right>0 (no Y constraint).
+fn slice_mx_r3c4(
+    entry: &SpriteEntry,
+    atlas: AtlasSize,
+    ppu: f32,
+    ctx: &SliceCtx,
+    target: (f32, f32),
+) -> PartMesh {
+    let (target_w, target_h) = target;
+    let x_min = -target_w * ctx.part_pivot.0;
+    let x_max = target_w * (1.0 - ctx.part_pivot.0);
+    let y_min = -target_h * ctx.part_pivot.1;
+    let y_max = target_h * (1.0 - ctx.part_pivot.1);
+    let br = entry.border.right as f32 * ctx.border_mult / ppu;
+    let bb = entry.border.bottom as f32 * ctx.border_mult / ppu;
+    let bt = entry.border.top as f32 * ctx.border_mult / ppu;
+
+    let xs = [x_min, x_min + br, (x_min + x_max) * 0.5, x_max - br, x_max];
+    let ys = [y_min, y_min + bb, y_max - bt, y_max];
+    let mut verts_local: Vec<[f32; 2]> = Vec::with_capacity(20);
+    for &yy in &ys {
+        for &xx in &xs {
+            verts_local.push([xx, yy]);
+        }
+    }
+
+    let grid = UvGrid::for_entry(entry, atlas, ctx.border_mult);
+    // Per SetUp_MX_R3C4: per-row UV pattern (u3, u2, u0, u2, u3) with v
+    // running through grid.v[0..3]. Row index → grid.v[row].
+    let col_u = [grid.u[3], grid.u[2], grid.u[0], grid.u[2], grid.u[3]];
+    let mut uvs: Vec<[f32; 2]> = Vec::with_capacity(20);
+    for row in 0..4 {
+        let vv = grid.v[row];
+        for &uu in &col_u {
+            uvs.push([uu, vv]);
+        }
+    }
+
+    let tris = create_grid_indices(3, 4);
+    let verts: Vec<[f32; 2]> = verts_local.iter().map(|v| apply_affine(*v, ctx.affine)).collect();
+    PartMesh { verts, uvs, tris }
+}
+
+// MX_R3C6: 4 rows × 7 cols, double-mirror-X + 9-slice. 28 verts, 18 quads.
+// Uses both border.x (inner) and border.z (outer) to split into 6 columns.
+fn slice_mx_r3c6(
+    entry: &SpriteEntry,
+    atlas: AtlasSize,
+    ppu: f32,
+    ctx: &SliceCtx,
+    target: (f32, f32),
+) -> PartMesh {
+    let (target_w, target_h) = target;
+    let x_min = -target_w * ctx.part_pivot.0;
+    let x_max = target_w * (1.0 - ctx.part_pivot.0);
+    let y_min = -target_h * ctx.part_pivot.1;
+    let y_max = target_h * (1.0 - ctx.part_pivot.1);
+    let bl = entry.border.left as f32 * ctx.border_mult / ppu;
+    let br = entry.border.right as f32 * ctx.border_mult / ppu;
+    let bb = entry.border.bottom as f32 * ctx.border_mult / ppu;
+    let bt = entry.border.top as f32 * ctx.border_mult / ppu;
+    let x_mid = (x_min + x_max) * 0.5;
+
+    let xs = [x_min, x_min + br, x_mid - bl, x_mid, x_mid + bl, x_max - br, x_max];
+    let ys = [y_min, y_min + bb, y_max - bt, y_max];
+    let mut verts_local: Vec<[f32; 2]> = Vec::with_capacity(28);
+    for &yy in &ys {
+        for &xx in &xs {
+            verts_local.push([xx, yy]);
+        }
+    }
+
+    let grid = UvGrid::for_entry(entry, atlas, ctx.border_mult);
+    // Per SetUp_MX_R3C6: per-row UV pattern (u3, u2, u1, u0, u1, u2, u3)
+    // with v running through grid.v[0..3].
+    let col_u = [grid.u[3], grid.u[2], grid.u[1], grid.u[0], grid.u[1], grid.u[2], grid.u[3]];
+    let mut uvs: Vec<[f32; 2]> = Vec::with_capacity(28);
+    for row in 0..4 {
+        let vv = grid.v[row];
+        for &uu in &col_u {
+            uvs.push([uu, vv]);
+        }
+    }
+
+    let tris = create_grid_indices(3, 6);
+    let verts: Vec<[f32; 2]> = verts_local.iter().map(|v| apply_affine(*v, ctx.affine)).collect();
+    PartMesh { verts, uvs, tris }
+}
+
 // MY_R3C1: 3 rows × 1 col, mirror-Y. Source-rect: borders all 0 except top
 // = height. 8 verts (4 rows × 2 cols), 3 quads.
 fn slice_my_r3c1(
@@ -1326,13 +1522,6 @@ where
 
         let part_mesh = match part {
             Part::AtlasSprite { method, size, part_pivot, border_mult, affine, .. } => {
-                if !is_method_supported(*method) {
-                    return Err(CombineError::MethodUnimplemented {
-                        combined: combined.name.clone(),
-                        sprite: source_name.clone(),
-                        method: *method,
-                    });
-                }
                 check_method_constraints(*method, &entry, &combined.name, source_name)?;
                 atlas_sprite_mesh(&entry, *method, *size, *part_pivot, *border_mult, *affine, atlas, ppu)
             }
@@ -1904,6 +2093,87 @@ mod tests {
         }
     }
 
+    // --- slice grids: MX_R1C4 / MX_R3C2 / MX_R3C4 / MX_R3C6 ---
+
+    #[test]
+    fn mx_r1c4_emits_10_verts_24_indices() {
+        let mut e = quad_entry(0, 0, 4, 4, (0.5, 0.5));
+        e.border = crate::tpsheet::Border { left: 0, bottom: 0, right: 2, top: 0 };
+        let m = atlas_sprite_mesh(
+            &e, Method::MxR1c4, Some((10.0, 4.0)), [0.5, 0.5], 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+        );
+        assert_eq!(m.verts.len(), 10);
+        assert_eq!(m.tris.len(), 24, "4 quads × 6 indices");
+    }
+
+    #[test]
+    fn mx_r1c4_uv_mirrors_about_centre() {
+        let mut e = quad_entry(0, 0, 4, 4, (0.5, 0.5));
+        e.border = crate::tpsheet::Border { left: 0, bottom: 0, right: 2, top: 0 };
+        let m = atlas_sprite_mesh(
+            &e, Method::MxR1c4, Some((10.0, 4.0)), [0.5, 0.5], 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+        );
+        // Bottom row: u3, u2, u0, u2, u3 (mirror around col index 2).
+        let grid = UvGrid::for_entry(&e, AtlasSize { width: 16, height: 16 }, 1.0);
+        let expected_u = [grid.u[3], grid.u[2], grid.u[0], grid.u[2], grid.u[3]];
+        for (col, &want) in expected_u.iter().enumerate() {
+            assert_eq!(m.uvs[col][0], want);
+            assert_eq!(m.uvs[5 + col][0], want);
+        }
+    }
+
+    #[test]
+    fn mx_r3c2_emits_12_verts_36_indices() {
+        let mut e = quad_entry(0, 0, 4, 4, (0.5, 0.5));
+        e.border = crate::tpsheet::Border { left: 0, bottom: 1, right: 4, top: 3 };
+        let m = atlas_sprite_mesh(
+            &e, Method::MxR3c2, Some((8.0, 8.0)), [0.5, 0.5], 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+        );
+        assert_eq!(m.verts.len(), 12);
+        assert_eq!(m.tris.len(), 36);
+    }
+
+    #[test]
+    fn mx_r3c4_emits_20_verts_72_indices() {
+        let mut e = quad_entry(0, 0, 4, 4, (0.5, 0.5));
+        e.border = crate::tpsheet::Border { left: 0, bottom: 1, right: 2, top: 1 };
+        let m = atlas_sprite_mesh(
+            &e, Method::MxR3c4, Some((10.0, 8.0)), [0.5, 0.5], 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+        );
+        assert_eq!(m.verts.len(), 20);
+        assert_eq!(m.tris.len(), 72, "12 quads × 6 indices");
+    }
+
+    #[test]
+    fn mx_r3c6_emits_28_verts_108_indices() {
+        let mut e = quad_entry(0, 0, 4, 4, (0.5, 0.5));
+        e.border = crate::tpsheet::Border { left: 1, bottom: 1, right: 1, top: 1 };
+        let m = atlas_sprite_mesh(
+            &e, Method::MxR3c6, Some((10.0, 8.0)), [0.5, 0.5], 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+        );
+        assert_eq!(m.verts.len(), 28);
+        assert_eq!(m.tris.len(), 108, "18 quads × 6 indices");
+    }
+
+    #[test]
+    fn mx_r1c4_rejects_nonzero_left() {
+        let mut e = quad_entry(0, 0, 4, 4, (0.5, 0.5));
+        e.border = crate::tpsheet::Border { left: 1, bottom: 0, right: 2, top: 0 };
+        let combined = make_combined("BX", vec![Part::AtlasSprite {
+            sprite: "A".into(), method: Method::MxR1c4,
+            size: Some((10.0, 4.0)), part_pivot: [0.5, 0.5],
+            border_mult: 1.0, affine: Affine::default(),
+        }]);
+        let err = build_combined(&combined, |_| Some(e.clone()),
+            AtlasSize { width: 16, height: 16 }, 1.0).unwrap_err();
+        assert!(matches!(err, CombineError::SliceConstraint { method: Method::MxR1c4, .. }));
+    }
+
     // --- slice grids: MY_R3C1 / MY_R2C2 / MY_R2C3 / MY_R3C2 ---
 
     #[test]
@@ -2358,26 +2628,6 @@ mod tests {
         assert!(matches!(err, CombineError::SpriteNotFound { ref sprite, .. } if sprite == "MISSING"), "{err:?}");
     }
 
-    #[test]
-    fn build_combined_errors_on_unimplemented_method() {
-        // Use a method that hasn't landed yet (MX_R1C4 from phase 6).
-        let combined = make_combined("BX", vec![Part::AtlasSprite {
-            sprite: "A".into(),
-            method: Method::MxR1c4,
-            size: Some((4.0, 4.0)),
-            part_pivot: [0.5, 0.5],
-            border_mult: 1.0,
-            affine: Affine::default(),
-        }]);
-        let a = quad_entry(0, 0, 1, 1, (0.5, 0.5));
-        let err = build_combined(
-            &combined,
-            |_| Some(a.clone()),
-            AtlasSize { width: 16, height: 16 },
-            1.0,
-        ).unwrap_err();
-        assert!(matches!(err, CombineError::MethodUnimplemented { method: Method::MxR1c4, .. }), "{err:?}");
-    }
 
     #[test]
     fn polygon_combined_transform_order_is_t_after_rs() {

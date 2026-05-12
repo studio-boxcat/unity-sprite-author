@@ -182,9 +182,9 @@ path.
    `UIIconMeshGen` or slice-fitted via `UISliceMeshGen` depending on `width`/
    `height` presence). ✓
 5. `TX` / `TY` / `TX_MC3` tiling. ✓
-6. Slice-grid family — `R1C3` / `R3C3` / `R3C3_NF` / `MX_R1C3` /
-   `MX_R3C3` / `MY_R3C1` / `MY_R2C2` / `MY_R2C3` / `MY_R3C2` /
-   `MY_R3C3` / `MXY_R3C3` / `MXY_R3C3_NF` ✓.
-   `MX_R1C4` / `MX_R3C2` / `MX_R3C4` / `MX_R3C6` still pending.
+6. Slice-grid family — all 17 methods ✓
+   (`R1C3` / `R3C3` / `R3C3_NF` / `MX_R1C3` / `MX_R1C4` / `MX_R3C2` /
+   `MX_R3C3` / `MX_R3C4` / `MX_R3C6` / `MY_R3C1` / `MY_R2C2` /
+   `MY_R2C3` / `MY_R3C2` / `MY_R3C3` / `MXY_R3C3` / `MXY_R3C3_NF`).
 7. Pipeline integration: fab.json discovery, combined emission, part
    exclusion, orphan-prune verification. ✓
