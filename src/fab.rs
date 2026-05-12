@@ -23,6 +23,12 @@ pub struct Combined {
     pub name: String,
     pub pivot: [f32; 2],
     pub border: [f32; 4],
+    /// Global multiplier applied to every part after its per-part affine +
+    /// `ui_scale`/`offset` chain. Defaults to 1.0 (identity). For
+    /// `CanvasSpriteAuthor.Publish()` reproduction, set to 0.01 — matches
+    /// the per-author `_scaleFactor` field. Necessary for byte-exact f32
+    /// reproduction of the ×100/×0.01 round-trip Unity does.
+    pub canvas_scale: f32,
     pub parts: Vec<Part>,
 }
 
@@ -46,6 +52,14 @@ pub enum Part {
         // methods at parse time.
         border_mult: f32,
         affine: Affine,
+        // Per-part scale applied AFTER the affine, BEFORE `offset` + the
+        // combined `canvas_scale`. Default 1.0. For CanvasSpriteAuthor
+        // reproduction, set to UIIcon._scaleFactor (typically 100).
+        ui_scale: f32,
+        // Per-part canvas-pixel offset applied AFTER `ui_scale`, BEFORE the
+        // combined `canvas_scale`. Default (0, 0). For CanvasSpriteAuthor,
+        // this is the part's `RectTransform.anchoredPosition`.
+        offset: [f32; 2],
     },
     Polygon {
         polygon_sprite: String,
@@ -220,6 +234,7 @@ mod raw {
         pub name: String,
         pub pivot: Option<[f32; 2]>,
         pub border: Option<[f32; 4]>,
+        pub canvas_scale: Option<f32>,
         #[serde(default)]
         pub parts: Vec<Part>,
     }
@@ -240,6 +255,8 @@ mod raw {
         pub height: Option<f32>,
         pub border_mult: Option<f32>,
         pub part_pivot: Option<[f32; 2]>,
+        pub ui_scale: Option<f32>,
+        pub offset: Option<[f32; 2]>,
 
         // polygon discriminator
         pub polygon_sprite: Option<String>,
@@ -286,6 +303,7 @@ fn translate(raw: raw::Manifest) -> Result<Manifest, FabError> {
             name: c.name,
             pivot: c.pivot.unwrap_or([0.5, 0.5]),
             border: c.border.unwrap_or([0.0; 4]),
+            canvas_scale: c.canvas_scale.unwrap_or(1.0),
             parts,
         });
     }
@@ -380,6 +398,8 @@ fn translate_part(combined: &str, p: raw::Part) -> Result<Part, FabError> {
                 part_pivot: p.part_pivot.unwrap_or([0.5, 0.5]),
                 border_mult: p.border_mult.unwrap_or(1.0),
                 affine,
+                ui_scale: p.ui_scale.unwrap_or(1.0),
+                offset: p.offset.unwrap_or([0.0, 0.0]),
             })
         }
         (None, Some(polygon_sprite)) => {
@@ -399,11 +419,12 @@ fn translate_part(combined: &str, p: raw::Part) -> Result<Part, FabError> {
             // author sees the issue.
             if p.method.is_some() || p.width.is_some() || p.height.is_some()
                 || p.border_mult.is_some() || p.part_pivot.is_some()
+                || p.ui_scale.is_some() || p.offset.is_some()
             {
                 return Err(FabError::PartShape {
                     combined: combined.to_string(),
                     reason: "polygon parts cannot declare \
-                             method/width/height/borderMult/partPivot",
+                             method/width/height/borderMult/partPivot/uiScale/offset",
                 });
             }
             // Validate explicit triangles when given: must be a multiple of 3
@@ -474,13 +495,15 @@ mod tests {
         assert_eq!(c.pivot, [0.5, 0.5]);
         assert_eq!(c.border, [0.0, 0.0, 0.0, 0.0]);
         match &c.parts[0] {
-            Part::AtlasSprite { sprite, method, size, part_pivot, affine, border_mult } => {
+            Part::AtlasSprite { sprite, method, size, part_pivot, affine, border_mult, ui_scale, offset } => {
                 assert_eq!(sprite, "Body");
                 assert_eq!(*method, Method::Id);
                 assert_eq!(*size, None);
                 assert_eq!(*part_pivot, [0.5, 0.5]);
                 assert_eq!(*affine, Affine::default());
                 assert_eq!(*border_mult, 1.0);
+                assert_eq!(*ui_scale, 1.0);
+                assert_eq!(*offset, [0.0, 0.0]);
             }
             _ => panic!("wrong variant"),
         }

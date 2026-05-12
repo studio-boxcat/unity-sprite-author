@@ -198,7 +198,7 @@ Do **not** port: `prefab-saloon/src/lib/prefab/{parser,serializer,templates}.ts`
 - File ends `m_SpriteID: \n` with single LF, no trailing blank line.
 - `_typelessdata` is one unbroken hex line, never folded.
 - `m_RenderDataKey` is the only non-flow nested mapping; everything else is flow `{x: ..., y: ...}`.
-- `atlasRectOffset: {x: -1, y: -1}` — that `-1` is the Unity default for atlas-packed sprites. Sprites produced by `SpriteFactory.CreateFromMesh` (fabricated combined sprites, see [[fab.md]]) ship `{x: 0, y: 0}`; emit branches on `SpriteSource`.
+- `atlasRectOffset: {x: -1, y: -1}` — Unity's sentinel for non-SpriteAtlas sprites. Constant; applies uniformly to TexturePacker-imported sprites AND to `SpriteFactory.CreateFromMesh` outputs (verified against the Silloutte1 golden). The earlier "fabricated ships (0, 0)" claim was wrong — emit doesn't branch on `SpriteSource` here.
 - `m_Border` field order is `{x: L, y: B, z: R, w: T}` per Unity `Sprite.cs`. Verified empirically: 50/51 non-zero-border sprites in the meow-tower corpus emit byte-exactly under the current formula (the lone outlier is .tps drift — golden has all-zero borders, current tpsheet has non-zero). The hard-fail guard was retired once this was proven.
 - Float formatting must match C# `ToString("R")`. Build a `unity_float_format` with a unit-test table seeded from every distinct float in the golden corpus before milestone-3.
 - `m_AtlasRD == m_RD` only valid for non-SpriteAtlas sprites — guard with hard panic on `m_SpriteAtlas != {fileID:0}`.

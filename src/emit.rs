@@ -218,10 +218,10 @@ fn write_render_data(
         }
     }
     writeln!(s, "{indent}textureRectOffset: {{x: 0, y: 0}}").unwrap();
-    // Unity's TexturePacker atlas slicer emits (-1, -1) as a sentinel; sprites
-    // produced by SpriteFactory.CreateFromMesh ship with (0, 0).
-    let aro = match source { SpriteSource::Tpsheet => -1, SpriteSource::Fabricated { .. } => 0 };
-    writeln!(s, "{indent}atlasRectOffset: {{x: {aro}, y: {aro}}}").unwrap();
+    // Unity emits (-1, -1) for non-SpriteAtlas sprites — both TexturePacker
+    // imports and SpriteFactory.CreateFromMesh outputs (verified against
+    // Silloutte1.asset golden).
+    writeln!(s, "{indent}atlasRectOffset: {{x: -1, y: -1}}").unwrap();
     // settingsRaw is a packed bitfield representing TextureImporter settings
     // (filterMode, wrap, alpha, etc.). 192 (0xC0) is the value that 7187/7190
     // sprites in meow-tower carry — the entire corpus we've sampled. There's
@@ -394,9 +394,9 @@ mod tests {
         // m_Rect picks up the f32 dimensions, including the half-pixel value.
         assert!(out.contains("    width: 282.5\n"), "missing fabricated m_Rect width: {out:?}");
         assert!(out.contains("    height: 770\n"), "missing fabricated m_Rect height");
-        // atlasRectOffset flips from Unity's TexturePacker sentinel (-1) to 0.
-        assert!(out.contains("atlasRectOffset: {x: 0, y: 0}"),
-                "fabricated should emit zero atlasRectOffset");
+        // atlasRectOffset is Unity's (-1, -1) sentinel for non-SpriteAtlas sprites.
+        assert!(out.contains("atlasRectOffset: {x: -1, y: -1}"),
+                "fabricated should emit -1 atlasRectOffset");
         // textureRect mirrors m_Rect's dimensions.
         let texrect_start = out.find("textureRect:").unwrap();
         let texrect_window = &out[texrect_start..texrect_start + 120];

@@ -37,14 +37,21 @@ absent, behavior is unchanged. No FFI parameter, no `abi_version` bump.
       "name":   "BX_33_Armchair",            // output sprite filename stem (no .asset)
       "pivot":  [0.5, 0.5],                  // optional, default [0.5, 0.5]
       "border": [0, 0, 0, 0],                // optional [L, B, R, T] in atlas pixels, default zeros
+      "canvasScale": 1.0,                    // optional. CanvasSpriteAuthor._scaleFactor (post-mul).
+                                             //   Default 1 (SpriteRenderer / Box prefab path).
+                                             //   Canvas hierarchies set 0.01 to undo UIIcon's 100×.
       "parts": [
         // --- atlas-sprite part ---
         {
           "sprite":  "Armchair__Cushion__T", // tpsheet entry name on the same atlas
           "method":  "ID",                   // see "Slice methods" below; default "ID"
-          "tx": 0, "ty": 0,                  // translation, world units (post-PPU)
+          "tx": 0, "ty": 0,                  // translation, world units (post-PPU, pre-canvasScale)
           "sx": 1, "sy": 1,                  // scale; negative ⇒ geometric flip (replaces FX/FY/FXY)
           "rotDeg": 0,
+          "uiScale": 1.0,                    // optional. UIIcon._scaleFactor (per-part pre-mul).
+                                             //   Default 1. Canvas hierarchies set 100.
+          "offset": [0, 0],                  // optional. RectTransform.anchoredPosition, applied
+                                             //   between uiScale and canvasScale. Default [0, 0].
           "width":  null, "height": null,    // target rect, world units. Absent ⇒ native-scale
                                              //   (UIIconMeshGen path). Present ⇒ slice-fitted
                                              //   (UISliceMeshGen path). Rejected on ID.
@@ -58,6 +65,9 @@ absent, behavior is unchanged. No FFI parameter, no `abi_version` bump.
         {
           "polygonSprite": "Color_3F314EFF", // tpsheet entry, axis-aligned quad
           "vertices": [[-0.41,-0.385],[0.41,-0.385],[0.41,0.385],[-0.41,0.385]],
+          "triangles": [0, 2, 3, 3, 1, 0],   // optional. Index list override; default ear-clip.
+                                             //   Required for UISolid quads (BL,BR,TL,TR order is
+                                             //   self-crossing for the ear-clipper).
           "tx": 0, "ty": 0, "sx": 1, "sy": 1, "rotDeg": 0
         }
       ]
@@ -107,12 +117,22 @@ absent, behavior is unchanged. No FFI parameter, no `abi_version` bump.
 
 ### Per-part transform
 
+The full transform composed onto each part's local-frame vert is the f32
+op sequence Unity uses, in this exact order:
+
 ```
-v' = T(tx, ty) · R(rotDeg) · S(sx, sy) · v
+v_world = ((R(rotDeg) · S(sx, sy) · v) × uiScale) × canvasScale
+        + offset × canvasScale
+        + (tx, ty)
 ```
 
-Applied to the part's local-frame verts *after* the slice/polygon emitter
-runs. For a plain geometric flip set `sx` or `sy` to `-1` — `FX`/`FY`/`FXY`
+Matching Unity's `Matrix4x4.MultiplyPoint` (which precomputes the translation
+row as `offset × canvasScale`) is required for byte-exact f32 rounding —
+the algebraically-equivalent `(v_canvas + offset) × canvasScale` rounds 1
+ULP differently. Defaults `uiScale = canvasScale = 1`, `offset = (0, 0)`
+collapse to the SpriteRenderer / Box prefab path `v' = T · R · S · v`.
+
+For a plain geometric flip set `sx` or `sy` to `-1` — `FX`/`FY`/`FXY`
 methods are rejected at parse time in favor of negative scale.
 
 ### Polygon UV sampling
@@ -153,8 +173,10 @@ table in [[CLAUDE.md]] with these deltas:
 - `_typelessdata` UVs are already atlas-normalized from the per-part emit
   step — no further uv transform.
 - `m_IndexBuffer` is the combined triangle list, u16 LE.
-- `atlasRectOffset = (0, 0)` and `m_Rect.{w, h}` are f32 (sub-pixel-able) —
-  the fabricated sprite branch in `emit::SpriteAsset` (`source: Fabricated`).
+- `atlasRectOffset = (-1, -1)` (Unity's sentinel for non-SpriteAtlas sprites,
+  matches both `Sprite.Create` and TexturePacker outputs) and `m_Rect.{w, h}`
+  are f32 (sub-pixel-able) — the fabricated sprite branch in
+  `emit::SpriteAsset` (`source: Fabricated`).
 - `textureRect == m_Rect` always. The on-disk preserve branch was dropped
   crate-wide (see [[TODO.md]]); any sprite whose existing `.asset` has
   divergent `textureRect.{w,h}` fails loud out of `generate()`.

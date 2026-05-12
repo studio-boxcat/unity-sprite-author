@@ -3,19 +3,20 @@
   "combined": [
     {
       "name": "Silloutte1",
+      "canvasScale": 0.01,
       "parts": [
         { "polygonSprite": "Color_32264DBD",
           "vertices": [[-1.0625, -2.725], [1.0625, -2.725], [-1.0625, 2.725], [1.0625, 2.725]],
           "triangles": [0, 2, 3, 3, 1, 0],
           "tx": 0, "ty": -0.2225 },
         { "sprite": "Mansion_Silloutte__1__B", "method": "MX",
-          "tx": 0, "ty": -2.9475 },
+          "uiScale": 100, "offset": [0, -294.75] },
         { "sprite": "Mansion_Silloutte__1__S", "method": "ID",
-          "tx": 1.0625, "ty": -0.265 },
+          "uiScale": 100, "offset": [106.25, -26.5] },
         { "sprite": "Mansion_Silloutte__1__S", "method": "ID",
-          "sx": -1, "tx": -1.0625, "ty": -0.265 },
+          "sx": -1, "uiScale": 100, "offset": [-106.25, -26.5] },
         { "sprite": "Mansion_Silloutte__1__T", "method": "MX",
-          "tx": 0, "ty": 2.5025 }
+          "uiScale": 100, "offset": [0, 250.25] }
       ]
     }
   ]
