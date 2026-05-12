@@ -35,11 +35,14 @@ impl fmt::Display for TpsError {
 
 impl std::error::Error for TpsError {}
 
+/// Parsed slice of a TexturePacker `.tps` file — just the per-sprite
+/// `spriteScale` entries needed by `pipeline::generate`. Other `.tps`
+/// settings (alignment, alpha handling, output paths) are ignored.
 #[derive(Debug, Clone, Default)]
 pub struct TpsData {
-    // Key: sprite filename without extension (e.g. "Cake__DecoLeft").
-    // Value: InvertScale = 1 / spriteScale_in_tps. Matches the C# `InvertScale`
-    // computed by TexturePackerUtils.Parse.
+    /// Key: sprite filename without extension (e.g. `Cake__DecoLeft`).
+    /// Value: `InvertScale = 1 / spriteScale` from the `.tps`. Matches
+    /// the C# `InvertScale` computed by `TexturePackerUtils.Parse`.
     pub invert_scales: HashMap<String, f32>,
 }
 

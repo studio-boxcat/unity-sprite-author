@@ -6,6 +6,8 @@ use std::fmt;
 pub const SUPPORTED_FORMAT: u32 = 40300;
 
 #[derive(Debug, Clone, PartialEq)]
+/// Parsed `.tpsheet` — the header (`format` / `texture_name` / `tex`)
+/// plus one [`SpriteEntry`] per sprite line. Returned by [`parse`].
 pub struct Sheet {
     pub format: u32,
     pub texture_name: String,
@@ -13,10 +15,11 @@ pub struct Sheet {
     pub sprites: Vec<SpriteEntry>,
 }
 
-// Mirrors the C# `TexInfo` struct in SheetLoader.cs. Only `width` and
-// `height` feed the Sprite `.asset` emit; the rest belong to the texture
-// importer side (which our pipeline doesn't touch). Retained so the parser
-// is a faithful 1:1 of the C# parse, which matters when diff-checking.
+/// Header info from the `.tpsheet`'s `:tex=` block. Mirrors the C#
+/// `TexInfo` struct in `SheetLoader.cs`. Only `width` and `height` feed
+/// the Sprite `.asset` emit; the rest belong to the texture importer
+/// side (which this pipeline doesn't touch). Retained so the parser
+/// stays a faithful 1:1 of the C# parse, which matters when diff-checking.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TexInfo {
     pub width: u32,
@@ -41,6 +44,9 @@ impl Default for TexInfo {
     }
 }
 
+/// One sprite from a `.tpsheet` line — name, atlas rect, pivot, optional
+/// border, and mesh geometry (either polygon outline from the tpsheet
+/// itself or a rect fallback when polygons aren't enabled).
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpriteEntry {
     pub name: String,
@@ -68,9 +74,10 @@ pub struct Pivot {
     pub y: f32,
 }
 
-// Tokens appear in tpsheet order: bL, bR, bT, bB.
-// Asset emission order is `{x: L, y: B, z: R, w: T}` per Unity Sprite.cs.
-// Signed because real fixtures (e.g. OrgelGallery) carry negative borders.
+/// 9-slice border widths in pixels. Parsed in `.tpsheet` token order
+/// (`bL, bR, bT, bB`); emitted into the `.asset` as
+/// `m_Border: {x: L, y: B, z: R, w: T}` per Unity's `Sprite.cs`. Signed
+/// because real fixtures (e.g. OrgelGallery) carry negative borders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Border {
     pub left: i32,
@@ -79,7 +86,9 @@ pub struct Border {
     pub bottom: i32,
 }
 
-// Mirrors UnityEngine.SpriteAlignment. 9 = Custom (used when pivot is non-canonical).
+/// Mirrors `UnityEngine.SpriteAlignment`. `Custom` (= 9) is used when
+/// the pivot lands on a non-canonical position (not at one of the eight
+/// rect anchors); see `pivot_to_alignment` for the canonical-pivot lookup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum SpriteAlignment {
@@ -101,10 +110,15 @@ pub struct Vertex {
     pub y: f32,
 }
 
+/// Mesh geometry for a sprite — vertex list (atlas-pixel coords,
+/// sprite-rect-relative) and a flat triangle list indexing into it.
+/// Filled from the tpsheet's polygon block when `polygons_enabled`,
+/// or from [`Geometry::rect`] as a 4-vert / 2-tri fallback otherwise.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Geometry {
     pub vertices: Vec<Vertex>,
-    pub triangles: Vec<u16>, // flat, len = 3 * triangle_count
+    /// Flat triangle indices; length is `3 * triangle_count`.
+    pub triangles: Vec<u16>,
 }
 
 impl Geometry {
