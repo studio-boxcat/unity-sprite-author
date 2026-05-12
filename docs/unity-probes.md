@@ -81,6 +81,12 @@ does it actually pack those bits? The current emit hard-codes 192 with no
 guard (see CLAUDE.md trap note); a varying corpus would surface as e2e
 mismatch but never as a localized failure.
 
+**Prerequisite.** The rust pipeline only re-emits sprite `.asset` files
+when `TPSheetPostprocessor` fires on a `.tpsheet`, so this probe needs
+a `.tpsheet` present (which `pipeline::generate` deletes on success —
+regenerate via TexturePacker CLI or right-click the `.tps` → Run
+TexturePacker if absent).
+
 **Procedure.** Pick three Texture Importers with deliberately differing
 settings and read back the emitted `settingsRaw`:
 
@@ -94,8 +100,10 @@ settings and read back the emitted `settingsRaw`:
    - filter mode: `0` (Point), `1` (Bilinear), `2` (Trilinear).
    - wrap mode: `0` (Repeat), `1` (Clamp), `2` (Mirror).
    - sRGBTexture: `0` (linear), `1` (sRGB).
-3. Trigger Reimport on the atlas (`AssetDatabase.ImportAsset(<png-path>, ForceUpdate)`
-   via `just scratch '...'` if llm-bridge is available, or right-click → Reimport in the Editor).
+3. Reimport the PNG so the texture importer settings update, then
+   `touch <atlas>.tpsheet` to re-trigger `TPSheetPostprocessor` —
+   the sprite `.asset` re-emit fires from the tpsheet import, not
+   the png one.
 4. Read the emitted `settingsRaw` from any sprite in that atlas:
    ```sh
    grep settingsRaw Assets/21_Collections/OrgelContents/1204/Orgel/Cake__DecoLeft.asset
@@ -156,13 +164,17 @@ need a consistent `(.tps, .tpsheet, .asset)` triple.
 **Procedure.**
 
 1. From the meow-tower checkout, ensure the current `Orgel.tps` and
-   `Orgel.tpsheet` are what TexturePacker last emitted (commit `tps drift`
-   in the rust repo's e2e report if uncertain).
+   `Orgel.tpsheet` are what TexturePacker last emitted. Since
+   `pipeline::generate` deletes the `.tpsheet` on success, regenerate
+   via `TexturePackerCLI Orgel.tps` (or right-click → Run TexturePacker
+   in the Editor) if absent.
 2. Force a reimport so this rlib re-emits every Orgel sprite under the
    current `.tps`:
    ```sh
    touch Assets/21_Collections/OrgelContents/1204/Orgel.tpsheet
-   # Boot Unity, wait for the postprocessor to settle, quit.
+   # Boot Unity, wait for the postprocessor to settle, quit. The
+   # .tpsheet is consumed on success — regenerate as above if you
+   # want to re-run.
    ```
 3. From the rust repo, copy the regenerated triple back into the fixture:
    ```sh
