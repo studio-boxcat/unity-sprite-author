@@ -510,6 +510,88 @@ mod tests {
     }
 
     #[test]
+    fn root_anchored_defaults_to_zero() {
+        let m = parse_ok(r#"{
+            "version": 1,
+            "combined": [{ "name": "BX_Foo", "parts": [{ "sprite": "Body" }] }]
+        }"#);
+        assert_eq!(m.combined[0].root_anchored, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn root_anchored_parses_explicit_value() {
+        let m = parse_ok(r#"{
+            "version": 1,
+            "combined": [{
+                "name": "Silloutte3",
+                "rootAnchored": [141.8, 370.875],
+                "parts": [{ "sprite": "Body" }]
+            }]
+        }"#);
+        assert_eq!(m.combined[0].root_anchored, [141.8, 370.875]);
+    }
+
+    #[test]
+    fn polygon_part_accepts_canvas_chain_fields() {
+        // UISolid backgrounds under CanvasSpriteAuthor share the canvas
+        // chain with atlas-sprite parts; the parser used to reject these
+        // fields on polygons. Regression guard.
+        let m = parse_ok(r#"{
+            "version": 1,
+            "combined": [{
+                "name": "X",
+                "canvasScale": 0.01,
+                "parts": [{
+                    "polygonSprite": "Color_FFFFFFFF",
+                    "vertices": [[-1, -1], [1, -1], [-1, 1], [1, 1]],
+                    "uiScale": 1.0,
+                    "offset": [10.5, -20.25]
+                }]
+            }]
+        }"#);
+        match &m.combined[0].parts[0] {
+            Part::Polygon { ui_scale, offset, .. } => {
+                assert_eq!(*ui_scale, 1.0);
+                assert_eq!(*offset, [10.5, -20.25]);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn polygon_part_rejects_atlas_sprite_fields() {
+        // Atlas-sprite-only fields on a polygon part still signal a typo
+        // and must be rejected (uiScale/offset are NOT in this list since
+        // polygons now use them too).
+        for bad in [
+            r#""method": "MX""#,
+            r#""width": 10"#,
+            r#""height": 10"#,
+            r#""borderMult": 2.0"#,
+            r#""partPivot": [0, 0]"#,
+        ] {
+            let json = format!(
+                r#"{{
+                    "version": 1,
+                    "combined": [{{
+                        "name": "X",
+                        "parts": [{{
+                            "polygonSprite": "P",
+                            "vertices": [[-1, -1], [1, -1], [0, 1]],
+                            {bad}
+                        }}]
+                    }}]
+                }}"#
+            );
+            let err = parse_err(&json);
+            assert!(
+                matches!(err, FabError::PartShape { .. }),
+                "expected PartShape error for `{bad}`, got: {err:?}"
+            );
+        }
+    }
+
+    #[test]
     fn minimal_id_part() {
         let m = parse_ok(r#"{
             "version": 1,
