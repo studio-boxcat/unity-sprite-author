@@ -8,8 +8,13 @@
 //   cargo test --test e2e_meow_tower -- --nocapture
 //   MEOW_TOWER_PATH=/path/to/meow-tower cargo test --test e2e_meow_tower
 //
-// The test is opt-out: if neither MEOW_TOWER_PATH nor the default exists,
-// it prints a skip notice and passes.
+// The test is opt-out and skips cleanly in two scenarios:
+//   1. Neither `MEOW_TOWER_PATH` nor the default checkout exists.
+//   2. The checkout exists but carries no `.tpsheet` files (the
+//      post-rlib-pivot state — `pipeline::generate` deletes `.tpsheet`s
+//      on success, so they're only present mid-import).
+// Both print a skip notice and pass; the panic fires only if tpsheets
+// were found yet zero sprites compared (genuine wiring bug).
 
 use std::collections::BTreeMap;
 use std::fs;
