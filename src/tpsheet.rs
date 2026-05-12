@@ -113,7 +113,8 @@ pub struct Vertex {
 /// Mesh geometry for a sprite — vertex list (atlas-pixel coords,
 /// sprite-rect-relative) and a flat triangle list indexing into it.
 /// Filled from the tpsheet's polygon block when `polygons_enabled`,
-/// or from [`Geometry::rect`] as a 4-vert / 2-tri fallback otherwise.
+/// or from an internal rect fallback (4 corner verts + 2 triangles)
+/// when the line carries no polygon data.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Geometry {
     pub vertices: Vec<Vertex>,
