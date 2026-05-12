@@ -81,8 +81,8 @@ fn is_legacy_texture(meta_text: &str) -> bool {
     texture_type == Some(8) && sprite_mode == Some(2)
 }
 
-fn extract_prefix(tpsheet_meta_path: &Path) -> String {
-    let Ok(text) = fs::read_to_string(tpsheet_meta_path) else {
+fn extract_prefix(tps_meta_path: &Path) -> String {
+    let Ok(text) = fs::read_to_string(tps_meta_path) else {
         return String::new();
     };
     for line in text.lines() {
