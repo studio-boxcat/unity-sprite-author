@@ -1,0 +1,655 @@
+// Parser and validator for `.tps.fab.json` fabrication manifests.
+//
+// See docs/fab.md for the v1 contract. This module is the JSON → typed-AST
+// boundary; downstream modules (combine.rs, pipeline.rs) consume the typed
+// `Manifest`. Cross-references against the actual .tpsheet (atlas-uniqueness
+// of part names) happen in pipeline integration, not here.
+
+use std::collections::HashSet;
+use std::fmt;
+
+// ---------------------------------------------------------------------------
+// Public typed AST. JSON shape lives in the `raw` submodule below; we
+// validate-and-translate into these types so downstream code never touches
+// the raw JSON layer.
+
+#[derive(Debug, PartialEq)]
+pub struct Manifest {
+    pub combined: Vec<Combined>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Combined {
+    pub name: String,
+    pub pivot: [f32; 2],
+    pub border: [f32; 4],
+    pub parts: Vec<Part>,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Part {
+    AtlasSprite {
+        sprite: String,
+        method: Method,
+        // width / height: target rect, world units. Required when method != Id.
+        // For Id, None means "use the sprite's native rect".
+        size: Option<(f32, f32)>,
+        border_mult: f32,
+        affine: Affine,
+        mirror_x: bool,
+        mirror_y: bool,
+    },
+    Polygon {
+        polygon_sprite: String,
+        vertices: Vec<[f32; 2]>,
+        affine: Affine,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Affine {
+    pub tx: f32,
+    pub ty: f32,
+    pub sx: f32,
+    pub sy: f32,
+    pub rot_deg: f32,
+}
+
+impl Default for Affine {
+    fn default() -> Self {
+        Self { tx: 0.0, ty: 0.0, sx: 1.0, sy: 1.0, rot_deg: 0.0 }
+    }
+}
+
+// Slice/tile/mirror dispatch. Mirrors UISliceMeshGen.cs in meow-tower; see
+// docs/fab.md for which constraints fire on which variants.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Method {
+    Id,
+    Mx, My, Mxy,
+    Tx, Ty, TxMc3,
+    R1c3, R3c3, R3c3Nf,
+    MxR1c3, MxR1c4, MxR3c2, MxR3c3, MxR3c4, MxR3c6,
+    MyR2c2, MyR2c3, MyR3c1, MyR3c2, MyR3c3,
+    MxyR3c3, MxyR3c3Nf,
+}
+
+impl Method {
+    fn requires_size(self) -> bool {
+        !matches!(self, Method::Id)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Errors.
+
+#[derive(Debug)]
+pub enum FabError {
+    Json(serde_json::Error),
+    UnsupportedVersion(u32),
+    EmptyName,
+    NameWithSeparator(String),
+    DuplicateName(String),
+    EmptyParts(String),
+    PartShape { combined: String, reason: &'static str },
+    UnknownMethod { combined: String, sprite: String, method: String },
+    GeometricFlipMethod { combined: String, sprite: String, method: String },
+    MissingSize { combined: String, sprite: String, method: Method },
+    NonPositiveSize { combined: String, sprite: String, w: f32, h: f32 },
+    PolygonTooFewVertices { combined: String, sprite: String, n: usize },
+}
+
+impl fmt::Display for FabError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Json(e) => write!(f, "fab.json parse: {e}"),
+            Self::UnsupportedVersion(v) => write!(f, "unsupported fab.json version: {v} (expected 1)"),
+            Self::EmptyName => write!(f, "combined.name must be non-empty"),
+            Self::NameWithSeparator(n) => write!(f, "combined.name must be a bare filename: {n:?}"),
+            Self::DuplicateName(n) => write!(f, "duplicate combined.name: {n:?}"),
+            Self::EmptyParts(n) => write!(f, "combined {n:?} has no parts"),
+            Self::PartShape { combined, reason } => write!(
+                f, "combined {combined:?} part: {reason}",
+            ),
+            Self::UnknownMethod { combined, sprite, method } => write!(
+                f, "combined {combined:?} part {sprite:?}: unknown method {method:?}",
+            ),
+            Self::GeometricFlipMethod { combined, sprite, method } => write!(
+                f, "combined {combined:?} part {sprite:?}: method {method:?} is unsupported; \
+                    use negative sx/sy for geometric flip",
+            ),
+            Self::MissingSize { combined, sprite, method } => write!(
+                f, "combined {combined:?} part {sprite:?}: method {method} requires width and height",
+            ),
+            Self::NonPositiveSize { combined, sprite, w, h } => write!(
+                f, "combined {combined:?} part {sprite:?}: width and height must be > 0, got ({w}, {h})",
+            ),
+            Self::PolygonTooFewVertices { combined, sprite, n } => write!(
+                f, "combined {combined:?} polygon {sprite:?}: needs ≥ 3 vertices, got {n}",
+            ),
+        }
+    }
+}
+
+impl fmt::Display for Method {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Method::Id => "ID",
+            Method::Mx => "MX", Method::My => "MY", Method::Mxy => "MXY",
+            Method::Tx => "TX", Method::Ty => "TY", Method::TxMc3 => "TX_MC3",
+            Method::R1c3 => "R1C3", Method::R3c3 => "R3C3", Method::R3c3Nf => "R3C3_NF",
+            Method::MxR1c3 => "MX_R1C3", Method::MxR1c4 => "MX_R1C4",
+            Method::MxR3c2 => "MX_R3C2", Method::MxR3c3 => "MX_R3C3",
+            Method::MxR3c4 => "MX_R3C4", Method::MxR3c6 => "MX_R3C6",
+            Method::MyR2c2 => "MY_R2C2", Method::MyR2c3 => "MY_R2C3",
+            Method::MyR3c1 => "MY_R3C1", Method::MyR3c2 => "MY_R3C2",
+            Method::MyR3c3 => "MY_R3C3",
+            Method::MxyR3c3 => "MXY_R3C3", Method::MxyR3c3Nf => "MXY_R3C3_NF",
+        };
+        f.write_str(s)
+    }
+}
+
+impl std::error::Error for FabError {}
+
+// ---------------------------------------------------------------------------
+// Entry point.
+
+pub fn parse(json: &str) -> Result<Manifest, FabError> {
+    let raw: raw::Manifest = serde_json::from_str(json).map_err(FabError::Json)?;
+    translate(raw)
+}
+
+// ---------------------------------------------------------------------------
+// Raw shape — direct mirror of the JSON. Translation enforces all semantic
+// rules (default values, exclusivity of sprite vs polygonSprite, method
+// constraints, etc.) — serde stays unconfigured for these checks so the
+// error messages are uniform and the trigger conditions live in one place.
+
+mod raw {
+    use serde::Deserialize;
+
+    #[derive(Deserialize)]
+    pub struct Manifest {
+        pub version: u32,
+        #[serde(default)]
+        pub combined: Vec<Combined>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct Combined {
+        pub name: String,
+        pub pivot: Option<[f32; 2]>,
+        pub border: Option<[f32; 4]>,
+        #[serde(default)]
+        pub parts: Vec<Part>,
+    }
+
+    // Both atlas-sprite and polygon shapes share affine fields; serde
+    // `untagged` would force exclusive-or between two structs, but the
+    // ergonomics for missing-field error messages are poor. Single struct
+    // with `Option` discriminators is easier to error-message well.
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct Part {
+        // atlas-sprite discriminator
+        pub sprite: Option<String>,
+        pub method: Option<String>,
+        pub width: Option<f32>,
+        pub height: Option<f32>,
+        pub border_mult: Option<f32>,
+        pub mirror_x: Option<bool>,
+        pub mirror_y: Option<bool>,
+
+        // polygon discriminator
+        pub polygon_sprite: Option<String>,
+        pub vertices: Option<Vec<[f32; 2]>>,
+
+        // shared affine
+        pub tx: Option<f32>,
+        pub ty: Option<f32>,
+        pub sx: Option<f32>,
+        pub sy: Option<f32>,
+        pub rot_deg: Option<f32>,
+    }
+}
+
+fn translate(raw: raw::Manifest) -> Result<Manifest, FabError> {
+    if raw.version != 1 {
+        return Err(FabError::UnsupportedVersion(raw.version));
+    }
+
+    let mut seen_names: HashSet<String> = HashSet::with_capacity(raw.combined.len());
+    let mut combined: Vec<Combined> = Vec::with_capacity(raw.combined.len());
+
+    for c in raw.combined {
+        if c.name.is_empty() {
+            return Err(FabError::EmptyName);
+        }
+        if c.name.contains('/') || c.name.contains('\\') {
+            return Err(FabError::NameWithSeparator(c.name));
+        }
+        if !seen_names.insert(c.name.clone()) {
+            return Err(FabError::DuplicateName(c.name));
+        }
+        if c.parts.is_empty() {
+            return Err(FabError::EmptyParts(c.name));
+        }
+
+        let mut parts: Vec<Part> = Vec::with_capacity(c.parts.len());
+        for raw_part in c.parts {
+            parts.push(translate_part(&c.name, raw_part)?);
+        }
+
+        combined.push(Combined {
+            name: c.name,
+            pivot: c.pivot.unwrap_or([0.5, 0.5]),
+            border: c.border.unwrap_or([0.0; 4]),
+            parts,
+        });
+    }
+
+    Ok(Manifest { combined })
+}
+
+fn translate_part(combined: &str, p: raw::Part) -> Result<Part, FabError> {
+    let affine = Affine {
+        tx: p.tx.unwrap_or(0.0),
+        ty: p.ty.unwrap_or(0.0),
+        sx: p.sx.unwrap_or(1.0),
+        sy: p.sy.unwrap_or(1.0),
+        rot_deg: p.rot_deg.unwrap_or(0.0),
+    };
+
+    match (p.sprite, p.polygon_sprite) {
+        (Some(_), Some(_)) => Err(FabError::PartShape {
+            combined: combined.to_string(),
+            reason: "must declare either `sprite` or `polygonSprite`, not both",
+        }),
+        (None, None) => Err(FabError::PartShape {
+            combined: combined.to_string(),
+            reason: "must declare either `sprite` or `polygonSprite`",
+        }),
+        (Some(sprite), None) => {
+            let method_str = p.method.as_deref().unwrap_or("ID");
+            let method = parse_method(method_str).ok_or_else(|| {
+                if matches!(method_str, "FX" | "FY" | "FXY") {
+                    FabError::GeometricFlipMethod {
+                        combined: combined.to_string(),
+                        sprite: sprite.clone(),
+                        method: method_str.to_string(),
+                    }
+                } else {
+                    FabError::UnknownMethod {
+                        combined: combined.to_string(),
+                        sprite: sprite.clone(),
+                        method: method_str.to_string(),
+                    }
+                }
+            })?;
+
+            let size = match (p.width, p.height) {
+                (Some(w), Some(h)) => {
+                    if w <= 0.0 || h <= 0.0 {
+                        return Err(FabError::NonPositiveSize {
+                            combined: combined.to_string(),
+                            sprite,
+                            w, h,
+                        });
+                    }
+                    Some((w, h))
+                }
+                (None, None) => None,
+                _ => return Err(FabError::PartShape {
+                    combined: combined.to_string(),
+                    reason: "width and height must be declared together",
+                }),
+            };
+            if method.requires_size() && size.is_none() {
+                return Err(FabError::MissingSize {
+                    combined: combined.to_string(),
+                    sprite,
+                    method,
+                });
+            }
+
+            Ok(Part::AtlasSprite {
+                sprite,
+                method,
+                size,
+                border_mult: p.border_mult.unwrap_or(1.0),
+                affine,
+                mirror_x: p.mirror_x.unwrap_or(false),
+                mirror_y: p.mirror_y.unwrap_or(false),
+            })
+        }
+        (None, Some(polygon_sprite)) => {
+            let vertices = p.vertices.ok_or(FabError::PartShape {
+                combined: combined.to_string(),
+                reason: "polygon part needs `vertices`",
+            })?;
+            if vertices.len() < 3 {
+                return Err(FabError::PolygonTooFewVertices {
+                    combined: combined.to_string(),
+                    sprite: polygon_sprite,
+                    n: vertices.len(),
+                });
+            }
+            // Atlas-sprite-only fields on a polygon part signal a shape
+            // mix-up (typo, schema confusion). Reject explicitly so the
+            // author sees the issue.
+            if p.method.is_some() || p.width.is_some() || p.height.is_some()
+                || p.border_mult.is_some() || p.mirror_x.is_some() || p.mirror_y.is_some()
+            {
+                return Err(FabError::PartShape {
+                    combined: combined.to_string(),
+                    reason: "polygon parts cannot declare \
+                             method/width/height/borderMult/mirrorX/mirrorY",
+                });
+            }
+            Ok(Part::Polygon { polygon_sprite, vertices, affine })
+        }
+    }
+}
+
+fn parse_method(s: &str) -> Option<Method> {
+    Some(match s {
+        "ID" => Method::Id,
+        "MX" => Method::Mx, "MY" => Method::My, "MXY" => Method::Mxy,
+        "TX" => Method::Tx, "TY" => Method::Ty, "TX_MC3" => Method::TxMc3,
+        "R1C3" => Method::R1c3, "R3C3" => Method::R3c3, "R3C3_NF" => Method::R3c3Nf,
+        "MX_R1C3" => Method::MxR1c3, "MX_R1C4" => Method::MxR1c4,
+        "MX_R3C2" => Method::MxR3c2, "MX_R3C3" => Method::MxR3c3,
+        "MX_R3C4" => Method::MxR3c4, "MX_R3C6" => Method::MxR3c6,
+        "MY_R2C2" => Method::MyR2c2, "MY_R2C3" => Method::MyR2c3,
+        "MY_R3C1" => Method::MyR3c1, "MY_R3C2" => Method::MyR3c2,
+        "MY_R3C3" => Method::MyR3c3,
+        "MXY_R3C3" => Method::MxyR3c3, "MXY_R3C3_NF" => Method::MxyR3c3Nf,
+        _ => return None,
+    })
+}
+
+// ===========================================================================
+// Tests
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_ok(json: &str) -> Manifest {
+        parse(json).unwrap_or_else(|e| panic!("expected ok, got: {e}"))
+    }
+
+    fn parse_err(json: &str) -> FabError {
+        parse(json).expect_err("expected err")
+    }
+
+    #[test]
+    fn minimal_id_part() {
+        let m = parse_ok(r#"{
+            "version": 1,
+            "combined": [
+                { "name": "BX_Foo", "parts": [{ "sprite": "Body" }] }
+            ]
+        }"#);
+        assert_eq!(m.combined.len(), 1);
+        let c = &m.combined[0];
+        assert_eq!(c.name, "BX_Foo");
+        assert_eq!(c.pivot, [0.5, 0.5]);
+        assert_eq!(c.border, [0.0, 0.0, 0.0, 0.0]);
+        match &c.parts[0] {
+            Part::AtlasSprite { sprite, method, size, affine, mirror_x, mirror_y, border_mult } => {
+                assert_eq!(sprite, "Body");
+                assert_eq!(*method, Method::Id);
+                assert_eq!(*size, None);
+                assert_eq!(*affine, Affine::default());
+                assert!(!mirror_x);
+                assert!(!mirror_y);
+                assert_eq!(*border_mult, 1.0);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn polygon_part() {
+        let m = parse_ok(r#"{
+            "version": 1,
+            "combined": [{
+                "name": "BX_Foo",
+                "parts": [{
+                    "polygonSprite": "Color_3F314EFF",
+                    "vertices": [[-0.41,-0.385],[0.41,-0.385],[0.41,0.385],[-0.41,0.385]]
+                }]
+            }]
+        }"#);
+        match &m.combined[0].parts[0] {
+            Part::Polygon { polygon_sprite, vertices, affine } => {
+                assert_eq!(polygon_sprite, "Color_3F314EFF");
+                assert_eq!(vertices.len(), 4);
+                assert_eq!(*affine, Affine::default());
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn affine_defaults_applied_per_field() {
+        let m = parse_ok(r#"{
+            "version": 1,
+            "combined": [{ "name": "X", "parts": [
+                { "sprite": "A", "tx": 1.5, "rotDeg": 45.0 }
+            ] }]
+        }"#);
+        match &m.combined[0].parts[0] {
+            Part::AtlasSprite { affine, .. } => {
+                assert_eq!(affine.tx, 1.5);
+                assert_eq!(affine.ty, 0.0);
+                assert_eq!(affine.sx, 1.0);
+                assert_eq!(affine.sy, 1.0);
+                assert_eq!(affine.rot_deg, 45.0);
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn pivot_and_border_overridden() {
+        let m = parse_ok(r#"{
+            "version": 1,
+            "combined": [{
+                "name": "X",
+                "pivot": [0.0, 1.0],
+                "border": [2, 3, 4, 5],
+                "parts": [{ "sprite": "A" }]
+            }]
+        }"#);
+        assert_eq!(m.combined[0].pivot, [0.0, 1.0]);
+        assert_eq!(m.combined[0].border, [2.0, 3.0, 4.0, 5.0]);
+    }
+
+    #[test]
+    fn rejects_version_other_than_1() {
+        let e = parse_err(r#"{ "version": 2, "combined": [] }"#);
+        assert!(matches!(e, FabError::UnsupportedVersion(2)), "got {e:?}");
+    }
+
+    #[test]
+    fn empty_combined_is_ok() {
+        // No fabricated entries is the same as no manifest present.
+        let m = parse_ok(r#"{ "version": 1, "combined": [] }"#);
+        assert!(m.combined.is_empty());
+    }
+
+    #[test]
+    fn rejects_empty_parts() {
+        let e = parse_err(r#"{ "version": 1, "combined": [{ "name": "X", "parts": [] }] }"#);
+        assert!(matches!(e, FabError::EmptyParts(ref n) if n == "X"), "got {e:?}");
+    }
+
+    #[test]
+    fn rejects_duplicate_combined_name() {
+        let e = parse_err(r#"{ "version": 1, "combined": [
+            { "name": "X", "parts": [{ "sprite": "A" }] },
+            { "name": "X", "parts": [{ "sprite": "B" }] }
+        ] }"#);
+        assert!(matches!(e, FabError::DuplicateName(ref n) if n == "X"), "got {e:?}");
+    }
+
+    #[test]
+    fn rejects_empty_name() {
+        let e = parse_err(r#"{ "version": 1, "combined": [{ "name": "", "parts": [{ "sprite": "A" }] }] }"#);
+        assert!(matches!(e, FabError::EmptyName), "got {e:?}");
+    }
+
+    #[test]
+    fn rejects_polygon_with_atlas_sprite_fields() {
+        // Mixing an atlas-sprite-only field onto a polygon part is a shape
+        // mix-up — surface it instead of silently dropping the field.
+        for extra in [r#""method": "ID""#, r#""width": 1, "height": 1"#,
+                      r#""borderMult": 0.5"#, r#""mirrorX": true"#, r#""mirrorY": true"#] {
+            let json = format!(
+                r#"{{ "version": 1, "combined": [{{ "name": "X", "parts": [
+                    {{ "polygonSprite": "C", "vertices": [[0,0],[1,0],[0,1]], {extra} }}
+                ] }}] }}"#
+            );
+            let e = parse_err(&json);
+            assert!(matches!(e, FabError::PartShape { .. }), "got {e:?} for {extra}");
+        }
+    }
+
+    #[test]
+    fn rejects_name_with_path_separator() {
+        // JSON-source has to escape the backslash so we hand the parser the
+        // 3-char string a\b (not the 2-char a-then-backspace).
+        for json in [
+            r#"{ "version": 1, "combined": [{ "name": "a/b",  "parts": [{ "sprite": "A" }] }] }"#,
+            r#"{ "version": 1, "combined": [{ "name": "a\\b", "parts": [{ "sprite": "A" }] }] }"#,
+        ] {
+            let e = parse_err(json);
+            assert!(matches!(e, FabError::NameWithSeparator(_)), "got {e:?} for {json}");
+        }
+    }
+
+    #[test]
+    fn rejects_fx_fy_fxy_with_specific_error() {
+        for bad in ["FX", "FY", "FXY"] {
+            let json = format!(
+                r#"{{ "version": 1, "combined": [{{ "name": "X", "parts": [
+                    {{ "sprite": "A", "method": "{bad}", "width": 1, "height": 1 }}
+                ] }}] }}"#
+            );
+            let e = parse_err(&json);
+            assert!(
+                matches!(&e, FabError::GeometricFlipMethod { method, .. } if method == bad),
+                "got {e:?} for {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_method() {
+        let e = parse_err(r#"{ "version": 1, "combined": [{ "name": "X", "parts": [
+            { "sprite": "A", "method": "NONESUCH", "width": 1, "height": 1 }
+        ] }] }"#);
+        assert!(matches!(&e, FabError::UnknownMethod { method, .. } if method == "NONESUCH"), "got {e:?}");
+    }
+
+    #[test]
+    fn rejects_non_id_method_without_size() {
+        let e = parse_err(r#"{ "version": 1, "combined": [{ "name": "X", "parts": [
+            { "sprite": "A", "method": "MX" }
+        ] }] }"#);
+        assert!(matches!(e, FabError::MissingSize { .. }), "got {e:?}");
+    }
+
+    #[test]
+    fn rejects_half_specified_size() {
+        let e = parse_err(r#"{ "version": 1, "combined": [{ "name": "X", "parts": [
+            { "sprite": "A", "width": 1 }
+        ] }] }"#);
+        assert!(matches!(e, FabError::PartShape { .. }), "got {e:?}");
+    }
+
+    #[test]
+    fn rejects_non_positive_size() {
+        for (w, h) in [(0.0, 1.0), (1.0, 0.0), (-1.0, 1.0)] {
+            let json = format!(
+                r#"{{ "version": 1, "combined": [{{ "name": "X", "parts": [
+                    {{ "sprite": "A", "method": "MX", "width": {w}, "height": {h} }}
+                ] }}] }}"#
+            );
+            let e = parse_err(&json);
+            assert!(matches!(e, FabError::NonPositiveSize { .. }), "got {e:?} for ({w},{h})");
+        }
+    }
+
+    #[test]
+    fn rejects_polygon_with_fewer_than_three_verts() {
+        let e = parse_err(r#"{ "version": 1, "combined": [{ "name": "X", "parts": [
+            { "polygonSprite": "C", "vertices": [[0,0],[1,1]] }
+        ] }] }"#);
+        assert!(matches!(e, FabError::PolygonTooFewVertices { n: 2, .. }), "got {e:?}");
+    }
+
+    #[test]
+    fn rejects_part_with_both_sprite_and_polygon() {
+        let e = parse_err(r#"{ "version": 1, "combined": [{ "name": "X", "parts": [
+            { "sprite": "A", "polygonSprite": "C", "vertices": [[0,0],[1,0],[0,1]] }
+        ] }] }"#);
+        assert!(matches!(e, FabError::PartShape { .. }), "got {e:?}");
+    }
+
+    #[test]
+    fn rejects_part_with_neither_sprite_nor_polygon() {
+        let e = parse_err(r#"{ "version": 1, "combined": [{ "name": "X", "parts": [
+            { "tx": 1.0 }
+        ] }] }"#);
+        assert!(matches!(e, FabError::PartShape { .. }), "got {e:?}");
+    }
+
+    #[test]
+    fn all_methods_parse() {
+        // Every supported method string in docs/fab.md round-trips through
+        // parse_method + Display. Adding a new variant requires updating
+        // this list and the Display impl; the test catches half-done edits.
+        let pairs: &[(&str, Method)] = &[
+            ("ID", Method::Id),
+            ("MX", Method::Mx), ("MY", Method::My), ("MXY", Method::Mxy),
+            ("TX", Method::Tx), ("TY", Method::Ty), ("TX_MC3", Method::TxMc3),
+            ("R1C3", Method::R1c3), ("R3C3", Method::R3c3), ("R3C3_NF", Method::R3c3Nf),
+            ("MX_R1C3", Method::MxR1c3), ("MX_R1C4", Method::MxR1c4),
+            ("MX_R3C2", Method::MxR3c2), ("MX_R3C3", Method::MxR3c3),
+            ("MX_R3C4", Method::MxR3c4), ("MX_R3C6", Method::MxR3c6),
+            ("MY_R2C2", Method::MyR2c2), ("MY_R2C3", Method::MyR2c3),
+            ("MY_R3C1", Method::MyR3c1), ("MY_R3C2", Method::MyR3c2),
+            ("MY_R3C3", Method::MyR3c3),
+            ("MXY_R3C3", Method::MxyR3c3), ("MXY_R3C3_NF", Method::MxyR3c3Nf),
+        ];
+        for (s, m) in pairs {
+            assert_eq!(parse_method(s), Some(*m), "parse {s}");
+            assert_eq!(format!("{m}"), *s, "display {s}");
+        }
+    }
+
+    #[test]
+    fn parts_order_preserved_verbatim() {
+        // Order is significant (docs/fab.md). The parser must not sort,
+        // dedup, or reorder.
+        let m = parse_ok(r#"{ "version": 1, "combined": [{ "name": "X", "parts": [
+            { "sprite": "Z" },
+            { "sprite": "A" },
+            { "sprite": "Z" }
+        ] }] }"#);
+        let names: Vec<&str> = m.combined[0]
+            .parts
+            .iter()
+            .map(|p| match p {
+                Part::AtlasSprite { sprite, .. } => sprite.as_str(),
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(names, ["Z", "A", "Z"]);
+    }
+}

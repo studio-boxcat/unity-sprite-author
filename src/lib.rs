@@ -1,4 +1,5 @@
 pub mod emit;
+pub mod fab;
 pub mod ffi;
 pub mod meta;
 pub mod pipeline;

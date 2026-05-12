@@ -63,8 +63,8 @@ absent, behavior is unchanged. No FFI parameter, no `abi_version` bump.
 
 ### Rules enforced at parse time
 
-- `name` is a bare filename; duplicates and collisions with non-pruned
-  per-tpsheet sprites → error.
+- `name` is a non-empty bare filename (no `/`, no `\`); duplicates and
+  collisions with non-pruned per-tpsheet sprites → error.
 - `parts` is non-empty; **order is significant** — it's the render order
   (first = back, last = front), matching the DFS hierarchy walk that
   `SpriteMeshBuilder.ExtractMeshDataByHierarchicalOrder` (meow-tower) does
@@ -79,6 +79,10 @@ absent, behavior is unchanged. No FFI parameter, no `abi_version` bump.
   `Core/Runtime/UI/MeshGeneration/UISliceMeshGen.cs` (meow-tower) are
   preserved — violations are parse errors naming the offending part.
   Method list and constraints live in that file; this crate is a faithful port.
+- Polygon parts must not declare atlas-sprite-only fields
+  (`method`, `width`, `height`, `borderMult`, `mirrorX`, `mirrorY`).
+  Mixing the two shapes signals a typo; the parser rejects rather than
+  silently dropping fields.
 
 ### Per-part transform
 
