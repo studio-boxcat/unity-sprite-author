@@ -31,6 +31,10 @@ pub struct UvTransform {
     pub w: f32,
 }
 
+/// Pre-rendered fragments of the Sprite `m_RD` block. Built by [`build`]
+/// (atlas-sprite path) or [`build_fabricated`] (combined-mesh path) and
+/// consumed by [`emit::emit`](crate::emit::emit) which interpolates the
+/// hex strings + counts directly into the YAML.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RenderData {
     pub vertex_count: u32,

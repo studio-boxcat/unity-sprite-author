@@ -61,19 +61,27 @@ pub fn read_guid<P: AsRef<Path>>(meta_path: P) -> Result<[u8; 16], MetaError> {
     parse_guid(&text)
 }
 
-// Sprite .asset.meta varies along two independent axes:
-//   1. Trailing-space style: legacy emits `userData: \n` (with space);
-//      modern emits `userData:\n` (without). 3 bytes difference per line.
-//   2. mainObjectFileID: usually 21300000 (the Sprite class fileID), but
-//      transient/incompletely-imported sprites carry 0 instead.
-// To avoid churn on existing metas we preserve both axes when present.
-// Fresh mints use Modern186 + 21300000.
+/// Trailing-space style of a sprite `.asset.meta`. Two emit shapes
+/// coexist in the corpus and the pipeline preserves whichever the
+/// existing file uses (see [`MetaShape`]). Three bytes / line differ
+/// between the two — the cumulative difference is what gives the 186
+/// vs 189 byte counts in the variant names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MetaFormat {
+    /// Current Unity emit: `userData:\n` (no trailing space). 186 bytes.
     Modern186,
+    /// Older Unity emit: `userData: \n` (with trailing space, plus the
+    /// same on `assetBundleName` and `assetBundleVariant`). 189 bytes.
     Legacy189,
 }
 
+/// Per-file emit shape preserved across rewrites. Sprite `.asset.meta`
+/// varies along two independent axes: [`MetaFormat`] (Modern186 vs
+/// Legacy189 trailing-space style) and `mainObjectFileID` (usually
+/// `21300000`, the Sprite class fileID, but transient / incompletely-
+/// imported sprites carry `0`). The pipeline preserves both axes when an
+/// existing file is present so a rewrite is byte-stable; fresh mints use
+/// [`MetaShape::FRESH`] (Modern186 + `21300000`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MetaShape {
     pub format: MetaFormat,
