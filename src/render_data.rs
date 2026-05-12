@@ -195,9 +195,10 @@ pub struct AtlasSize {
 
 /// Build [`RenderData`] for a tpsheet (atlas-sprite) path sprite. The
 /// caller has the sprite's `rect` / `pivot` / `vertices` / `indices`
-/// from [`tpsheet::parse`] and the atlas PPU + per-sprite `spriteScale`
-/// from the `.png.meta` / `.tps` siblings. For combined-mesh sprites use
-/// [`build_fabricated`] instead, which takes pre-computed verts / UVs.
+/// from [`crate::tpsheet::parse`] and the atlas PPU + per-sprite
+/// `spriteScale` from the `.png.meta` / `.tps` siblings. For combined-
+/// mesh sprites use [`build_fabricated`] instead, which takes pre-
+/// computed verts / UVs.
 pub fn build(
     rect: Rect,
     pivot: Pivot,
