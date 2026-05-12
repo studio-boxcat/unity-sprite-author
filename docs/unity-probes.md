@@ -26,6 +26,13 @@ the GUID at import time, BoxcatBridge needs a second-pass rewrite of
 proves the rlib's mint → write → re-read → re-emit chain is a fixed
 point. The Unity-side question below is the remaining unknown.
 
+**Prerequisite.** This procedure needs an `Orgel.tpsheet` on disk
+(`pipeline::generate` deletes it on success, so it's only present
+mid-import). With Unity closed, run `TexturePackerCLI Orgel.tps` (or
+right-click the `.tps` in the Editor → `Run TexturePacker` once Unity
+is open) to regenerate the sibling `.tpsheet` first. The
+postprocessor below fires on that file.
+
 **Procedure.**
 
 1. Close Unity.
@@ -40,8 +47,9 @@ point. The Unity-side question below is the remaining unknown.
    rm Assets/21_Collections/OrgelContents/1204/Orgel/Cake__DecoLeft.asset
    rm Assets/21_Collections/OrgelContents/1204/Orgel/Cake__DecoLeft.asset.meta
    ```
-4. Boot Unity. The `TPSheetPostprocessor` fires on the sibling `Orgel.tpsheet`
-   and re-emits both files; our rlib mints a fresh GUID.
+4. Boot Unity with the regenerated `Orgel.tpsheet` in place. The
+   `TPSheetPostprocessor` fires on it and re-emits both files; our
+   rlib mints a fresh GUID. The `.tpsheet` is deleted again on success.
 5. Read the new pair:
    ```sh
    grep ^guid: Assets/21_Collections/OrgelContents/1204/Orgel/Cake__DecoLeft.asset.meta
