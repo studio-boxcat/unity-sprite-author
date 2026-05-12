@@ -105,8 +105,8 @@ pub fn encode_typelessdata(positions: &[Position3], uvs: &[Uv]) -> (String, usiz
 ///
 /// uvTransform uses the same offset-routed formula as [`build`] (going
 /// through `center` first) — that 1-ULP-stable path is what kept the
-/// tpsheet e2e byte-exact, and there's no reason to deviate for fab
-/// outputs until a real fixture forces it.
+/// tpsheet e2e byte-exact and is now also verified byte-exact under
+/// Silloutte1/2/3 (commit `5943ede`).
 pub fn build_fabricated(
     verts: &[[f32; 2]],
     uvs: &[[f32; 2]],
