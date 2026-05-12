@@ -140,8 +140,10 @@ sprite — that list becomes the spec for the new emit branch.
 
 **Question.** 54 of 62 Orgel sprites have `spriteScale != 1.0` in the
 current `Orgel.tps`, but the committed `.asset` goldens predate that
-change — the e2e currently skips them rather than fail. We need a
-consistent `(.tps, .tpsheet, .asset)` triple.
+change — `golden_parity` skips any sprite whose committed `m_PixelsToUnits`
+doesn't match the test's `ATLAS_PPU = 80` (and the e2e would too, if
+the post-rlib-pivot meow-tower checkout had `.tpsheet`s to walk). We
+need a consistent `(.tps, .tpsheet, .asset)` triple.
 
 **Procedure.**
 
