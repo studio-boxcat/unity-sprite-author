@@ -98,7 +98,8 @@ pub fn calc_rect_and_pivot(verts: &[[f32; 2]], ppu: f32) -> ((f32, f32), (f32, f
 
 fn is_method_supported(m: Method) -> bool {
     matches!(m, Method::Id | Method::Mx | Method::My | Method::Mxy
-              | Method::Tx | Method::Ty | Method::TxMc3)
+              | Method::Tx | Method::Ty | Method::TxMc3
+              | Method::R3c3 | Method::R3c3Nf)
 }
 
 // Source-rect / border constraints asserted by each slice method in
@@ -213,6 +214,8 @@ pub fn atlas_sprite_mesh(
         Method::Tx  => tile_axis(entry, atlas, ppu, &ctx, size.expect("tx size"), TileAxis::X),
         Method::Ty  => tile_axis(entry, atlas, ppu, &ctx, size.expect("ty size"), TileAxis::Y),
         Method::TxMc3 => tile_x_mc3(entry, atlas, ppu, &ctx, size.expect("tx_mc3 size")),
+        Method::R3c3 => slice_r3c3(entry, atlas, ppu, &ctx, size.expect("r3c3 size"), false),
+        Method::R3c3Nf => slice_r3c3(entry, atlas, ppu, &ctx, size.expect("r3c3_nf size"), true),
         _ => panic!("method {method} not implemented"),
     }
 }
@@ -490,6 +493,131 @@ fn build_strap_indices(cols_half: usize) -> Vec<u16> {
 
 fn push_quad(tris: &mut Vec<u16>, a: u16, b: u16, c: u16, d: u16) {
     tris.extend_from_slice(&[a, b, d, a, d, c]);
+}
+
+// --- slice grids (R3C3 and friends) — ports of UISliceMeshGen.cs ----------
+
+// 4×4 UV grid for a bordered sprite. Mirrors meow-tower's UVMatrix, which
+// wraps Unity's DataUtility.GetOuter/InnerUV. The inner border bounds are
+// the atlas-normalized inset by `border` pixels on each side of the sprite's
+// outer rect (post-borderMult scaling).
+#[derive(Debug, Clone, Copy)]
+struct UvGrid {
+    u: [f32; 4], // u[0..4] = outer-min, inner-min, inner-max, outer-max
+    v: [f32; 4],
+}
+
+impl UvGrid {
+    fn for_entry(entry: &SpriteEntry, atlas: AtlasSize, border_mult: f32) -> Self {
+        let aw = atlas.width as f32;
+        let ah = atlas.height as f32;
+        let r = entry.rect;
+        let u_min = r.x as f32 / aw;
+        let u_max = (r.x + r.w) as f32 / aw;
+        let v_min = r.y as f32 / ah;
+        let v_max = (r.y + r.h) as f32 / ah;
+        // Border inset in atlas-normalized space, scaled by borderMult.
+        let bl = entry.border.left as f32 * border_mult / aw;
+        let br = entry.border.right as f32 * border_mult / aw;
+        let bb = entry.border.bottom as f32 * border_mult / ah;
+        let bt = entry.border.top as f32 * border_mult / ah;
+        UvGrid {
+            u: [u_min, u_min + bl, u_max - br, u_max],
+            v: [v_min, v_min + bb, v_max - bt, v_max],
+        }
+    }
+    fn uv(&self, col: usize, row: usize) -> [f32; 2] { [self.u[col], self.v[row]] }
+}
+
+// Grid index buffer for a `rows × cols` quad grid (CW winding to match
+// CreateIndices in GridIndex.cs).
+fn create_grid_indices(rows: usize, cols: usize) -> Vec<u16> {
+    let mut out: Vec<u16> = Vec::with_capacity(rows * cols * 6);
+    let mut vr: u16 = 0;
+    for _ in 0..rows {
+        for x in 0..cols as u16 {
+            let vl = vr + x;
+            let vu = vl + cols as u16 + 1;
+            // Upper-left triangle, then lower-right (CW).
+            out.extend_from_slice(&[vl, vu, vu + 1, vu + 1, vl + 1, vl]);
+        }
+        vr += cols as u16 + 1;
+    }
+    out
+}
+
+// 16 verts on a 4×4 grid laid out row-major: (x0,y0),(x1,y0),(x2,y0),(x3,y0),
+// (x0,y1),..., (x3,y3). Matches GridPos.SetUp_R3C3.
+fn r3c3_positions(
+    target: (f32, f32),
+    part_pivot: (f32, f32),
+    border: (f32, f32, f32, f32), // L, B, R, T in world units
+) -> Vec<[f32; 2]> {
+    let (target_w, target_h) = target;
+    let x_min = -target_w * part_pivot.0;
+    let x_max = target_w * (1.0 - part_pivot.0);
+    let y_min = -target_h * part_pivot.1;
+    let y_max = target_h * (1.0 - part_pivot.1);
+    let x = [x_min, x_min + border.0, x_max - border.2, x_max];
+    let y = [y_min, y_min + border.1, y_max - border.3, y_max];
+    let mut out = Vec::with_capacity(16);
+    for &yi in &y {
+        for &xi in &x {
+            out.push([xi, yi]);
+        }
+    }
+    out
+}
+
+fn r3c3_uvs(grid: &UvGrid) -> Vec<[f32; 2]> {
+    let mut out = Vec::with_capacity(16);
+    for row in 0..4 {
+        for col in 0..4 {
+            out.push(grid.uv(col, row));
+        }
+    }
+    out
+}
+
+// R3C3 / R3C3_NF: same vert + UV layout; differ only in whether the centre
+// quad (4 indices) is included. Source-rect padding is currently treated as
+// zero (TexturePacker atlases produce tight rects in our pipeline).
+fn slice_r3c3(
+    entry: &SpriteEntry,
+    atlas: AtlasSize,
+    ppu: f32,
+    ctx: &SliceCtx,
+    target: (f32, f32),
+    no_fill: bool,
+) -> PartMesh {
+    let bl = entry.border.left as f32 * ctx.border_mult / ppu;
+    let br = entry.border.right as f32 * ctx.border_mult / ppu;
+    let bb = entry.border.bottom as f32 * ctx.border_mult / ppu;
+    let bt = entry.border.top as f32 * ctx.border_mult / ppu;
+    let verts_local = r3c3_positions(target, ctx.part_pivot, (bl, bb, br, bt));
+    let grid = UvGrid::for_entry(entry, atlas, ctx.border_mult);
+    let uvs = r3c3_uvs(&grid);
+    let tris = if no_fill { r3c3_nf_indices() } else { create_grid_indices(3, 3) };
+
+    let verts: Vec<[f32; 2]> = verts_local.iter()
+        .map(|v| apply_affine(*v, ctx.affine))
+        .collect();
+    PartMesh { verts, uvs, tris }
+}
+
+// R3C3_NF: same as R3C3 but the centre quad (verts 5, 6, 9, 10) is omitted.
+// Literal from GridIndex.cs.
+fn r3c3_nf_indices() -> Vec<u16> {
+    vec![
+        0, 4, 5, 5, 1, 0,    // BL
+        1, 5, 6, 6, 2, 1,    // BC
+        2, 6, 7, 7, 3, 2,    // BR
+        4, 8, 9, 9, 5, 4,    // ML
+        6, 10, 11, 11, 7, 6, // MR
+        8, 12, 13, 13, 9, 8, // TL
+        9, 13, 14, 14, 10, 9,// TC
+        10, 14, 15, 15, 11, 10, // TR
+    ]
 }
 
 // TX_MC3: 3-section layout along X — mirrored left edge | tiled centre |
@@ -1199,6 +1327,97 @@ mod tests {
         assert!((m.uvs[2][0]).abs() < 1e-6);
     }
 
+    // --- slice grids: R3C3 / R3C3_NF ---
+
+    #[test]
+    fn r3c3_emits_16_verts_and_54_indices() {
+        // 8×8 sprite with border (1,1,1,1), target 16×16. Centred at origin
+        // (part_pivot 0.5, 0.5).
+        let entry = quad_entry_with_border(0, 0, 8, 8, (0.5, 0.5), 1, 1);
+        // Override bottom/top borders too via direct manipulation.
+        let entry = SpriteEntry {
+            border: crate::tpsheet::Border { left: 1, bottom: 1, right: 1, top: 1 },
+            ..entry
+        };
+        let m = atlas_sprite_mesh(
+            &entry, Method::R3c3, Some((16.0, 16.0)), [0.5, 0.5], 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+        );
+        assert_eq!(m.verts.len(), 16, "4×4 grid");
+        // 3×3 = 9 quads, 54 indices.
+        assert_eq!(m.tris.len(), 54);
+        assert_eq!(m.uvs.len(), 16);
+    }
+
+    #[test]
+    fn r3c3_corner_verts_form_target_rect_bounds() {
+        let entry = quad_entry_with_border(0, 0, 8, 8, (0.5, 0.5), 1, 1);
+        let entry = SpriteEntry {
+            border: crate::tpsheet::Border { left: 1, bottom: 1, right: 1, top: 1 },
+            ..entry
+        };
+        let m = atlas_sprite_mesh(
+            &entry, Method::R3c3, Some((16.0, 16.0)), [0.5, 0.5], 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+        );
+        // Bottom-left corner of grid (index 0) = target rect BL = (-8, -8).
+        assert_eq!(m.verts[0], [-8.0, -8.0]);
+        // Top-right corner (index 15) = (+8, +8).
+        assert_eq!(m.verts[15], [8.0, 8.0]);
+        // Bottom-left inner border vert (index 5) at (-8 + bL, -8 + bB)
+        // with bL/bB = 1 (border) / 1 (ppu) * 1 (borderMult) = 1.
+        assert_eq!(m.verts[5], [-7.0, -7.0]);
+        assert_eq!(m.verts[10], [7.0, 7.0]);
+    }
+
+    #[test]
+    fn r3c3_uvs_form_outer_inner_grid() {
+        // 8×8 sprite at atlas (0, 0), border (1,1,1,1), atlas 16×16.
+        // Outer UV: (0..8/16) = (0..0.5). Inner: ((0+1)/16, (8-1)/16) = (0.0625, 0.4375).
+        let entry = quad_entry_with_border(0, 0, 8, 8, (0.5, 0.5), 1, 1);
+        let entry = SpriteEntry {
+            border: crate::tpsheet::Border { left: 1, bottom: 1, right: 1, top: 1 },
+            ..entry
+        };
+        let m = atlas_sprite_mesh(
+            &entry, Method::R3c3, Some((16.0, 16.0)), [0.5, 0.5], 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+        );
+        // (col=0, row=0) outer-min, outer-min
+        assert_eq!(m.uvs[0], [0.0, 0.0]);
+        // (col=3, row=3) outer-max, outer-max
+        assert_eq!(m.uvs[15], [0.5, 0.5]);
+        // (col=1, row=1) inner-min, inner-min
+        assert_eq!(m.uvs[5], [0.0625, 0.0625]);
+    }
+
+    #[test]
+    fn r3c3_nf_omits_centre_quad() {
+        let entry = quad_entry_with_border(0, 0, 8, 8, (0.5, 0.5), 1, 1);
+        let entry = SpriteEntry {
+            border: crate::tpsheet::Border { left: 1, bottom: 1, right: 1, top: 1 },
+            ..entry
+        };
+        let m = atlas_sprite_mesh(
+            &entry, Method::R3c3Nf, Some((16.0, 16.0)), [0.5, 0.5], 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+        );
+        // 8 quads * 6 indices = 48 (vs R3C3's 54).
+        assert_eq!(m.tris.len(), 48);
+        // None of the emitted triangles cover the centre verts 5/6/9/10 in
+        // the {5,6,10,9} winding — those would be the centre quad's tri pair.
+        // Easier check: the centre quad's vertex pair (5,6) doesn't appear as
+        // an edge in any triangle.
+        let mut centre_pair_seen = false;
+        for tri in m.tris.chunks(3) {
+            let set: std::collections::HashSet<u16> = tri.iter().copied().collect();
+            if set.contains(&5) && set.contains(&6) && set.contains(&10) {
+                centre_pair_seen = true; break;
+            }
+        }
+        assert!(!centre_pair_seen, "NF should omit the {{5,6,10}} centre triangle");
+    }
+
     #[test]
     fn icon_mx_duplicates_with_native_origin_mirror() {
         // 2×2 sprite at pivot (0.5, 0.5), PPU 1, no target size.
@@ -1330,10 +1549,10 @@ mod tests {
 
     #[test]
     fn build_combined_errors_on_unimplemented_method() {
-        // Use a method that hasn't landed yet (R3C3 is phase 6).
+        // Use a method that hasn't landed yet (R1C3 still pending).
         let combined = make_combined("BX", vec![Part::AtlasSprite {
             sprite: "A".into(),
-            method: Method::R3c3,
+            method: Method::R1c3,
             size: Some((4.0, 4.0)),
             part_pivot: [0.5, 0.5],
             border_mult: 1.0,
@@ -1346,7 +1565,7 @@ mod tests {
             AtlasSize { width: 16, height: 16 },
             1.0,
         ).unwrap_err();
-        assert!(matches!(err, CombineError::MethodUnimplemented { method: Method::R3c3, .. }), "{err:?}");
+        assert!(matches!(err, CombineError::MethodUnimplemented { method: Method::R1c3, .. }), "{err:?}");
     }
 
     #[test]
