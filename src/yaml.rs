@@ -82,4 +82,117 @@ mod tests {
         assert_eq!(float(567.5), "567.5");
         assert_eq!(float(221.0), "221");
     }
+
+    // Seeds from every distinct fractional float literal in tests/golden/**/*.asset
+    // and asserts our `float()` round-trips each one bit-exactly. Guard against
+    // a future Rust Display divergence from C# `ToString("R")`.
+    #[test]
+    fn float_corpus_full_roundtrip() {
+        use std::collections::BTreeSet;
+        use std::fs;
+        use std::path::Path;
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden");
+        let mut floats: BTreeSet<String> = BTreeSet::new();
+        walk_assets(&root, &mut |path| {
+            let Ok(text) = fs::read_to_string(path) else { return };
+            scan_fractional_floats(&text, &mut floats);
+        });
+
+        assert!(
+            floats.len() >= 90,
+            "expected ≥90 distinct float literals in the golden corpus, found {}",
+            floats.len()
+        );
+
+        let mut mismatches: Vec<String> = Vec::new();
+        for s in &floats {
+            let Ok(f) = s.parse::<f32>() else {
+                mismatches.push(format!("could not parse {s:?} as f32"));
+                continue;
+            };
+            let got = float(f);
+            if &got != s {
+                mismatches.push(format!(
+                    "{s:?} (bits 0x{:08x}) → float() = {got:?}",
+                    f.to_bits()
+                ));
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "{} float format mismatches:\n  {}",
+            mismatches.len(),
+            mismatches.join("\n  ")
+        );
+    }
+
+    fn walk_assets(dir: &std::path::Path, f: &mut dyn FnMut(&std::path::Path)) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                walk_assets(&p, f);
+            } else if p.extension().and_then(|e| e.to_str()) == Some("asset") {
+                f(&p);
+            }
+        }
+    }
+
+    // Extracts Unity float-literal tokens (mandatory fractional part), boundary
+    // checked so embedded substrings inside identifiers/hex never match.
+    fn scan_fractional_floats(text: &str, out: &mut std::collections::BTreeSet<String>) {
+        let bytes = text.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            let token_start = i;
+            let prev_alnum = i > 0
+                && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'.');
+            let mut j = i;
+            if bytes[j] == b'-' {
+                j += 1;
+            }
+            if j >= bytes.len() || !bytes[j].is_ascii_digit() {
+                i = token_start + 1;
+                continue;
+            }
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j >= bytes.len() || bytes[j] != b'.' {
+                i = j.max(token_start + 1);
+                continue;
+            }
+            j += 1;
+            if j >= bytes.len() || !bytes[j].is_ascii_digit() {
+                i = token_start + 1;
+                continue;
+            }
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b'e' {
+                let exp_start = j;
+                j += 1;
+                if j < bytes.len() && bytes[j] == b'-' {
+                    j += 1;
+                }
+                if j < bytes.len() && bytes[j].is_ascii_digit() {
+                    while j < bytes.len() && bytes[j].is_ascii_digit() {
+                        j += 1;
+                    }
+                } else {
+                    j = exp_start;
+                }
+            }
+            // Don't accept literals abutting a trailing alnum (would be inside
+            // an identifier or hex stream).
+            let next_alnum = j < bytes.len()
+                && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'.');
+            if !prev_alnum && !next_alnum {
+                out.insert(text[token_start..j].to_string());
+            }
+            i = j.max(token_start + 1);
+        }
+    }
 }

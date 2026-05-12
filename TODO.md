@@ -35,7 +35,7 @@ Old m_Offset analysis (kept for history; ignore the "unsolved" framing):
 - **Non-1.0 spriteScale fixture**: 54 of 62 Orgel sprites have non-1 `spriteScale` in the current `Orgel.tps`, but the committed `.asset` goldens were emitted with the old `.tps` state. The byte-exact integration test currently skips these. Either re-import in Unity (regenerate `.asset` goldens) or capture a fresh consistent fixture pair `(Foo.tps, Foo.tpsheet, Foo/*.asset)` from a different atlas.
 - **`settingsRaw` bit layout**: every sampled `.asset` has `settingsRaw: 192`. Diff this across atlases with different filter mode, wrap mode, color space settings — find a varied fixture or rule out variation. Until then, hardcode 192 with a panic-guard.
 - **`m_AtlasRD` vs `m_RD` divergence**: identical for non-SpriteAtlas sprites (verified). Confirm the constraint with a SpriteAtlas-managed fixture; panic on `m_SpriteAtlas != {fileID:0}` until that's spec'd.
-- **Float format unit-test table**: build before M3. Seed by `grep -oE '[0-9]+\.[0-9]+' tests/golden/**/*.asset | sort -u`. Each value verified against C# `((float)x).ToString("R", CultureInfo.InvariantCulture)`.
+- ~~**Float format unit-test table**~~ — landed in `yaml::tests::float_corpus_full_roundtrip` (commit pending). Scans every `.asset` under `tests/golden/`, extracts every distinct fractional float literal (93 currently), and asserts `yaml::float()` round-trips each one bit-exactly. Future Rust Display divergence from C# `ToString("R")` will surface here as a unit-test failure rather than a golden-byte mismatch.
 
 ## C# integration items
 
