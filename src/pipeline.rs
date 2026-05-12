@@ -22,6 +22,11 @@ use crate::render_data::{self, AtlasSize};
 use crate::tps;
 use crate::tpsheet;
 
+/// All-or-nothing error type for [`generate`]. Phase-1 errors (parse,
+/// build, validation) leave the filesystem untouched; phase-2 errors
+/// clean up `.tmp` siblings and leave originals. Each `Display` impl
+/// includes enough context for the C# side to surface to the developer
+/// via `Debug.LogError` without further annotation.
 #[derive(Debug)]
 pub enum Error {
     Io { path: PathBuf, source: io::Error },
@@ -34,11 +39,13 @@ pub enum Error {
     DuplicateSpriteName(String),
     Fab(fab::FabError),
     Combine(combine::CombineError),
-    // On-disk .asset's textureRect.{w,h} doesn't match the rect we'd emit.
-    // Only seen on Unity sprites authored under SpriteMeshType.Tight +
-    // spriteMode: Multiple, which ran an alpha-edge tightness pass we can't
-    // reproduce. Resolution: delete the offending .asset so Unity re-emits
-    // it under the current spriteMode:1 path (textureRect snaps to m_Rect).
+    /// On-disk `.asset`'s `textureRect.{w, h}` doesn't match the rect
+    /// the pipeline would emit. Only seen on Unity sprites authored
+    /// under `SpriteMeshType.Tight` + `spriteMode: Multiple`, which ran
+    /// an alpha-edge tightness pass this crate doesn't reproduce.
+    /// Resolution: delete the offending `.asset` so Unity re-emits it
+    /// under the current `spriteMode: 1` path (where `textureRect`
+    /// snaps to `m_Rect`).
     TextureRectDivergence {
         sprite: String,
         on_disk: (f32, f32),
