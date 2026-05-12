@@ -41,11 +41,20 @@ pub struct RenderData {
     pub uv_transform: UvTransform,
 }
 
-// Mirrors SheetLoader.AssignToSprite (the 5-arg overload):
-//   ps[i] = ((p - pivot * size) * scaleFactor)
-// with all operations in f32. scaleFactor = spriteScale / ppu (precomputed
-// f32 reciprocal). Mathematically equivalent to division by ppu, but the
-// rounding is different — multiplying matches C# byte-for-byte.
+/// Convert an atlas-pixel vertex to pivot-relative world units.
+///
+/// Mirrors `SheetLoader.AssignToSprite` (the 5-arg overload):
+///
+/// ```text
+/// ps[i] = ((p - pivot * size) * scaleFactor)
+/// ```
+///
+/// with all operations in `f32`. `vertex_scale = spriteScale / ppu`
+/// (precomputed reciprocal); pass it in rather than recomputing.
+/// Mathematically equivalent to `(p - pivot * size) / ppu`, but the
+/// rounding is different — multiplying by the precomputed reciprocal
+/// matches C# byte-for-byte (1-ULP gap on common inputs, see
+/// `combine::local_src_verts` for the same trap on the fab path).
 pub fn pixel_to_local(v: Vertex, rect: Rect, pivot: Pivot, vertex_scale: f32) -> Position3 {
     let w = rect.w as f32;
     let h = rect.h as f32;

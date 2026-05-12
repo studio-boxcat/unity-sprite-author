@@ -41,14 +41,16 @@ pub struct TpsData {
 }
 
 impl TpsData {
-    // Returns InvertScale for the sprite. Falls back to 1.0 if not found
-    // (mirrors `TPSData.GetInvertedScale` + `TryGetSpriteInfo` in
-    // meow-tower/Packages/com.boxcat.libs/TexturePacker/TexturePackerUtils.cs).
-    //
-    // The fallback split on '-' handles aliases for sprites packed from
-    // sub-folders: TexturePacker writes `OrgelEvent~/BG/Day_Brush.png` as
-    // a filename in the .tps but emits `BG-Day_Brush` as the alias in the
-    // .tpsheet. Direct lookup misses; `Tail('-')` recovers the filename.
+    /// Return `1.0 / spriteScale` for the sprite, falling back to `1.0`
+    /// when the alias isn't found (mirrors `TPSData.GetInvertedScale` +
+    /// `TryGetSpriteInfo` in
+    /// `meow-tower/Packages/com.boxcat.libs/TexturePacker/TexturePackerUtils.cs`).
+    ///
+    /// The fallback split on `'-'` handles aliases for sprites packed from
+    /// sub-folders: TexturePacker writes `OrgelEvent~/BG/Day_Brush.png` as
+    /// a filename in the `.tps` but emits `BG-Day_Brush` as the alias in
+    /// the `.tpsheet`. Direct lookup misses; the suffix-after-last-`-`
+    /// (C# side: `Tail('-')`) recovers the filename.
     pub fn invert_scale(&self, sprite_alias: &str) -> f32 {
         if let Some(s) = self.invert_scales.get(sprite_alias) {
             return *s;
