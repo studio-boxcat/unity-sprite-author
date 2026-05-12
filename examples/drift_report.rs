@@ -80,11 +80,30 @@ fn line_diff(golden: &str, ours: &str, max: usize) -> Vec<(usize, String, String
     diffs
 }
 
+fn meow_tower_root() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("MEOW_TOWER_PATH") {
+        let path = PathBuf::from(p);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+    let default = PathBuf::from("/Users/jameskim/Develop/meow-tower");
+    default.exists().then_some(default)
+}
+
 fn main() {
-    let root = Path::new("/Users/jameskim/Develop/meow-tower/Assets");
+    let Some(meow_root) = meow_tower_root() else {
+        eprintln!("drift_report: MEOW_TOWER_PATH not set and default not found; nothing to scan.");
+        return;
+    };
+    let root = meow_root.join("Assets");
     let mut tpsheets = Vec::new();
-    find_tpsheets(root, &mut tpsheets);
+    find_tpsheets(&root, &mut tpsheets);
     tpsheets.sort();
+    if tpsheets.is_empty() {
+        eprintln!("drift_report: no .tpsheet files under {}; run TexturePacker via Unity first.", root.display());
+        return;
+    }
 
     let mut shown_atlases = std::collections::HashSet::new();
 
@@ -93,7 +112,9 @@ fn main() {
         let base = tpsheet_path.file_stem().unwrap().to_string_lossy().to_string();
         let png_meta_path = parent.join(format!("{base}.png.meta"));
         let tps_path = parent.join(format!("{base}.tps"));
-        let tpsheet_meta_path = parent.join(format!("{base}.tpsheet.meta"));
+        // _prefix moved from .tpsheet.meta to .tps.meta in the TPSImporter
+        // migration (see scripts/migrate-tpsheet-meta.sh + CLAUDE.md).
+        let tps_meta_path = parent.join(format!("{base}.tps.meta"));
         let sprite_dir = parent.join(&base);
 
         let Ok(png_meta_text) = fs::read_to_string(&png_meta_path) else {
@@ -108,7 +129,7 @@ fn main() {
         let Ok(atlas_guid) = meta::parse_guid(&png_meta_text) else {
             continue;
         };
-        let prefix = extract_prefix(&tpsheet_meta_path);
+        let prefix = extract_prefix(&tps_meta_path);
 
         let Ok(tpsheet_text) = fs::read_to_string(tpsheet_path) else {
             continue;
@@ -172,7 +193,7 @@ fn main() {
             }
 
             let atlas_key = parent
-                .strip_prefix(root)
+                .strip_prefix(&root)
                 .map(|p| p.join(&base).to_string_lossy().into_owned())
                 .unwrap_or_else(|_| base.clone());
             if !shown_atlases.insert(atlas_key.clone()) {
