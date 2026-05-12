@@ -112,8 +112,8 @@ v' = T(tx, ty) · R(rotDeg) · S(sx, sy) · v
 ```
 
 Applied to the part's local-frame verts *after* the slice/polygon emitter
-runs. `mirrorX` / `mirrorY` are slice-method UV semantics, not geometry —
-for a plain flip set `sx` or `sy` to `-1`.
+runs. For a plain geometric flip set `sx` or `sy` to `-1` — `FX`/`FY`/`FXY`
+methods are rejected at parse time in favor of negative scale.
 
 ### Polygon UV sampling
 
@@ -143,13 +143,19 @@ buffers, so the resulting `m_IndexBuffer` runs back-to-front):
 Sprite field mapping follows the existing tpsheet → Sprite `.asset` field-map
 table in [[CLAUDE.md]] with these deltas:
 
-- `m_Rect` = AABB on atlas of the union of all parts' atlas rects.
-- `_typelessdata` positions come from the combined verts (mapped through
-  `pivot` and `m_Rect`'s pixel size), not from a single tpsheet entry.
+- `m_Rect` = `(0, 0, w*ppu, h*ppu)` where `(w, h)` is the combined mesh's
+  vertex-AABB size in world units. Matches `SpriteFactory.CreateFromMesh`'s
+  derivation (ported in `combine::calc_rect_and_pivot`).
+- `m_Pivot` = `(-AABB.min.x / w, -AABB.min.y / h)` — the mesh origin's
+  position within the AABB, normalized.
+- `_typelessdata` positions come from the combined verts (already in
+  pivot-relative world units post-affine), not from a single tpsheet entry.
 - `_typelessdata` UVs are already atlas-normalized from the per-part emit
   step — no further uv transform.
 - `m_IndexBuffer` is the combined triangle list, u16 LE.
-- `textureRect == m_Rect` always. The on-disk preserve branch is being dropped
+- `atlasRectOffset = (0, 0)` and `m_Rect.{w, h}` are f32 (sub-pixel-able) —
+  the fabricated sprite branch in `emit::SpriteAsset` (`source: Fabricated`).
+- `textureRect == m_Rect` always. The on-disk preserve branch was dropped
   crate-wide (see [[TODO.md]]); any sprite whose existing `.asset` has
   divergent `textureRect.{w,h}` fails loud out of `generate()`.
 
