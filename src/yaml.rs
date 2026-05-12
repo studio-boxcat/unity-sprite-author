@@ -8,6 +8,10 @@
 // bytes of typelessdata + 16 bytes of GUID per sprite, four times per sprite.
 const HEX_LUT: &[u8; 16] = b"0123456789abcdef";
 
+/// Encode `bytes` to a lowercase hex string (no separators). LUT-driven
+/// because `format!("{:02x}")` via `write!` measured ~5× slower per byte,
+/// and `encode_typelessdata` + `encode_index_buffer` + `guid_hex` together
+/// run this path on hundreds of bytes per sprite.
 pub fn hex_encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
     for &b in bytes {

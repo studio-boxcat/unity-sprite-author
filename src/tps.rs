@@ -78,11 +78,16 @@ const SPRITE_SCALE_KEY: &str = "                <key>spriteScale</key>";
 const DOUBLE_START: &str = "                <double>";
 const DOUBLE_END: &str = "</double>";
 
+/// Read a TexturePacker `.tps` file from disk and parse it via
+/// [`parse_str`].
 pub fn parse<P: AsRef<Path>>(path: P) -> Result<TpsData, TpsError> {
     let text = fs::read_to_string(path).map_err(TpsError::Io)?;
     parse_str(&text)
 }
 
+/// Parse a TexturePacker `.tps` payload into a [`TpsData`] — only the
+/// per-sprite `spriteScale` entries are extracted; everything else in
+/// the file is skipped.
 pub fn parse_str(text: &str) -> Result<TpsData, TpsError> {
     let mut invert_scales = HashMap::new();
     let mut pending_filenames: Vec<String> = Vec::new();

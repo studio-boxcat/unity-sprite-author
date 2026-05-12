@@ -246,6 +246,10 @@ impl std::error::Error for FabError {}
 // ---------------------------------------------------------------------------
 // Entry point.
 
+/// Parse + validate a `.tps.fab.json` payload into a typed [`Manifest`].
+/// Returns [`FabError`] for any schema violation (unknown fields, missing
+/// required fields, wrong part shape, polygon validation failures, …) so
+/// the C# postprocessor can surface the failure to the developer.
 pub fn parse(json: &str) -> Result<Manifest, FabError> {
     let raw: raw::Manifest = serde_json::from_str(json).map_err(FabError::Json)?;
     translate(raw)

@@ -6,6 +6,11 @@
 //
 // Used by combine.rs for polygon parts in `.tps.fab.json` manifests.
 
+/// Ear-clip a 2D polygon, returning a flat triangle-index list (3 indices
+/// per triangle) into the input vertex slice. Auto-normalizes winding
+/// (signed-area sign flip when input is clockwise) so callers don't have
+/// to pre-orient. Returns an empty vec when `points.len() < 3` or the
+/// polygon is degenerate (self-intersecting, all-collinear).
 pub fn triangulate(points: &[[f32; 2]]) -> Vec<u16> {
     let n = points.len();
     if n < 3 {

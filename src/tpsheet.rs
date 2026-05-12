@@ -186,6 +186,10 @@ impl fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
+/// Parse a `.tpsheet` payload into a [`Sheet`]. Strict on `:format=`
+/// version (currently `40300` per [`SUPPORTED_FORMAT`]); malformed
+/// sprite lines, missing header keys, and unsupported format versions
+/// all return [`ParseError`].
 pub fn parse(input: &str) -> Result<Sheet, ParseError> {
     let lines: Vec<&str> = input.lines().collect();
     if lines.is_empty() {
