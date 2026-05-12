@@ -2845,6 +2845,61 @@ mod tests {
     }
 
     #[test]
+    fn compute_m13_axis_identity_root_collapses_to_offset_times_scale() {
+        // root = 0: the FMA fusion collapses to f32(canvas_scale × offset),
+        // which is exactly what the pre-FMA-era code computed. Spot-check a
+        // few magnitudes to pin the contract — Silloutte1 + Silloutte2 +
+        // every Box / SpriteRenderer caller relies on this collapse staying
+        // bit-stable.
+        for offset in [0.0_f32, 1.5, -22.25, 100.0, -294.75] {
+            let got = compute_m13_axis(0.01, 0.0, offset);
+            let expected = (0.01_f32 * offset).to_bits();
+            assert_eq!(
+                got.to_bits(),
+                expected,
+                "compute_m13_axis(0.01, 0, {offset}) = {got} (0x{:08x}); want canvas_scale × offset = 0x{:08x}",
+                got.to_bits(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn compute_m13_axis_silloutte3_root_fma_residual() {
+        // Silloutte3's root anchored (141.8, 370.875), canvas_scale = 0.01.
+        // The FMA fusion produces the residual that lets the per-vert chain
+        // reproduce Unity's `Mesh.CombineMeshes` output bit-for-bit:
+        //
+        //   m13_y = fma(0.01, 370.875 + offset.y, -3.70875)
+        //
+        // Image part (offset.y = 0): residual = -9.24e-8 (= 0xb3c68000).
+        // B part (offset.y = -66.875): m13.y = -0.6687500476837158 (= 0xbf2b3334).
+        // SR / SL part (offset.y = 8): m13.y = 0.07999990880... (= 0x3da3d6fe).
+        // T part (offset.y = 160.625): m13.y = 1.6062499... (= 0x3fcd9999).
+        //
+        // Each bit pattern is the f32 the Silloutte3 golden expects out of
+        // the matrix-multiplication step; any drift here surfaces before the
+        // byte-exact silloutte3 integration test runs.
+        let cs = 0.01_f32;
+        let root_y = 370.875_f32;
+        let cases = [
+            (0.0_f32, 0xb3c68000_u32, "Image"),
+            (-66.875, 0xbf2b3334, "B"),
+            (8.0, 0x3da3d6fe, "SR/SL"),
+            (160.625, 0x3fcd9999, "T"),
+        ];
+        for (offset, want, name) in cases {
+            let got = compute_m13_axis(cs, root_y, offset);
+            assert_eq!(
+                got.to_bits(),
+                want,
+                "{name}: compute_m13_axis(0.01, 370.875, {offset}) = 0x{:08x}, want 0x{want:08x}",
+                got.to_bits()
+            );
+        }
+    }
+
+    #[test]
     fn apply_transform_affine_scale_runs_before_canvas_chain() {
         // sx=-1 (the only non-1 affine scale Silloutte1 uses) flips the
         // input before the × ui_scale step. v=0.5 → ×-1 → -0.5 → ×100 → -50.
