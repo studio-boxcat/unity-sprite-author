@@ -6,7 +6,7 @@ Rust `rlib` consumed by meow-tower via the shared **BoxcatBridge** cdylib (see `
 
 ## Purpose
 
-C# (`TPSheetPostprocessor`) is the `AssetPostprocessor` entry point — for each imported `.tpsheet` it reads `_prefix` from `TPSImporter` on the sibling `.tps`, picks up PPU from the `.png`'s `TextureImporter`, and calls into the native lib. The lib does parse + bytes + filesystem; C# routes the returned written/deleted paths back through `AssetDatabase.ImportAsset`/`DeleteAsset`.
+C# (`TPSheetPostprocessor`) is the `AssetPostprocessor` entry point — for each imported `.tpsheet` it reads `_prefix` from `TPSImporter` on the sibling `.tps`, picks up PPU from the `.png`'s `TextureImporter`, and calls `BoxcatBridge.SpriteAuthorGenerate(...)`, which dispatches into this rlib's `pipeline::generate`. The pipeline does parse + bytes + filesystem; C# routes the returned written/deleted paths back through `AssetDatabase.ImportAsset`/`DeleteAsset`.
 
 The previous C# `CreateSprites` path was slow (managed), non-deterministic across Unity versions, and re-ran on every reimport. Moving it to native code with a byte-exact contract makes it fast, deterministic, and version-stable.
 
