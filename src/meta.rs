@@ -137,9 +137,10 @@ pub fn render_asset_meta_with_shape(guid: &[u8; 16], shape: MetaShape) -> String
     s
 }
 
-// Render in a specific format with the default mainObjectFileID. Used by
-// the legacy-format byte-equality test against Cake__DecoLeft; production
-// pipeline goes through render_asset_meta_with_shape.
+/// Render a sprite `.asset.meta` in the given `MetaFormat` with the
+/// default `mainObjectFileID: 21300000`. Used by the legacy-format
+/// byte-equality test against `Cake__DecoLeft`; the production pipeline
+/// goes through [`render_asset_meta_with_shape`].
 pub fn render_asset_meta_with_format(guid: &[u8; 16], format: MetaFormat) -> String {
     render_asset_meta_with_shape(
         guid,
@@ -150,14 +151,17 @@ pub fn render_asset_meta_with_format(guid: &[u8; 16], format: MetaFormat) -> Str
     )
 }
 
+/// Render a sprite `.asset.meta` in `MetaShape::FRESH` (Modern186 +
+/// `mainObjectFileID: 21300000`) — the shape every fresh mint uses.
 pub fn render_asset_meta(guid: &[u8; 16]) -> String {
     render_asset_meta_with_shape(guid, MetaShape::FRESH)
 }
 
-// Resolve `(guid, shape)` for a sprite. If the .asset.meta exists, both
-// are read from it; otherwise mint a fresh GUID with `MetaShape::FRESH`.
-// Used by the pipeline so the inline read+detect doesn't drift from the
-// helper API.
+/// Resolve `(guid, shape)` for a sprite. If the `.asset.meta` exists,
+/// both are read from it (preserve branch — the same bytes go back out);
+/// otherwise mint a fresh GUID with [`MetaShape::FRESH`] (the mint
+/// branch). Used by [`pipeline::generate`] so the inline read+detect
+/// doesn't drift from the helper API.
 pub fn resolve_sprite_meta<P: AsRef<Path>>(
     asset_meta_path: P,
 ) -> Result<([u8; 16], MetaShape), MetaError> {
@@ -204,9 +208,9 @@ pub fn read_existing_texture_rect_size<P: AsRef<Path>>(asset_path: P) -> Option<
     None
 }
 
-// Compose a 128-bit GUID from two pre-derived entropy words (LE-packed:
-// lo → bytes 0..8, hi → bytes 8..16). Split out so tests can pin the mint
-// path against a known seed.
+/// Compose a 128-bit GUID from two pre-derived entropy words (LE-packed:
+/// `lo` → bytes 0..8, `hi` → bytes 8..16). Split out from [`mint_guid`]
+/// so tests can pin the mint path against fixed entropy.
 pub fn mint_guid_from(lo: u64, hi: u64) -> [u8; 16] {
     let mut out = [0u8; 16];
     out[..8].copy_from_slice(&lo.to_le_bytes());
@@ -214,9 +218,10 @@ pub fn mint_guid_from(lo: u64, hi: u64) -> [u8; 16] {
     out
 }
 
-// Mint a random 128-bit GUID. Uses two `RandomState` instances for entropy
-// (each one carries fresh SipHash keys seeded from the OS RNG by stdlib).
-// Sufficient for Unity GUID uniqueness; not crypto-grade.
+/// Mint a random 128-bit GUID. Entropy comes from two
+/// `std::collections::hash_map::RandomState` instances (each one carries
+/// fresh SipHash keys seeded from the OS RNG by stdlib). Sufficient for
+/// Unity GUID uniqueness; not crypto-grade.
 pub fn mint_guid() -> [u8; 16] {
     use std::collections::hash_map::RandomState;
     use std::hash::BuildHasher;
@@ -225,7 +230,9 @@ pub fn mint_guid() -> [u8; 16] {
     mint_guid_from(lo, hi)
 }
 
-// Preserve existing GUID if a sibling .asset.meta exists; else mint fresh.
+/// Preserve the existing GUID if a sibling `.asset.meta` exists; else
+/// mint fresh via [`mint_guid`]. For shape detection alongside the GUID,
+/// use [`resolve_sprite_meta`] instead.
 pub fn resolve_sprite_guid<P: AsRef<Path>>(asset_meta_path: P) -> Result<[u8; 16], MetaError> {
     match fs::read_to_string(asset_meta_path) {
         Ok(text) => parse_guid(&text),

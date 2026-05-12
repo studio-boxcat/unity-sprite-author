@@ -56,6 +56,13 @@ pub struct SpriteAsset {
     pub source: SpriteSource,
 }
 
+/// Render a [`SpriteAsset`] to the byte-exact YAML body of a Unity
+/// Sprite `.asset` file. The pipeline writes the returned string to
+/// disk verbatim (LF-terminated, no trailing blank line).
+///
+/// `EmitError` is currently uninhabited — the signature returns `Result`
+/// only to keep room for future hard-fail conditions without churning
+/// every caller.
 // Cake__DecoLeft.asset is ~5.2 KB; larger sprite geometry adds ~16 bytes per
 // extra vertex/triangle. 8 KB capacity covers nearly every observed sprite
 // without reallocation.

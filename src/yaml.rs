@@ -17,25 +17,28 @@ pub fn hex_encode(bytes: &[u8]) -> String {
     out
 }
 
-// Format a 16-byte GUID as 32 lowercase hex characters (Unity convention).
+/// Format a 16-byte GUID as 32 lowercase hex characters (Unity convention).
 pub fn guid_hex(guid: &[u8; 16]) -> String {
     hex_encode(guid)
 }
 
-// Unity emits floats via C# ToString("R") which is shortest-roundtrip with no
-// trailing `.0` for integer-valued floats. Rust's f32 Display matches this on
-// every value in our golden corpus (probed empirically: 80, 0.5, 567.5,
-// 0.4920635, -0.025804598, etc.). Diverging fixtures will surface in golden
-// tests; treat as a TODO when one appears.
+/// Format an `f32` the way Unity does (C# `ToString("R")`: shortest
+/// round-trip, no trailing `.0` for integer-valued floats). Rust's default
+/// `f32` `Display` matches this across the entire golden corpus —
+/// `yaml::tests::float_corpus_full_roundtrip` pins all 93 distinct
+/// fractional literals byte-for-byte.
 pub fn float(v: f32) -> String {
     format!("{v}")
 }
 
-// Unity's YAML emitter quotes strings containing non-ASCII characters and
-// escapes the non-ASCII codepoints as \uXXXX (UTF-16). Codepoints above
-// U+FFFF use surrogate pairs. ASCII-only strings are emitted unquoted.
-// Verified against `m_Name: "OG_0503_Signboard__티켓"` (Korean
-// "티켓" = U+D2F0 U+CF13).
+/// Format a Rust string the way Unity's YAML emitter does. ASCII-only
+/// strings (without `"` or `\`) emit unquoted; anything else is quoted
+/// with non-ASCII codepoints escaped as `\uXXXX` (UTF-16), with surrogate
+/// pairs for codepoints above U+FFFF.
+///
+/// Verified against `m_Name: "OG_0503_Signboard__티켓"` (Korean "티켓" =
+/// U+D2F0 U+CF13). Tests in `yaml::tests::yaml_string_*` cover all four
+/// branches.
 pub fn yaml_string(s: &str) -> String {
     if s.bytes().all(|b| b.is_ascii() && b != b'"' && b != b'\\') {
         return s.to_string();
