@@ -93,6 +93,61 @@ pub fn encode_typelessdata(positions: &[Position3], uvs: &[Uv]) -> (String, usiz
     (hex_encode(&buf), total)
 }
 
+/// RenderData for a fabricated sprite — the caller has already produced
+/// verts in pivot-relative world units (post-affine) and UVs in atlas-
+/// normalized space. The tpsheet-specific pixel-to-local / pixel-to-uv
+/// transforms in [`build`] aren't reused; only the hex encoding and
+/// uvTransform math remain.
+///
+/// uvTransform uses the same offset-routed formula as [`build`] (going
+/// through `center` first) — that 1-ULP-stable path is what kept the
+/// tpsheet e2e byte-exact, and there's no reason to deviate for fab
+/// outputs until a real fixture forces it.
+pub fn build_fabricated(
+    verts: &[[f32; 2]],
+    uvs: &[[f32; 2]],
+    tris: &[u16],
+    rect_w_f: f32,
+    rect_h_f: f32,
+    pivot: (f32, f32),
+    ppu: f32,
+) -> RenderData {
+    debug_assert_eq!(verts.len(), uvs.len());
+
+    let positions: Vec<Position3> = verts.iter()
+        .map(|v| Position3 { x: v[0], y: v[1], z: 0.0 })
+        .collect();
+    let uvs_typed: Vec<Uv> = uvs.iter()
+        .map(|u| Uv { u: u[0], v: u[1] })
+        .collect();
+
+    let (typelessdata_hex, data_size) = encode_typelessdata(&positions, &uvs_typed);
+    let index_buffer_hex = encode_index_buffer(tris);
+
+    // Fabricated sprites have rect.{x, y} = 0 (SpriteFactory.CreateFromMesh
+    // sets the rect origin at the AABB's min corner). Inline the simplified
+    // offset-routed formula.
+    let center_x = rect_w_f * 0.5;
+    let center_y = rect_h_f * 0.5;
+    let off_x_atlas = pivot.0 * rect_w_f - center_x;
+    let off_y_atlas = pivot.1 * rect_h_f - center_y;
+    let uv_transform = UvTransform {
+        x: ppu,
+        y: off_x_atlas + center_x,
+        z: ppu,
+        w: off_y_atlas + center_y,
+    };
+
+    RenderData {
+        vertex_count: verts.len() as u32,
+        index_count: tris.len() as u32,
+        data_size: data_size as u32,
+        index_buffer_hex,
+        typelessdata_hex,
+        uv_transform,
+    }
+}
+
 pub fn encode_index_buffer(indices: &[u16]) -> String {
     let mut buf = Vec::with_capacity(indices.len() * 2);
     for &i in indices {
@@ -274,4 +329,46 @@ mod tests {
         assert_eq!(rd.uv_transform.w, 567.5);
     }
 
+    // --- build_fabricated ---
+
+    #[test]
+    fn build_fabricated_silloutte1_uv_transform() {
+        // m_Rect (0, 0, 282.5, 770), m_Pivot (0.5, 0.40551946), PPU 100.
+        // Expected uvTransform from Silloutte1.asset: (100, 141.25, 100, 312.24997).
+        let rd = build_fabricated(
+            &[[0.0, 0.0]], &[[0.0, 0.0]], &[],
+            282.5, 770.0,
+            (0.5, 0.40551946),
+            100.0,
+        );
+        assert_eq!(rd.uv_transform.x, 100.0);
+        assert_eq!(rd.uv_transform.y, 141.25);
+        assert_eq!(rd.uv_transform.z, 100.0);
+        // f32 rounding through (pivot*h − h*0.5) + h*0.5 lands at 312.24997.
+        assert!(
+            (rd.uv_transform.w - 312.24997).abs() < 1e-3,
+            "got {}", rd.uv_transform.w,
+        );
+    }
+
+    #[test]
+    fn build_fabricated_typelessdata_encodes_pos_and_uv() {
+        // One vert at (0.25, 0.5) world, UV (0.1, 0.2). Position3 padded
+        // to 12 bytes, UV stream packed at 16-byte-aligned offset (single
+        // vert ⇒ pos = 12 bytes, align to 16, uv at offset 16, 8 bytes;
+        // total 24).
+        let rd = build_fabricated(
+            &[[0.25, 0.5]], &[[0.1, 0.2]], &[0],
+            1.0, 1.0, (0.5, 0.5), 100.0,
+        );
+        assert_eq!(rd.vertex_count, 1);
+        assert_eq!(rd.index_count, 1);
+        assert_eq!(rd.data_size, 24);
+        // 0.25_f32 LE = 0000803e; 0.5_f32 LE = 0000003f; 0.0_f32 LE = 00000000;
+        // pad 4 bytes; 0.1_f32 LE = cdcccc3d; 0.2_f32 LE = cdcc4c3e.
+        assert_eq!(
+            rd.typelessdata_hex,
+            "0000803e0000003f0000000000000000cdcccc3dcdcc4c3e",
+        );
+    }
 }
