@@ -135,7 +135,7 @@ tpsheet line format (semicolon-separated):
 | `texture` GUID                 | from atlas `.png.meta`                                              |
 | `m_RenderDataKey` GUID         | own `.asset.meta` GUID (preserve or mint per policy above)          |
 
-Reference asset for parity testing: `meow-tower/Assets/21_Collections/OrgelContents/1204/Orgel/Cake__DecoLeft.asset` (paired with `Orgel.tpsheet`, `Orgel.png`).
+Reference fixture for parity testing: `tests/golden/orgel/` — a self-contained snapshot of `Orgel.{tpsheet, tps, png.meta}` + the per-sprite `.asset` / `.asset.meta` corpus (`Cake__DecoLeft.asset` is the canonical example). The matching meow-tower-side files live under `meow-tower/Assets/21_Collections/OrgelContents/1204/Orgel/`, but the `.tpsheet` there is ephemeral — `pipeline::generate` deletes it on success, so it's only present mid-import.
 
 ## Reference Implementations
 
