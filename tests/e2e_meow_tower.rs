@@ -130,11 +130,14 @@ fn e2e_meow_tower_byte_exact() {
     find_tpsheets(&assets_root, &mut tpsheets);
     tpsheets.sort();
 
-    // Post-rlib-pivot, meow-tower checkouts can carry .tps files without
-    // matching .tpsheet siblings (TexturePacker hasn't run since the
-    // BoxcatBridge integration). Skip cleanly in that case — only panic if
-    // we found tpsheets but compared none of them, which would be a real
-    // wiring bug rather than a fixture-state quirk.
+    // `.tpsheet` files are ephemeral by design — `pipeline::generate`
+    // deletes each one on success after re-emitting the per-sprite
+    // `.asset`s. In a quiesced meow-tower checkout (all imports
+    // settled, TexturePacker not re-run since), the `.tps` files are
+    // present but no `.tpsheet` siblings exist. Skip cleanly in that
+    // case — only panic if we found tpsheets but compared none of
+    // them, which would be a real wiring bug rather than a fixture-
+    // state quirk.
     if tpsheets.is_empty() {
         eprintln!(
             "e2e: no .tpsheet files under {}; skipping (run TexturePacker via Unity first).",
