@@ -183,7 +183,8 @@ path.
    `height` presence). ✓
 5. `TX` / `TY` / `TX_MC3` tiling. ✓
 6. Slice-grid family — `R1C3` / `R3C3` / `R3C3_NF` / `MX_R1C3` /
-   `MX_R3C3` ✓. `MX_R1C4` / `MX_R3C2` / `MX_R3C4` / `MX_R3C6` /
-   `MY_*` / `MXY_*` still pending.
+   `MX_R3C3` / `MY_R3C3` ✓. `MX_R1C4` / `MX_R3C2` / `MX_R3C4` /
+   `MX_R3C6` / `MY_R2C2` / `MY_R2C3` / `MY_R3C1` / `MY_R3C2` /
+   `MXY_R3C3` / `MXY_R3C3_NF` still pending.
 7. Pipeline integration: fab.json discovery, combined emission, part
    exclusion, orphan-prune verification. ✓
