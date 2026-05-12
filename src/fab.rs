@@ -559,6 +559,74 @@ mod tests {
     }
 
     #[test]
+    fn polygon_explicit_triangles_must_be_multiple_of_three() {
+        // 4 indices isn't a valid triangle list. The parser must catch this
+        // up front rather than letting the combiner emit a half-triangle.
+        let err = parse_err(r#"{
+            "version": 1,
+            "combined": [{
+                "name": "X",
+                "parts": [{
+                    "polygonSprite": "P",
+                    "vertices": [[-1, -1], [1, -1], [1, 1], [-1, 1]],
+                    "triangles": [0, 1, 2, 3]
+                }]
+            }]
+        }"#);
+        assert!(
+            matches!(&err, FabError::PartShape { reason, .. }
+                if reason.contains("multiple of 3")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn polygon_explicit_triangles_index_in_range() {
+        // Indices must reference declared vertices.
+        let err = parse_err(r#"{
+            "version": 1,
+            "combined": [{
+                "name": "X",
+                "parts": [{
+                    "polygonSprite": "P",
+                    "vertices": [[-1, -1], [1, -1], [0, 1]],
+                    "triangles": [0, 1, 5]
+                }]
+            }]
+        }"#);
+        assert!(
+            matches!(&err, FabError::PartShape { reason, .. }
+                if reason.contains("out of range")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn polygon_explicit_triangles_uisolid_quad_pattern_accepted() {
+        // BL/BR/TL/TR + (0, 2, 3, 3, 1, 0) — the exact pattern UISolid
+        // emits and that powers Silloutte1/2/3 byte-exactness. Validates
+        // the *valid* path the other two tests exercise the *invalid*
+        // path of.
+        let m = parse_ok(r#"{
+            "version": 1,
+            "combined": [{
+                "name": "X",
+                "parts": [{
+                    "polygonSprite": "P",
+                    "vertices": [[-1, -1], [1, -1], [-1, 1], [1, 1]],
+                    "triangles": [0, 2, 3, 3, 1, 0]
+                }]
+            }]
+        }"#);
+        match &m.combined[0].parts[0] {
+            Part::Polygon { triangles: Some(tris), .. } => {
+                assert_eq!(tris, &vec![0, 2, 3, 3, 1, 0]);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
     fn polygon_part_rejects_atlas_sprite_fields() {
         // Atlas-sprite-only fields on a polygon part still signal a typo
         // and must be rejected (uiScale/offset are NOT in this list since
