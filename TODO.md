@@ -79,6 +79,6 @@ Deferred from v1:
 
 Decided:
 
-- **Manifest discovery is implicit** (`<tps_path>.fab.json`). No FFI parameter; no `abi_version` bump. Matches how `.png.meta` / `.tps.meta` siblings are already discovered. Revisit only if a real need to override appears.
+- **Manifest discovery is implicit** (`<tps_path>.fab.json`). No new `pipeline::generate` parameter. Matches how `.png.meta` / `.tps.meta` siblings are already discovered. Revisit only if a real need to override appears.
 - **Skip-write-if-equal kept**, including for fabricated sprites. Combined `.asset`s are only ~25% larger than per-tpsheet sprites (~7-8 KB vs ~6 KB avg); per-file read stays sub-20 µs, ~5-20× cheaper than the write it avoids, and dwarfed by the avoided Unity reimport of dependents. One code path, no special case.
 - **Drop the on-disk `textureRect` preserve branch; fail loud instead.** Corpus survey: 7,257 atlas-fed `.asset` files across 128 atlases, **3 divergent**, all FriendInvite emoji (`Emoji-Emoji_Frog/Heart/Unicorn`) — legacy artifacts from a `spriteMode: 2 → 1` migration on 2026-05-05. Zero golden fixtures exercise preserve. Replace with an error from `generate()` naming the sprite + `m_Rect.{w,h}` + on-disk `textureRect.{w,h}`. Applies uniformly to per-tpsheet and fabricated sprites (no per-type branch needed). One-time cleanup: delete those 3 `.asset`s next time `FriendInvite.tps` is reimported; Unity re-emits them with `textureRect == m_Rect`. Sub-pixel — visually invisible.

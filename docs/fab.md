@@ -14,7 +14,7 @@ LLM-assisted today; a standalone exporter from the meow-tower prefab tree
 ## Location
 
 Sibling of the `.tps`, named `<tps_path>.fab.json`. Discovery is implicit; if
-absent, behavior is unchanged. No FFI parameter, no `abi_version` bump.
+absent, behavior is unchanged. No new `pipeline::generate` parameter.
 
 ```
 21_Collections/Boxes/33_Vampire/
