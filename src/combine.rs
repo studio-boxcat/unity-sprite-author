@@ -58,6 +58,40 @@ impl fmt::Display for CombineError {
 
 impl std::error::Error for CombineError {}
 
+/// Derived `m_Rect.{w, h}` (pixels, f32) and `m_Pivot` (normalized 0..1) for
+/// a fabricated sprite, computed from the combined mesh's vertex AABB in
+/// world units. Port of meow-tower's
+/// `SpriteFactory.CalcRectAndPivot(vertices, ppu)`:
+///
+/// ```text
+/// (x0, y0, x1, y1) = AABB(verts)
+/// rect = (0, 0, (x1 - x0) * ppu, (y1 - y0) * ppu)
+/// pivot = (-x0 / (x1 - x0), -y0 / (y1 - y0))
+/// ```
+///
+/// Empty input is a programming error (the parser rejects empty `parts`).
+pub fn calc_rect_and_pivot(verts: &[[f32; 2]], ppu: f32) -> ((f32, f32), (f32, f32)) {
+    assert!(!verts.is_empty(), "calc_rect_and_pivot called with no verts");
+    let mut x0 = f32::INFINITY;
+    let mut y0 = f32::INFINITY;
+    let mut x1 = f32::NEG_INFINITY;
+    let mut y1 = f32::NEG_INFINITY;
+    for v in verts {
+        if v[0] < x0 { x0 = v[0]; }
+        if v[0] > x1 { x1 = v[0]; }
+        if v[1] < y0 { y0 = v[1]; }
+        if v[1] > y1 { y1 = v[1]; }
+    }
+    let w = x1 - x0;
+    let h = y1 - y0;
+    // pivot.x = x0 / (x0 - x1) = -x0 / w (algebraically). Port the literal
+    // C# form because f32 rounding order matters for byte-exact comparison
+    // against SpriteFactory.CreateFromMesh.
+    let pivot_x = x0 / (x0 - x1);
+    let pivot_y = y0 / (y0 - y1);
+    ((w * ppu, h * ppu), (pivot_x, pivot_y))
+}
+
 fn is_method_supported(m: Method) -> bool {
     matches!(m, Method::Id | Method::Mx | Method::My | Method::Mxy)
 }
@@ -590,6 +624,47 @@ mod tests {
         assert_eq!(m.verts[7],  [-2.0, 2.0]);
         assert_eq!(m.verts[11], [-2.0, -2.0]);
         assert_eq!(m.verts[15], [2.0, -2.0]);
+    }
+
+    // --- calc_rect_and_pivot ---
+
+    #[test]
+    fn calc_rect_and_pivot_centered_unit_square() {
+        // Verts (-0.5, -0.5) to (0.5, 0.5). PPU 100 ⇒ rect 100×100, pivot (0.5, 0.5).
+        let verts = [[-0.5, -0.5], [0.5, -0.5], [-0.5, 0.5], [0.5, 0.5]];
+        let ((w, h), (px, py)) = calc_rect_and_pivot(&verts, 100.0);
+        assert_eq!(w, 100.0);
+        assert_eq!(h, 100.0);
+        assert!((px - 0.5).abs() < 1e-6, "{px}");
+        assert!((py - 0.5).abs() < 1e-6, "{py}");
+    }
+
+    #[test]
+    fn calc_rect_and_pivot_origin_at_min_corner() {
+        // Verts (0, 0) to (2, 4). PPU 100 ⇒ rect 200×400, pivot (0, 0).
+        let verts = [[0.0, 0.0], [2.0, 0.0], [0.0, 4.0], [2.0, 4.0]];
+        let ((w, h), (px, py)) = calc_rect_and_pivot(&verts, 100.0);
+        assert_eq!(w, 200.0);
+        assert_eq!(h, 400.0);
+        assert_eq!(px, 0.0);
+        assert_eq!(py, 0.0);
+    }
+
+    #[test]
+    fn calc_rect_and_pivot_off_center_y() {
+        // Verts span X [-1.4125, 1.4125] (centered), Y [-3.1225, 4.5775]
+        // (offset). PPU 100. Matches Silloutte1.asset's m_Rect (282.5, 770)
+        // and m_Pivot (0.5, 0.40551946) within f32 precision.
+        let verts = [
+            [-1.4125, -3.1225], [1.4125, -3.1225],
+            [-1.4125, 4.5775],  [1.4125, 4.5775],
+        ];
+        let ((w, h), (px, py)) = calc_rect_and_pivot(&verts, 100.0);
+        assert_eq!(w, 282.5);
+        assert_eq!(h, 770.0);
+        assert!((px - 0.5).abs() < 1e-6);
+        // 3.1225 / 7.7 = 0.40551946...
+        assert!((py - 0.40551946).abs() < 1e-6, "got {py}");
     }
 
     #[test]
