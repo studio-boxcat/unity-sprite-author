@@ -43,6 +43,10 @@ pub enum SpriteSource {
     Fabricated { rect_w_f: f32, rect_h_f: f32 },
 }
 
+/// Input to [`emit`] — the full Sprite asset description in normalized
+/// form. Built once per sprite by the pipeline (see `pipeline::generate`)
+/// from tpsheet entry + atlas / per-sprite `.png.meta` + `.asset.meta`
+/// inputs, then handed to `emit` to render the byte-exact YAML body.
 #[derive(Debug, Clone)]
 pub struct SpriteAsset {
     pub name: String,
@@ -50,8 +54,15 @@ pub struct SpriteAsset {
     pub border: Border,
     pub pivot: Pivot,
     pub pixels_to_units: f32,
-    pub own_guid: [u8; 16],   // also written to m_RenderDataKey
-    pub atlas_guid: [u8; 16], // texture reference inside m_RD/m_AtlasRD
+    /// 128-bit GUID. Also written verbatim to `m_RenderDataKey` in the
+    /// asset body (the meow-tower corpus invariant: per-sprite
+    /// `m_RenderDataKey` GUID always equals the sibling `.asset.meta`
+    /// `guid:` field).
+    pub own_guid: [u8; 16],
+    /// 128-bit GUID for the atlas `.png`. Goes into the `texture:` field
+    /// inside both `m_RD` and `m_AtlasRD` so Unity can resolve the
+    /// underlying texture.
+    pub atlas_guid: [u8; 16],
     pub render_data: RenderData,
     pub source: SpriteSource,
 }
