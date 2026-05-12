@@ -13,10 +13,9 @@ use crate::yaml::{float, guid_hex, yaml_string};
 // Reserved for future hard-fail conditions in the emit pipeline. Kept as an
 // enum (not `()`) so callers can pattern-match without churn when new
 // failure modes appear. The previous `NonZeroBorderUnsupported` variant was
-// retired in favor of empirical proof: 50/51 non-zero-border sprites in
-// the meow-tower corpus emit byte-exactly under the current formula
-// (`examples/probe_borders.rs`); the lone outlier is .tps drift, not a
-// formula bug.
+// retired in favor of empirical proof: 50/51 non-zero-border sprites in the
+// meow-tower corpus emit byte-exactly under the current formula; the lone
+// outlier is .tps drift, not a formula bug.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EmitError {}
 
