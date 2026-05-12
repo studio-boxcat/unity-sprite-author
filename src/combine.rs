@@ -281,7 +281,7 @@ pub fn polygon_mesh(
 // real values: UISolid has no per-part scale (`ui_scale = 1`) but inherits the
 // combined `canvas_scale = 0.01` and carries the part's anchored position as
 // `offset` so f32 op order matches Unity's matrix-style emit.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)] // mirrors `atlas_sprite_mesh` — each arg is meaningful
 fn polygon_mesh_with_tris(
     vertices: &[[f32; 2]],
     tris_override: Option<&[u16]>,
