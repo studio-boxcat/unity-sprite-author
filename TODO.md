@@ -66,6 +66,11 @@ Old m_Offset analysis (kept for history; ignore the "unsolved" framing):
 
 Deferred from v1:
 
+- **Byte-exact `CanvasSpriteAuthor.Publish()` reproduction**. The Silloutte fixtures (`tests/golden/fab/silloutte/`) target this. The fab v1 schema + slice-method port was anchored around `SpriteMeshAuthor` (world-space SpriteRenderer trees). `CanvasSpriteAuthor` is a separate authoring path on Canvas, with at least four distinct concerns the current crate doesn't yet cover:
+    - **`UIIconMeshGen.cs`** (different from `UISliceMeshGen.cs`): per-`UIIcon` mesh emission. Sibling methods named `ID`/`MX`/`MY`/`MXY` with different signatures (take a `scaleFactor` instead of a `RectTransform`). Must be ported separately or unified with the existing slice path.
+    - **`UISolid` / color-tile parts**: emit through `Graphic.UpdateGeometry` overrides, not a mesh-gen method. Doesn't fit the current `Part::Polygon` shape cleanly.
+    - **Composed scale factors**: `CanvasSpriteAuthor._scaleFactor` (per-author) wraps the combined mesh via `Matrix4x4.Scale * worldToLocalMatrix`. `UIIcon._scaleFactor` (per-component) scales each part. Both must be threadable through fab.json or composed at parse time.
+    - **`SpriteFactory.CreateFromMesh` field derivation**: `m_Rect`, `m_Pivot`, `m_Offset` come from `mesh.bounds` with Unity-specific f32 rounding order. Must match exactly.
 - **Color-PNG synthesis**: when a polygon part's `polygonSprite` is missing from the atlas and the name matches `Color_RRGGBBFF`, synthesize the pixel PNG into the source `Sprites_Export~/` so the next TexturePacker pack picks it up. Mirrors `CanvasSpriteAuthor.ReplaceColorTextures` / `ColorTextureUtils.CreateTexture`. Probably a separate CLI step rather than inside `generate()`, since `generate` runs *after* TP and shouldn't trigger a re-pack from the C# postprocessor path.
 - **Standalone exporter** from meow-tower `BoxAuthor` / `SpriteMeshAuthor` tree to bootstrap manifests for the 39 existing box prefabs.
 - **`keepStandalone` allowlist** if a part ever needs both standalone and combined emission. Otherwise rename in TexturePacker.
