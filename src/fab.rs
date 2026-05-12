@@ -13,11 +13,20 @@ use std::fmt;
 // validate-and-translate into these types so downstream code never touches
 // the raw JSON layer.
 
+/// Parsed-and-validated `.tps.fab.json` manifest. One per atlas; lists
+/// the fabricated combined sprites the pipeline will emit alongside the
+/// per-tpsheet outputs. See `docs/fab.md` for the schema.
 #[derive(Debug, PartialEq)]
 pub struct Manifest {
     pub combined: Vec<Combined>,
 }
 
+/// A single fabricated combined sprite — `name` becomes the output
+/// filename stem (no `.asset`), `parts` are stitched in declared order
+/// into a single mesh, and the canvas-chain fields (`canvas_scale`,
+/// `root_anchored`) reproduce Unity's `CanvasSpriteAuthor.Publish()` op
+/// chain bit-for-bit when set. See `docs/fab.md` for the schema and
+/// `combine::build_combined` for the geometry math.
 #[derive(Debug, PartialEq)]
 pub struct Combined {
     pub name: String,

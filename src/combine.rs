@@ -16,26 +16,34 @@ use crate::fab::{self, Affine, Method, Part};
 use crate::tpsheet::{Rect, SpriteEntry};
 use crate::triangulator;
 
+/// Output of a single part-builder (`polygon_mesh` /
+/// `atlas_sprite_mesh`) — the per-part `(verts, uvs, tris)` triple in a
+/// frame ready for [`build_combined`] to splice into the combined buffer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PartMesh {
-    // Verts in world units (post-PPU, post-affine).
+    /// Verts in world units (post-PPU, post-affine / canvas chain).
     pub verts: Vec<[f32; 2]>,
-    // UVs in atlas-normalized space (0..1 on each axis).
+    /// UVs in atlas-normalized space (0..1 on each axis).
     pub uvs: Vec<[f32; 2]>,
-    // Index buffer, u16, CCW triangles.
+    /// Index buffer, `u16`, CCW triangles.
     pub tris: Vec<u16>,
 }
 
+/// Output of [`build_combined`]: the merged `(verts, uvs, tris)` across
+/// every part of a `Combined` entry, plus the atlas-rect AABB used to
+/// derive `m_Rect` of the fabricated Sprite.
 #[derive(Debug, Clone)]
 pub struct CombinedMesh {
     pub verts: Vec<[f32; 2]>,
     pub uvs: Vec<[f32; 2]>,
     pub tris: Vec<u16>,
-    // AABB on the atlas in pixels — the union of every part's atlas rect.
-    // Used as the combined Sprite's m_Rect.
+    /// AABB on the atlas in pixels — the union of every part's atlas
+    /// rect. Used as the combined Sprite's `m_Rect`.
     pub atlas_rect: Rect,
 }
 
+/// Atlas texture dimensions (pixels). Passed through the build path so
+/// UV coordinates can be normalized against the texture's actual extent.
 #[derive(Debug, Clone, Copy)]
 pub struct AtlasSize {
     pub width: u32,
