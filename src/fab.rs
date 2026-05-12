@@ -117,8 +117,16 @@ impl Default for Affine {
     }
 }
 
-// Slice/tile/mirror dispatch. Mirrors UISliceMeshGen.cs in meow-tower; see
-// docs/fab.md for which constraints fire on which variants.
+/// Slice / tile / mirror dispatch for [`Part::AtlasSprite`]. Mirrors the
+/// methods in `UISliceMeshGen.cs` and `Tiling.cs` (meow-tower); see
+/// `docs/fab.md` for which constraints fire on which variants and
+/// `combine::atlas_sprite_mesh` for the dispatch table.
+///
+/// Naming convention: `Id` = identity, `Mx/My/Mxy` = mirror duplicators,
+/// `Tx/Ty` = tilers, `R<rows>c<cols>` = slice grids, `Nf` suffix = no
+/// centre-fill, `Mx_R<...>` / `My_R<...>` = mirrored slice grids.
+/// `Fx/Fy/Fxy` flips don't exist as a method — express them as
+/// negative `sx` / `sy` on the part's affine instead.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Method {
     Id,
