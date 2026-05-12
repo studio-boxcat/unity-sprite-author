@@ -65,7 +65,11 @@ absent, behavior is unchanged. No FFI parameter, no `abi_version` bump.
 
 - `name` is a bare filename; duplicates and collisions with non-pruned
   per-tpsheet sprites → error.
-- `parts` is non-empty; order is render order (first = back, last = front).
+- `parts` is non-empty; **order is significant** — it's the render order
+  (first = back, last = front), matching the DFS hierarchy walk that
+  `SpriteMeshBuilder.ExtractMeshDataByHierarchicalOrder` (meow-tower) does
+  over a prefab's `SpriteRenderer` children. The crate preserves the JSON
+  array order verbatim: no sort, no dedup, repeats are emitted as repeats.
 - Every `sprite` / `polygonSprite` resolves to an entry in the same
   `.tpsheet`; unresolved names listed in one error.
 - `method ∈ {FX, FY, FXY}` is rejected; use negative `sx`/`sy` instead.
@@ -100,7 +104,9 @@ existing orphan path. No allowlist in v1.
 
 ## Combined Sprite emission
 
-Geometry build (per combined entry, parts in declared order):
+Geometry build (per combined entry, parts walked in declared order — see
+the order rule above; each part's verts/tris are appended to the combined
+buffers, so the resulting `m_IndexBuffer` runs back-to-front):
 
 1. **Atlas-sprite part**: source verts/UVs/tris from the tpsheet entry; the
    `method` produces local-frame output (slice / tile / mirror).
