@@ -101,7 +101,8 @@ fn is_method_supported(m: Method) -> bool {
               | Method::Tx | Method::Ty | Method::TxMc3
               | Method::R1c3 | Method::R3c3 | Method::R3c3Nf
               | Method::MxR1c3 | Method::MxR3c3
-              | Method::MyR3c3
+              | Method::MyR2c2 | Method::MyR2c3 | Method::MyR3c1
+              | Method::MyR3c2 | Method::MyR3c3
               | Method::MxyR3c3 | Method::MxyR3c3Nf)
 }
 
@@ -155,6 +156,33 @@ fn check_method_constraints(
         }
         if entry.border.top as u32 != entry.rect.h {
             return Err(err("MY_R3C3 requires border.top == sprite.rect.height"));
+        }
+    }
+    if matches!(method, Method::MyR3c1) {
+        // border.x == 0 AND border.z == 0, border.y == 0, border.w == height.
+        if entry.border.left != 0 || entry.border.right != 0 {
+            return Err(err("MY_R3C1 requires border.left == 0 AND border.right == 0"));
+        }
+        if entry.border.bottom != 0 || entry.border.top as u32 != entry.rect.h {
+            return Err(err("MY_R3C1 requires border.bottom == 0 AND border.top == sprite.rect.height"));
+        }
+    }
+    if matches!(method, Method::MyR3c2 | Method::MyR2c2) {
+        // X: left == 0, right == width. Y: bottom == 0, top == height.
+        if entry.border.left != 0 || entry.border.right as u32 != entry.rect.w {
+            return Err(err("requires border.left == 0 AND border.right == sprite.rect.width"));
+        }
+        if entry.border.bottom != 0 || entry.border.top as u32 != entry.rect.h {
+            return Err(err("requires border.bottom == 0 AND border.top == sprite.rect.height"));
+        }
+    }
+    if matches!(method, Method::MyR2c3) {
+        // X: left + right == width. Y: bottom == 0, top == height.
+        if entry.border.left + entry.border.right != entry.rect.w as i32 {
+            return Err(err("MY_R2C3 requires border.left + border.right == sprite.rect.width"));
+        }
+        if entry.border.bottom != 0 || entry.border.top as u32 != entry.rect.h {
+            return Err(err("MY_R2C3 requires border.bottom == 0 AND border.top == sprite.rect.height"));
         }
     }
     if matches!(method, Method::MxyR3c3 | Method::MxyR3c3Nf) {
@@ -266,6 +294,10 @@ pub fn atlas_sprite_mesh(
         Method::R3c3Nf => slice_r3c3(entry, atlas, ppu, &ctx, size.expect("r3c3_nf size"), true),
         Method::MxR1c3 => slice_mx_r1c3(entry, atlas, ppu, &ctx, size.expect("mx_r1c3 size")),
         Method::MxR3c3 => slice_mx_r3c3(entry, atlas, ppu, &ctx, size.expect("mx_r3c3 size")),
+        Method::MyR3c1 => slice_my_r3c1(entry, atlas, ppu, &ctx, size.expect("my_r3c1 size")),
+        Method::MyR2c2 => slice_my_r2c2(entry, atlas, ppu, &ctx, size.expect("my_r2c2 size")),
+        Method::MyR2c3 => slice_my_r2c3(entry, atlas, ppu, &ctx, size.expect("my_r2c3 size")),
+        Method::MyR3c2 => slice_my_r3c2(entry, atlas, ppu, &ctx, size.expect("my_r3c2 size")),
         Method::MyR3c3 => slice_my_r3c3(entry, atlas, ppu, &ctx, size.expect("my_r3c3 size")),
         Method::MxyR3c3 => slice_mxy_r3c3(entry, atlas, ppu, &ctx, size.expect("mxy_r3c3 size"), false),
         Method::MxyR3c3Nf => slice_mxy_r3c3(entry, atlas, ppu, &ctx, size.expect("mxy_r3c3_nf size"), true),
@@ -800,6 +832,175 @@ fn slice_mxy_r3c3(
     }
 
     let tris = if no_fill { r3c3_nf_indices() } else { create_grid_indices(3, 3) };
+    let verts: Vec<[f32; 2]> = verts_local.iter().map(|v| apply_affine(*v, ctx.affine)).collect();
+    PartMesh { verts, uvs, tris }
+}
+
+// MY_R3C1: 3 rows × 1 col, mirror-Y. Source-rect: borders all 0 except top
+// = height. 8 verts (4 rows × 2 cols), 3 quads.
+fn slice_my_r3c1(
+    entry: &SpriteEntry,
+    atlas: AtlasSize,
+    ppu: f32,
+    ctx: &SliceCtx,
+    target: (f32, f32),
+) -> PartMesh {
+    let (target_w, target_h) = target;
+    let x_min = -target_w * ctx.part_pivot.0;
+    let x_max = target_w * (1.0 - ctx.part_pivot.0);
+    let y_min = -target_h * ctx.part_pivot.1;
+    let y_max = target_h * (1.0 - ctx.part_pivot.1);
+    let bt = entry.border.top as f32 * ctx.border_mult / ppu;
+
+    let xs = [x_min, x_max];
+    let ys = [y_min, y_min + bt, y_max - bt, y_max];
+    let mut verts_local: Vec<[f32; 2]> = Vec::with_capacity(8);
+    for &yy in &ys {
+        for &xx in &xs {
+            verts_local.push([xx, yy]);
+        }
+    }
+
+    let grid = UvGrid::for_entry(entry, atlas, ctx.border_mult);
+    // Per GridUV.SetUp_MY_R3C1: outer rows → v3; inner rows → v0.
+    // U progresses u0..u3 (2 cols), so cols → u0, u3 within each row.
+    let row_v = [grid.v[3], grid.v[0], grid.v[0], grid.v[3]];
+    let mut uvs: Vec<[f32; 2]> = Vec::with_capacity(8);
+    for &vv in &row_v {
+        uvs.push([grid.u[0], vv]);
+        uvs.push([grid.u[3], vv]);
+    }
+
+    let tris = create_grid_indices(3, 1);
+    let verts: Vec<[f32; 2]> = verts_local.iter().map(|v| apply_affine(*v, ctx.affine)).collect();
+    PartMesh { verts, uvs, tris }
+}
+
+// MY_R2C2: 2 rows × 2 cols, mirror-Y + mirror-X-edge. 9 verts (3 rows × 3
+// cols), 4 quads. Position: x0..x2 (right edge at x_max - br); y0..y2
+// (centre row at midpoint).
+fn slice_my_r2c2(
+    entry: &SpriteEntry,
+    atlas: AtlasSize,
+    ppu: f32,
+    ctx: &SliceCtx,
+    target: (f32, f32),
+) -> PartMesh {
+    let (target_w, target_h) = target;
+    let x_min = -target_w * ctx.part_pivot.0;
+    let x_max = target_w * (1.0 - ctx.part_pivot.0);
+    let y_min = -target_h * ctx.part_pivot.1;
+    let y_max = target_h * (1.0 - ctx.part_pivot.1);
+    let br = entry.border.right as f32 * ctx.border_mult / ppu;
+
+    let xs = [x_min, x_max - br, x_max];
+    let ys = [y_min, (y_min + y_max) * 0.5, y_max];
+    let mut verts_local: Vec<[f32; 2]> = Vec::with_capacity(9);
+    for &yy in &ys {
+        for &xx in &xs {
+            verts_local.push([xx, yy]);
+        }
+    }
+
+    let grid = UvGrid::for_entry(entry, atlas, ctx.border_mult);
+    // SetUp_MY_R2C2 pattern: cols 0,1 share u0; col 2 = u3.
+    // Rows 0,2 → v3; row 1 → v0.
+    let row_v = [grid.v[3], grid.v[0], grid.v[3]];
+    let mut uvs: Vec<[f32; 2]> = Vec::with_capacity(9);
+    for &vv in &row_v {
+        uvs.push([grid.u[0], vv]);
+        uvs.push([grid.u[0], vv]);
+        uvs.push([grid.u[3], vv]);
+    }
+
+    let tris = create_grid_indices(2, 2);
+    let verts: Vec<[f32; 2]> = verts_local.iter().map(|v| apply_affine(*v, ctx.affine)).collect();
+    PartMesh { verts, uvs, tris }
+}
+
+// MY_R2C3: 2 rows × 3 cols, mirror-Y + horizontal slice. 12 verts (3 rows
+// × 4 cols), 6 quads. Constraint: border.left + border.right == rect.w.
+fn slice_my_r2c3(
+    entry: &SpriteEntry,
+    atlas: AtlasSize,
+    ppu: f32,
+    ctx: &SliceCtx,
+    target: (f32, f32),
+) -> PartMesh {
+    let (target_w, target_h) = target;
+    let x_min = -target_w * ctx.part_pivot.0;
+    let x_max = target_w * (1.0 - ctx.part_pivot.0);
+    let y_min = -target_h * ctx.part_pivot.1;
+    let y_max = target_h * (1.0 - ctx.part_pivot.1);
+    let bl = entry.border.left as f32 * ctx.border_mult / ppu;
+    let br = entry.border.right as f32 * ctx.border_mult / ppu;
+
+    let xs = [x_min, x_min + bl, x_max - br, x_max];
+    let ys = [y_min, (y_min + y_max) * 0.5, y_max];
+    let mut verts_local: Vec<[f32; 2]> = Vec::with_capacity(12);
+    for &yy in &ys {
+        for &xx in &xs {
+            verts_local.push([xx, yy]);
+        }
+    }
+
+    let grid = UvGrid::for_entry(entry, atlas, ctx.border_mult);
+    // SetUp_MY_R2C3 pattern:
+    //   col 0 → u0; cols 1,2 → u1 (shared, atlas inner-min via border-x);
+    //   col 3 → u3.
+    // Rows 0,2 → v3; row 1 → v0.
+    let row_v = [grid.v[3], grid.v[0], grid.v[3]];
+    let col_u = [grid.u[0], grid.u[1], grid.u[1], grid.u[3]];
+    let mut uvs: Vec<[f32; 2]> = Vec::with_capacity(12);
+    for &vv in &row_v {
+        for &uu in &col_u {
+            uvs.push([uu, vv]);
+        }
+    }
+
+    let tris = create_grid_indices(2, 3);
+    let verts: Vec<[f32; 2]> = verts_local.iter().map(|v| apply_affine(*v, ctx.affine)).collect();
+    PartMesh { verts, uvs, tris }
+}
+
+// MY_R3C2: 3 rows × 2 cols, mirror-Y + mirror-X-edge. 12 verts (4 rows ×
+// 3 cols), 6 quads. Constraints same as MY_R2C2.
+fn slice_my_r3c2(
+    entry: &SpriteEntry,
+    atlas: AtlasSize,
+    ppu: f32,
+    ctx: &SliceCtx,
+    target: (f32, f32),
+) -> PartMesh {
+    let (target_w, target_h) = target;
+    let x_min = -target_w * ctx.part_pivot.0;
+    let x_max = target_w * (1.0 - ctx.part_pivot.0);
+    let y_min = -target_h * ctx.part_pivot.1;
+    let y_max = target_h * (1.0 - ctx.part_pivot.1);
+    let br = entry.border.right as f32 * ctx.border_mult / ppu;
+    let bt = entry.border.top as f32 * ctx.border_mult / ppu;
+
+    let xs = [x_min, x_max - br, x_max];
+    let ys = [y_min, y_min + bt, y_max - bt, y_max];
+    let mut verts_local: Vec<[f32; 2]> = Vec::with_capacity(12);
+    for &yy in &ys {
+        for &xx in &xs {
+            verts_local.push([xx, yy]);
+        }
+    }
+
+    let grid = UvGrid::for_entry(entry, atlas, ctx.border_mult);
+    // SetUp_MY_R3C2 pattern: cols 0,1 → u0 (shared); col 2 → u3.
+    // Rows 0,3 → v3; rows 1,2 → v0.
+    let row_v = [grid.v[3], grid.v[0], grid.v[0], grid.v[3]];
+    let mut uvs: Vec<[f32; 2]> = Vec::with_capacity(12);
+    for &vv in &row_v {
+        uvs.push([grid.u[0], vv]);
+        uvs.push([grid.u[0], vv]);
+        uvs.push([grid.u[3], vv]);
+    }
+
+    let tris = create_grid_indices(3, 2);
     let verts: Vec<[f32; 2]> = verts_local.iter().map(|v| apply_affine(*v, ctx.affine)).collect();
     PartMesh { verts, uvs, tris }
 }
@@ -1701,6 +1902,106 @@ mod tests {
         for &i in &[5, 6, 9, 10] {
             assert_eq!(m.uvs[i], [grid.u[2], grid.v[2]], "inner corner {i}");
         }
+    }
+
+    // --- slice grids: MY_R3C1 / MY_R2C2 / MY_R2C3 / MY_R3C2 ---
+
+    #[test]
+    fn my_r3c1_emits_8_verts_18_indices() {
+        let mut e = quad_entry(0, 0, 4, 4, (0.5, 0.5));
+        e.border = crate::tpsheet::Border { left: 0, bottom: 0, right: 0, top: 4 };
+        let m = atlas_sprite_mesh(
+            &e, Method::MyR3c1, Some((4.0, 8.0)), [0.5, 0.5], 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+        );
+        assert_eq!(m.verts.len(), 8);
+        assert_eq!(m.tris.len(), 18);
+    }
+
+    #[test]
+    fn my_r3c1_uv_rows_mirror() {
+        let mut e = quad_entry(0, 0, 4, 4, (0.5, 0.5));
+        e.border = crate::tpsheet::Border { left: 0, bottom: 0, right: 0, top: 4 };
+        let m = atlas_sprite_mesh(
+            &e, Method::MyR3c1, Some((4.0, 8.0)), [0.5, 0.5], 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+        );
+        let grid = UvGrid::for_entry(&e, AtlasSize { width: 16, height: 16 }, 1.0);
+        // Outer rows (0/3) sample v3; inner rows (1/2) sample v0.
+        for col_pair in 0..2 {
+            assert_eq!(m.uvs[col_pair][1], grid.v[3]);   // row 0
+            assert_eq!(m.uvs[2 + col_pair][1], grid.v[0]); // row 1
+            assert_eq!(m.uvs[4 + col_pair][1], grid.v[0]); // row 2
+            assert_eq!(m.uvs[6 + col_pair][1], grid.v[3]); // row 3
+        }
+    }
+
+    #[test]
+    fn my_r2c2_emits_9_verts_24_indices() {
+        let mut e = quad_entry(0, 0, 4, 4, (0.5, 0.5));
+        e.border = crate::tpsheet::Border { left: 0, bottom: 0, right: 4, top: 4 };
+        let m = atlas_sprite_mesh(
+            &e, Method::MyR2c2, Some((8.0, 8.0)), [0.5, 0.5], 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+        );
+        assert_eq!(m.verts.len(), 9);
+        assert_eq!(m.tris.len(), 24, "4 quads × 6 indices");
+    }
+
+    #[test]
+    fn my_r2c2_col0_col1_share_u_col2_uses_u3() {
+        let mut e = quad_entry(0, 0, 4, 4, (0.5, 0.5));
+        e.border = crate::tpsheet::Border { left: 0, bottom: 0, right: 4, top: 4 };
+        let m = atlas_sprite_mesh(
+            &e, Method::MyR2c2, Some((8.0, 8.0)), [0.5, 0.5], 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+        );
+        let grid = UvGrid::for_entry(&e, AtlasSize { width: 16, height: 16 }, 1.0);
+        for row in 0..3 {
+            let base = row * 3;
+            assert_eq!(m.uvs[base][0], grid.u[0]);
+            assert_eq!(m.uvs[base + 1][0], grid.u[0]);
+            assert_eq!(m.uvs[base + 2][0], grid.u[3]);
+        }
+    }
+
+    #[test]
+    fn my_r2c3_emits_12_verts_36_indices() {
+        let mut e = quad_entry(0, 0, 4, 4, (0.5, 0.5));
+        e.border = crate::tpsheet::Border { left: 1, bottom: 0, right: 3, top: 4 };
+        let m = atlas_sprite_mesh(
+            &e, Method::MyR2c3, Some((8.0, 4.0)), [0.5, 0.5], 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+        );
+        assert_eq!(m.verts.len(), 12);
+        assert_eq!(m.tris.len(), 36, "6 quads × 6 indices");
+    }
+
+    #[test]
+    fn my_r3c2_emits_12_verts_36_indices() {
+        let mut e = quad_entry(0, 0, 4, 4, (0.5, 0.5));
+        e.border = crate::tpsheet::Border { left: 0, bottom: 0, right: 4, top: 4 };
+        let m = atlas_sprite_mesh(
+            &e, Method::MyR3c2, Some((8.0, 8.0)), [0.5, 0.5], 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+        );
+        assert_eq!(m.verts.len(), 12);
+        assert_eq!(m.tris.len(), 36);
+    }
+
+    #[test]
+    fn my_constraints_surface_at_build_time() {
+        // MY_R3C1: requires left == 0 AND right == 0.
+        let mut e = quad_entry(0, 0, 4, 4, (0.5, 0.5));
+        e.border = crate::tpsheet::Border { left: 1, bottom: 0, right: 0, top: 4 };
+        let combined = make_combined("BX", vec![Part::AtlasSprite {
+            sprite: "A".into(), method: Method::MyR3c1,
+            size: Some((4.0, 8.0)), part_pivot: [0.5, 0.5],
+            border_mult: 1.0, affine: Affine::default(),
+        }]);
+        let err = build_combined(&combined, |_| Some(e.clone()),
+            AtlasSize { width: 16, height: 16 }, 1.0).unwrap_err();
+        assert!(matches!(err, CombineError::SliceConstraint { method: Method::MyR3c1, .. }));
     }
 
     // --- slice grids: MY_R3C3 ---
