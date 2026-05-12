@@ -76,6 +76,41 @@ mod tests {
     }
 
     #[test]
+    fn yaml_string_ascii_passes_through_unquoted() {
+        // ASCII-only strings emit verbatim — matches Unity's YAML emitter,
+        // which only quotes when there's a non-ASCII char to escape.
+        assert_eq!(yaml_string("Cake__DecoLeft"), "Cake__DecoLeft");
+        assert_eq!(yaml_string(""), "");
+    }
+
+    #[test]
+    fn yaml_string_quotes_and_backslash_force_quoting() {
+        // Any `"` or `\` forces the quoted form even though they're ASCII.
+        assert_eq!(yaml_string("a\"b"), "\"a\"b\"");
+        assert_eq!(yaml_string("a\\b"), "\"a\\b\"");
+    }
+
+    #[test]
+    fn yaml_string_bmp_codepoints_emit_as_uxxxx() {
+        // Korean "티켓" = U+D2F0 U+CF13 (BMP). Verified against
+        // `m_Name: "OG_0503_Signboard__티켓"` in the corpus.
+        assert_eq!(
+            yaml_string("OG_0503_Signboard__티켓"),
+            "\"OG_0503_Signboard__\\uD2F0\\uCF13\""
+        );
+    }
+
+    #[test]
+    fn yaml_string_supplementary_plane_emits_as_surrogate_pair() {
+        // U+1F600 (😀) is above U+FFFF and must split into a high/low
+        // surrogate pair: high = 0xD83D, low = 0xDE00. The math:
+        //   v = 0x1F600 − 0x10000 = 0xF600
+        //   high = 0xD800 + (v >> 10) = 0xD800 + 0x3D = 0xD83D
+        //   low  = 0xDC00 + (v & 0x3FF) = 0xDC00 + 0x200 = 0xDE00
+        assert_eq!(yaml_string("😀"), "\"\\uD83D\\uDE00\"");
+    }
+
+    #[test]
     fn float_corpus_samples() {
         assert_eq!(float(80.0), "80");
         assert_eq!(float(0.5), "0.5");
