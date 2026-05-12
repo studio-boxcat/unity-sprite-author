@@ -162,8 +162,8 @@ Do **not** port: `prefab-saloon/src/lib/prefab/{parser,serializer,templates}.ts`
 - `m_RenderDataKey` is the only non-flow nested mapping; everything else is flow `{x: ..., y: ...}`.
 - `atlasRectOffset: {x: -1, y: -1}` — Unity's sentinel for non-SpriteAtlas sprites. Constant; applies uniformly to TexturePacker-imported sprites AND to `SpriteFactory.CreateFromMesh` outputs (verified against the Silloutte1 golden). The earlier "fabricated ships (0, 0)" claim was wrong — emit doesn't branch on `SpriteSource` here.
 - `m_Border` field order is `{x: L, y: B, z: R, w: T}` per Unity `Sprite.cs`. Verified empirically: 50/51 non-zero-border sprites in the meow-tower corpus emit byte-exactly under the current formula (the lone outlier is .tps drift — golden has all-zero borders, current tpsheet has non-zero). The hard-fail guard was retired once this was proven.
-- Float formatting must match C# `ToString("R")`. Build a `unity_float_format` with a unit-test table seeded from every distinct float in the golden corpus before milestone-3.
-- `m_AtlasRD == m_RD` only valid for non-SpriteAtlas sprites — guard with hard panic on `m_SpriteAtlas != {fileID:0}`.
+- Float formatting must match C# `ToString("R")`. `yaml::float` uses Rust's default `Display`, which matches across the entire golden corpus (93 distinct fractional literals); the round-trip guard lives in `yaml::tests::float_corpus_full_roundtrip` so a future Display divergence surfaces as a unit failure instead of a golden-byte mismatch.
+- `m_AtlasRD == m_RD` for non-SpriteAtlas sprites (verified across the corpus); emit always writes `m_SpriteAtlas: {fileID: 0}` as a constant. The "diverge under SpriteAtlas" hypothesis lives as a deferred probe in [[unity-probes.md#c-m_atlasrd-vs-m_rd-divergence-under-spriteatlas]] — guard wiring waits on a fixture.
 - LF line endings; pin via `.gitattributes` (`*.asset binary`, `*.asset.meta binary`).
 - `mainObjectFileID: 21300000` in every sprite `.asset.meta` (Unity class ID 213). Constant, not parameterized.
 
