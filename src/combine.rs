@@ -486,7 +486,10 @@ fn atlas_uvs(entry: &SpriteEntry, atlas: AtlasSize) -> Vec<[f32; 2]> {
 // --- slice-translation primitive --------------------------------------------
 // Direct port of UISliceMeshGen.GetSliceVertexTranslation. `target_size` is
 // the part's declared (width, height) in world units; `rect_pivot` is the
-// target rect's pivot (hardcoded (0.5, 0.5) in v1 — see docs/fab.md).
+// target rect's pivot (defaults to (0.5, 0.5) but threads through from the
+// per-part `partPivot` field — Box prefabs leave it default; UI hierarchies
+// like CanvasSpriteAuthor carry mixed pivots such as (0, 0.5)). See
+// docs/fab.md "Schema" for the field; callers pass `ctx.part_pivot` here.
 
 struct SliceXform { scale: (f32, f32), translation: (f32, f32), offset: (f32, f32) }
 
