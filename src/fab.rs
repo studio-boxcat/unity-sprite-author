@@ -81,8 +81,19 @@ pub enum Method {
 }
 
 impl Method {
+    /// True iff omitting `width`/`height` is a parse error.
+    ///
+    /// ID and the mirror duplicators (MX/MY/MXY) work both with and without
+    /// a target rect:
+    /// - Without size: native scale (`UIIconMeshGen.cs` — SpriteRenderer /
+    ///   UIIcon use case). Source verts drawn 1:1, per-vert affine.
+    /// - With size: slice-fitted (`UISliceMeshGen.cs` — UISlice use case).
+    ///   Source verts stretched to fit the declared target rect.
+    ///
+    /// Slice grids and tilers always require a target rect — they exist to
+    /// fit a region.
     fn requires_size(self) -> bool {
-        !matches!(self, Method::Id)
+        !matches!(self, Method::Id | Method::Mx | Method::My | Method::Mxy)
     }
 }
 
@@ -584,11 +595,30 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_id_method_without_size() {
+    fn slice_grid_methods_require_size() {
+        // TX/TY/TX_MC3/R*/MX_*/MY_*/MXY_* always need a target rect.
         let e = parse_err(r#"{ "version": 1, "combined": [{ "name": "X", "parts": [
-            { "sprite": "A", "method": "MX" }
+            { "sprite": "A", "method": "TX" }
         ] }] }"#);
         assert!(matches!(e, FabError::MissingSize { .. }), "got {e:?}");
+    }
+
+    #[test]
+    fn mirror_methods_size_optional() {
+        // MX/MY/MXY without size dispatch to UIIconMeshGen-style (native scale).
+        // The parser accepts both shapes.
+        for method in ["MX", "MY", "MXY"] {
+            let json = format!(
+                r#"{{ "version": 1, "combined": [{{ "name": "X", "parts": [
+                    {{ "sprite": "A", "method": "{method}" }}
+                ] }}] }}"#
+            );
+            let m = parse_ok(&json);
+            match &m.combined[0].parts[0] {
+                Part::AtlasSprite { size, .. } => assert_eq!(*size, None, "method={method}"),
+                _ => panic!(),
+            }
+        }
     }
 
     #[test]

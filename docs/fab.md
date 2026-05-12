@@ -76,12 +76,20 @@ absent, behavior is unchanged. No FFI parameter, no `abi_version` bump.
 - Every `sprite` / `polygonSprite` resolves to an entry in the same
   `.tpsheet`; unresolved names listed in one error.
 - `method ∈ {FX, FY, FXY}` is rejected; use negative `sx`/`sy` instead.
-- For non-ID methods, `width` and `height` are required (replace
-  `RectTransform.rect.size` from the C# port).
-- The source-rect constraints asserted by each slice method in
-  `Core/Runtime/UI/MeshGeneration/UISliceMeshGen.cs` (meow-tower) are
-  preserved — violations are parse errors naming the offending part.
-  Method list and constraints live in that file; this crate is a faithful port.
+- **Two strategies based on `width`/`height` presence:**
+  - **Native scale** (no `width`/`height`): the source sprite is drawn at
+    its native size (pivot-relative world units = pixel-rect / PPU). Affine
+    applies per-vertex. Matches `UIIconMeshGen.cs` (SpriteRenderer / UIIcon
+    use case). Allowed methods: `ID`, `MX`, `MY`, `MXY`.
+  - **Size-fitted** (`width`/`height` declared): source verts stretch to the
+    declared target rect via the slice/tile math. Matches `UISliceMeshGen.cs`
+    (UISlice use case). Allowed methods: all except `ID`. The
+    constraints asserted by each method in
+    `Core/Runtime/UI/MeshGeneration/UISliceMeshGen.cs` are preserved —
+    violations are parse errors naming the offending part.
+  - Slice grids (`R*`, `MX_*`, `MY_*`, `MXY_*`) and tilers (`TX*`, `TY*`)
+    only make sense size-fitted; omitting `width`/`height` on them is a
+    parse error.
 - Polygon parts must not declare atlas-sprite-only fields
   (`method`, `width`, `height`, `borderMult`, `mirrorX`, `mirrorY`,
   `partPivot`). Mixing the two shapes signals a typo; the parser rejects

@@ -125,9 +125,20 @@ pub fn atlas_sprite_mesh(
             let verts = src.verts.iter().map(|v| apply_affine(*v, affine)).collect();
             PartMesh { verts, uvs: src.uvs, tris: src.tris }
         }
-        Method::Mx  => mirror_method(&src, &ctx, size.expect("mx size"),  MirrorAxis::X),
-        Method::My  => mirror_method(&src, &ctx, size.expect("my size"),  MirrorAxis::Y),
-        Method::Mxy => mirror_method(&src, &ctx, size.expect("mxy size"), MirrorAxis::Xy),
+        // MX/MY/MXY: with size → slice-fitted (UISliceMeshGen).
+        //            without size → native-scale duplicate (UIIconMeshGen).
+        Method::Mx  => match size {
+            Some(sz) => slice_mirror(&src, &ctx, sz, MirrorAxis::X),
+            None     => icon_mirror(&src, &ctx, MirrorAxis::X),
+        },
+        Method::My  => match size {
+            Some(sz) => slice_mirror(&src, &ctx, sz, MirrorAxis::Y),
+            None     => icon_mirror(&src, &ctx, MirrorAxis::Y),
+        },
+        Method::Mxy => match size {
+            Some(sz) => slice_mirror(&src, &ctx, sz, MirrorAxis::Xy),
+            None     => icon_mirror(&src, &ctx, MirrorAxis::Xy),
+        },
         _ => panic!("method {method} not implemented"),
     }
 }
@@ -192,13 +203,47 @@ fn slice_vertex_translation(
 
 enum MirrorAxis { X, Y, Xy }
 
+// Native-scale mirror duplication, matching UIIconMeshGen.{MX, MY, MXY}.
+// No target rect: each src vert is taken at its native pivot-relative
+// world-unit position, mirrored about the origin, and the affine is applied.
+// Layout = [copy0, copy1, ...] same as slice_mirror.
+fn icon_mirror(src: &SrcMesh, ctx: &SliceCtx, axis: MirrorAxis) -> PartMesh {
+    let signs: &[(f32, f32)] = match axis {
+        MirrorAxis::X  => &[(1.0, 1.0), (-1.0, 1.0)],
+        MirrorAxis::Y  => &[(1.0, 1.0), (1.0, -1.0)],
+        MirrorAxis::Xy => &[(1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)],
+    };
+    let copies = signs.len();
+    let n = src.verts.len();
+
+    let mut verts = Vec::with_capacity(n * copies);
+    for (sx, sy) in signs {
+        for v in &src.verts {
+            verts.push(apply_affine([v[0] * sx, v[1] * sy], ctx.affine));
+        }
+    }
+
+    let mut uvs = Vec::with_capacity(n * copies);
+    for _ in 0..copies {
+        uvs.extend_from_slice(&src.uvs);
+    }
+
+    let mut tris = Vec::with_capacity(src.tris.len() * copies);
+    for c in 0..copies {
+        let off = (c * n) as u16;
+        tris.extend(src.tris.iter().map(|i| i + off));
+    }
+
+    PartMesh { verts, uvs, tris }
+}
+
 // MX / MY / MXY: place 2 or 4 mirrored copies of src into the target rect.
 // Source layout (in target-rect frame) per axis:
 //   MX  : 2 copies [X+, X-], slice = (0.5, 1)  , mirror_pivot = (0.5, 0)
 //   MY  : 2 copies [Y+, Y-], slice = (1, 0.5)  , mirror_pivot = (0, 0.5)
 //   MXY : 4 copies clockwise from X+Y+,
 //         slice = (0.5, 0.5), mirror_pivot = (0.5, 0.5)
-fn mirror_method(src: &SrcMesh, ctx: &SliceCtx, target_size: (f32, f32), axis: MirrorAxis) -> PartMesh {
+fn slice_mirror(src: &SrcMesh, ctx: &SliceCtx, target_size: (f32, f32), axis: MirrorAxis) -> PartMesh {
     let (slice, mirror_pivot, signs) = match axis {
         MirrorAxis::X  => ((0.5, 1.0), (0.5, 0.0), &[(1.0, 1.0), (-1.0, 1.0)][..]),
         MirrorAxis::Y  => ((1.0, 0.5), (0.0, 0.5), &[(1.0, 1.0), (1.0, -1.0)][..]),
@@ -548,16 +593,45 @@ mod tests {
     }
 
     #[test]
-    fn mirror_method_panics_without_size_in_dispatch() {
-        // The dispatcher (build_combined) validates size before calling.
-        // Direct atlas_sprite_mesh call without size on a mirror method
-        // panics — checked via std::panic::catch_unwind.
+    fn icon_mx_duplicates_with_native_origin_mirror() {
+        // 2×2 sprite at pivot (0.5, 0.5), PPU 1, no target size.
+        // Source verts (pivot-relative): (-1,-1), (1,-1), (-1,1), (1,1).
+        // First copy: same. Second copy: X-flipped about origin (0,0).
         let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
-        let r = std::panic::catch_unwind(|| {
-            atlas_sprite_mesh(&entry, Method::Mx, None, [0.5, 0.5], Affine::default(),
-                              AtlasSize { width: 8, height: 8 }, 1.0)
-        });
-        assert!(r.is_err());
+        let m = atlas_sprite_mesh(
+            &entry, Method::Mx, None, [0.5, 0.5], Affine::default(),
+            AtlasSize { width: 8, height: 8 }, 1.0,
+        );
+        assert_eq!(m.verts.len(), 8);
+        assert_eq!(m.tris.len(), 12);
+        // First copy is the native sprite verts.
+        assert_eq!(m.verts[..4], [[-1.0, -1.0], [1.0, -1.0], [-1.0, 1.0], [1.0, 1.0]]);
+        // Second copy mirrors X about (0,0).
+        assert_eq!(m.verts[4..], [[1.0, -1.0], [-1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]]);
+        // UVs repeated verbatim.
+        assert_eq!(m.uvs[..4], m.uvs[4..]);
+    }
+
+    #[test]
+    fn icon_my_mirrors_y_axis() {
+        let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
+        let m = atlas_sprite_mesh(
+            &entry, Method::My, None, [0.5, 0.5], Affine::default(),
+            AtlasSize { width: 8, height: 8 }, 1.0,
+        );
+        assert_eq!(m.verts.len(), 8);
+        assert_eq!(m.verts[4..], [[-1.0, 1.0], [1.0, 1.0], [-1.0, -1.0], [1.0, -1.0]]);
+    }
+
+    #[test]
+    fn icon_mxy_quadruples_about_origin() {
+        let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
+        let m = atlas_sprite_mesh(
+            &entry, Method::Mxy, None, [0.5, 0.5], Affine::default(),
+            AtlasSize { width: 8, height: 8 }, 1.0,
+        );
+        assert_eq!(m.verts.len(), 16);
+        assert_eq!(m.tris.len(), 24);
     }
 
     // --- multi-part combine ---
