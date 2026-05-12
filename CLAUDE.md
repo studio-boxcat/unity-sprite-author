@@ -131,7 +131,7 @@ tpsheet line format (semicolon-separated):
 | `m_DataSize`                   | `align16(vCount·12) + vCount·8`                                     |
 | `m_IndexBuffer`                | tpsheet triangles, u16 LE                                           |
 | `uvTransform`                  | `(ppu, rect.x + w·pivotX, ppu, rect.y + h·pivotY)`                  |
-| `settingsRaw`                  | constant `192` (0xC0). Panic if a future fixture diverges.          |
+| `settingsRaw`                  | constant `192` (0xC0). No emit-side guard — divergence surfaces via the e2e byte-mismatch.|
 | `texture` GUID                 | from atlas `.png.meta`                                              |
 | `m_RenderDataKey` GUID         | own `.asset.meta` GUID (preserve or mint per policy above)          |
 
