@@ -1,5 +1,7 @@
 // Minimal TexturePacker .tps reader. Only extracts per-sprite spriteScale.
-// Mirrors the parsing logic in TexturePackerUtils.cs:200-298.
+// Mirrors the IndividualSpriteSettingsMap walk in
+// meow-tower/Packages/com.boxcat.libs/TexturePacker/TexturePackerUtils.cs
+// (search for `spriteScaleKeyLine`).
 //
 // .tps is a TexturePacker XML/plist file. Pivot/scale settings live in
 // IndividualSpriteSettingsMap entries that pair a filename key with a

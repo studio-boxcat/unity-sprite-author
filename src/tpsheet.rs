@@ -1,4 +1,4 @@
-// Mirrors meow-tower/Assets/50_Modules/Tools/TexturePacker/SheetLoader.cs.
+// Mirrors meow-tower/Packages/com.boxcat.libs/TexturePacker/SheetLoader.cs.
 // Strict on :format= (C# is lenient; we hard-error per project policy).
 
 use std::fmt;

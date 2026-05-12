@@ -1,7 +1,7 @@
-// Pipeline orchestrator. The FFI layer wraps this; pure Rust integration
-// tests can call this directly.
+// Pipeline orchestrator. Sole public entry point of this crate; the
+// BoxcatBridge cdylib in meow-tower wraps it for C# (no FFI lives here).
 //
-// Two-phase commit semantics (see CLAUDE.md "C# ↔ Rust contract"):
+// Two-phase commit semantics (see CLAUDE.md "Public Rust API" / "Invariants"):
 //   Phase 1 (pure compute): parse all inputs, build all (path, bytes) pairs.
 //                           Any error here = nothing written.
 //   Phase 2 (commit):       write each pair to .tmp, atomic-rename, prune

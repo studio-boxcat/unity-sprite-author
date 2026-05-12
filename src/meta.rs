@@ -1,10 +1,13 @@
 // .meta file I/O. Reads the `guid:` field from a Unity .meta (works for both
-// .png.meta and .asset.meta), and renders the canonical 189-byte sprite
-// .asset.meta template.
+// .png.meta and .asset.meta), and renders the sprite .asset.meta template
+// in two shapes that exist in the corpus:
 //
-// The canonical template is verified across the meow-tower corpus
-// (3645 sprite .asset.meta files, all 189 bytes, all schema-identical).
-// See CLAUDE.md "GUID policy" for details.
+//   - Modern186: 186 bytes, no trailing spaces. The fresh-mint shape.
+//   - Legacy189: 189 bytes, trailing spaces after userData/assetBundle*.
+//
+// `meta::detect_shape` picks the shape off an existing file so a preserve-
+// branch rewrite doesn't churn the bytes. See CLAUDE.md "GUID policy" for
+// the full strategy.
 
 use std::fmt;
 use std::fs;
