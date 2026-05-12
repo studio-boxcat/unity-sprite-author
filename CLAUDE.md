@@ -94,6 +94,26 @@ foreach (var path in output.DeletedPaths)
 
 `StartAssetEditing` is **not** wrapped around this — Rust writes raw bytes that the editing batch wouldn't observe anyway. `AssetDatabase.Refresh()` is **not** called — too coarse, retriggers postprocessors.
 
+Native Rust callers can skip the FFI layer and call `pipeline::generate` directly:
+
+```rust
+use std::path::Path;
+use unity_sprite_author::pipeline;
+
+let inputs = pipeline::GenerateInputs {
+    tpsheet_path:   Path::new("Assets/Atlas.tpsheet"),
+    tps_path:       Path::new("Assets/Atlas.tps"),
+    atlas_png_path: Path::new("Assets/Atlas.png"),
+    sprite_dir:     Path::new("Assets/Sprites"),
+    prefix:         "Atlas",
+    ppu:            100.0,
+};
+let result = pipeline::generate(&inputs)?;
+// result.written_paths — new/updated sprite .asset paths (caller invokes
+//                       AssetDatabase.ImportAsset on each in Unity)
+// result.deleted_paths — pruned .asset paths + the consumed .tpsheet(.meta)
+```
+
 ## GUID policy
 
 - For sprite `<name>` in output dir `<dir>`:
