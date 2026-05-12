@@ -58,6 +58,10 @@ impl fmt::Display for CombineError {
 
 impl std::error::Error for CombineError {}
 
+fn is_method_supported(m: Method) -> bool {
+    matches!(m, Method::Id | Method::Mx | Method::My | Method::Mxy)
+}
+
 /// Build the mesh for a single polygon part.
 ///
 /// - `vertices` come from the manifest in world units. The polygon is
@@ -86,49 +90,157 @@ pub fn polygon_mesh(
     PartMesh { verts, uvs, tris }
 }
 
-/// Build the mesh for a single atlas-sprite part under method `ID`.
+/// Build the mesh for a single atlas-sprite part under the given method.
 ///
 /// Source verts in the tpsheet entry are atlas-pixel, sprite-rect-relative
-/// (px ∈ [0, w]). Convert each to the part's local frame via
-/// `(px - w·pivotX, py - h·pivotY) / ppu`, then apply the affine.
-/// UVs are atlas-normalized from the sprite's atlas rect + the pixel verts.
+/// (px ∈ [0, w]). They get converted to the part's local frame (pivot-relative
+/// world units) via `(px - w·pivotX, py - h·pivotY) / ppu`, then the
+/// per-method slice/mirror math transforms into the target-rect frame, and
+/// finally the per-part affine is applied.
 ///
-/// Non-ID methods (MX/MY/MXY/slice/tile) arrive in later phases; this
-/// function panics on them so the dispatcher (`build_combined`) is the only
-/// place that decides supported-method policy.
+/// Unimplemented methods panic — the dispatcher (`build_combined`) is the
+/// only place that decides supported-method policy.
 pub fn atlas_sprite_mesh(
     entry: &SpriteEntry,
     method: Method,
+    size: Option<(f32, f32)>,
     affine: Affine,
     atlas: AtlasSize,
     ppu: f32,
 ) -> PartMesh {
-    assert!(matches!(method, Method::Id), "phase 3 supports method Id only");
+    let src = SrcMesh {
+        verts: local_src_verts(entry, ppu),
+        uvs: atlas_uvs(entry, atlas),
+        tris: entry.geometry.triangles.clone(),
+    };
+    let ctx = SliceCtx {
+        sprite_pivot_norm: (entry.pivot.x, entry.pivot.y),
+        sprite_bound_size: (entry.rect.w as f32 / ppu, entry.rect.h as f32 / ppu),
+        affine,
+    };
+    match method {
+        Method::Id => {
+            let verts = src.verts.iter().map(|v| apply_affine(*v, affine)).collect();
+            PartMesh { verts, uvs: src.uvs, tris: src.tris }
+        }
+        Method::Mx  => mirror_method(&src, &ctx, size.expect("mx size"),  MirrorAxis::X),
+        Method::My  => mirror_method(&src, &ctx, size.expect("my size"),  MirrorAxis::Y),
+        Method::Mxy => mirror_method(&src, &ctx, size.expect("mxy size"), MirrorAxis::Xy),
+        _ => panic!("method {method} not implemented"),
+    }
+}
 
+struct SrcMesh {
+    verts: Vec<[f32; 2]>,
+    uvs: Vec<[f32; 2]>,
+    tris: Vec<u16>,
+}
+
+struct SliceCtx {
+    sprite_pivot_norm: (f32, f32),
+    sprite_bound_size: (f32, f32),
+    affine: Affine,
+}
+
+// (px, py) → pivot-relative world units (matches Unity's Sprite.vertices).
+fn local_src_verts(entry: &SpriteEntry, ppu: f32) -> Vec<[f32; 2]> {
     let pw = entry.rect.w as f32;
     let ph = entry.rect.h as f32;
     let pivot_px = (pw * entry.pivot.x, ph * entry.pivot.y);
+    entry.geometry.vertices.iter()
+        .map(|v| [(v.x - pivot_px.0) / ppu, (v.y - pivot_px.1) / ppu])
+        .collect()
+}
+
+fn atlas_uvs(entry: &SpriteEntry, atlas: AtlasSize) -> Vec<[f32; 2]> {
     let aw = atlas.width as f32;
     let ah = atlas.height as f32;
     let rx = entry.rect.x as f32;
     let ry = entry.rect.y as f32;
-
-    let verts: Vec<[f32; 2]> = entry
-        .geometry
-        .vertices
-        .iter()
-        .map(|v| {
-            let local = [(v.x - pivot_px.0) / ppu, (v.y - pivot_px.1) / ppu];
-            apply_affine(local, affine)
-        })
-        .collect();
-    let uvs: Vec<[f32; 2]> = entry
-        .geometry
-        .vertices
-        .iter()
+    entry.geometry.vertices.iter()
         .map(|v| [(rx + v.x) / aw, (ry + v.y) / ah])
+        .collect()
+}
+
+// --- slice-translation primitive --------------------------------------------
+// Direct port of UISliceMeshGen.GetSliceVertexTranslation. `target_size` is
+// the part's declared (width, height) in world units; `rect_pivot` is the
+// target rect's pivot (hardcoded (0.5, 0.5) in v1 — see docs/fab.md).
+
+struct SliceXform { scale: (f32, f32), translation: (f32, f32), offset: (f32, f32) }
+
+fn slice_vertex_translation(
+    target_size: (f32, f32),
+    rect_pivot: (f32, f32),
+    sprite_pivot_norm: (f32, f32),
+    sprite_bound_size: (f32, f32),
+    slice: (f32, f32),
+    mirror_pivot: (f32, f32),
+) -> SliceXform {
+    let slice_size = (target_size.0 * slice.0, target_size.1 * slice.1);
+    let scale = (slice_size.0 / sprite_bound_size.0, slice_size.1 / sprite_bound_size.1);
+    let translation = (sprite_pivot_norm.0 * slice_size.0, sprite_pivot_norm.1 * slice_size.1);
+    let offset = (
+        (mirror_pivot.0 - rect_pivot.0) * target_size.0,
+        (mirror_pivot.1 - rect_pivot.1) * target_size.1,
+    );
+    SliceXform { scale, translation, offset }
+}
+
+// In fab v1 the target rect always pivots at (0.5, 0.5) — see docs/fab.md.
+const TARGET_RECT_PIVOT: (f32, f32) = (0.5, 0.5);
+
+enum MirrorAxis { X, Y, Xy }
+
+// MX / MY / MXY: place 2 or 4 mirrored copies of src into the target rect.
+// Source layout (in target-rect frame) per axis:
+//   MX  : 2 copies [X+, X-], slice = (0.5, 1)  , mirror_pivot = (0.5, 0)
+//   MY  : 2 copies [Y+, Y-], slice = (1, 0.5)  , mirror_pivot = (0, 0.5)
+//   MXY : 4 copies clockwise from X+Y+,
+//         slice = (0.5, 0.5), mirror_pivot = (0.5, 0.5)
+fn mirror_method(src: &SrcMesh, ctx: &SliceCtx, target_size: (f32, f32), axis: MirrorAxis) -> PartMesh {
+    let (slice, mirror_pivot, signs) = match axis {
+        MirrorAxis::X  => ((0.5, 1.0), (0.5, 0.0), &[(1.0, 1.0), (-1.0, 1.0)][..]),
+        MirrorAxis::Y  => ((1.0, 0.5), (0.0, 0.5), &[(1.0, 1.0), (1.0, -1.0)][..]),
+        MirrorAxis::Xy => ((0.5, 0.5), (0.5, 0.5),
+                           &[(1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)][..]),
+    };
+    let x = slice_vertex_translation(
+        target_size, TARGET_RECT_PIVOT, ctx.sprite_pivot_norm, ctx.sprite_bound_size,
+        slice, mirror_pivot,
+    );
+
+    let copies = signs.len();
+    let n = src.verts.len();
+
+    // Translate each src vert into the slice's frame once.
+    let base: Vec<(f32, f32)> = src.verts.iter()
+        .map(|v| (v[0] * x.scale.0 + x.translation.0, v[1] * x.scale.1 + x.translation.1))
         .collect();
-    let tris = entry.geometry.triangles.clone();
+
+    // Layout = [copy0_verts..., copy1_verts..., ...]; matches C# index math
+    // in UISliceMeshGen.{MX,MY,MXY}.
+    let mut verts = Vec::with_capacity(n * copies);
+    for (sx, sy) in signs {
+        for b in &base {
+            let p = [b.0 * sx + x.offset.0, b.1 * sy + x.offset.1];
+            verts.push(apply_affine(p, ctx.affine));
+        }
+    }
+
+    // UVs repeated verbatim per copy (UV mirroring = the same texel is
+    // sampled from each copy's geometrically-mirrored verts).
+    let mut uvs = Vec::with_capacity(n * copies);
+    for _ in 0..copies {
+        uvs.extend_from_slice(&src.uvs);
+    }
+
+    // Tris duplicated, offset by n per copy.
+    let mut tris = Vec::with_capacity(src.tris.len() * copies);
+    for c in 0..copies {
+        let off = (c * n) as u16;
+        tris.extend(src.tris.iter().map(|i| i + off));
+    }
 
     PartMesh { verts, uvs, tris }
 }
@@ -170,15 +282,15 @@ where
         });
 
         let part_mesh = match part {
-            Part::AtlasSprite { method, affine, .. } => {
-                if !matches!(method, Method::Id) {
+            Part::AtlasSprite { method, size, affine, .. } => {
+                if !is_method_supported(*method) {
                     return Err(CombineError::MethodUnimplemented {
                         combined: combined.name.clone(),
                         sprite: source_name.clone(),
                         method: *method,
                     });
                 }
-                atlas_sprite_mesh(&entry, *method, *affine, atlas, ppu)
+                atlas_sprite_mesh(&entry, *method, *size, *affine, atlas, ppu)
             }
             Part::Polygon { vertices, affine, .. } => {
                 polygon_mesh(vertices, *affine, entry.rect, atlas)
@@ -316,7 +428,7 @@ mod tests {
         // pixel pivot = (1, 2). local verts = (pixel − pivot)/PPU.
         let entry = quad_entry(10, 20, 2, 4, (0.5, 0.5));
         let m = atlas_sprite_mesh(
-            &entry, Method::Id, Affine::default(),
+            &entry, Method::Id, None, Affine::default(),
             AtlasSize { width: 100, height: 100 },
             100.0,
         );
@@ -333,7 +445,7 @@ mod tests {
     fn atlas_sprite_id_with_translation() {
         let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
-            &entry, Method::Id,
+            &entry, Method::Id, None,
             Affine { tx: 5.0, ty: 7.0, ..Affine::default() },
             AtlasSize { width: 16, height: 16 },
             1.0,
@@ -344,6 +456,108 @@ mod tests {
         assert_eq!(m.verts, vec![
             [4.0, 6.0], [6.0, 6.0], [4.0, 8.0], [6.0, 8.0],
         ]);
+    }
+
+    // --- mirror methods (phase 4) ---
+
+    #[test]
+    fn mx_doubles_verts_and_indices() {
+        // 2×2 sprite, PPU 1, pivot center. Target rect 4×2 → MX produces two
+        // 2×2 halves sitting side-by-side, target rect centered at origin.
+        let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
+        let m = atlas_sprite_mesh(
+            &entry, Method::Mx, Some((4.0, 2.0)), Affine::default(),
+            AtlasSize { width: 8, height: 8 }, 1.0,
+        );
+        assert_eq!(m.verts.len(), 8, "2× source verts");
+        assert_eq!(m.tris.len(), 12, "2× indices");
+        assert_eq!(m.uvs.len(), 8);
+        // Second copy's tris are offset by 4.
+        assert_eq!(m.tris[..6], [0, 2, 1, 1, 2, 3]);
+        assert_eq!(m.tris[6..], [4, 6, 5, 5, 6, 7]);
+    }
+
+    #[test]
+    fn mx_first_copy_in_positive_x_half_second_in_negative_x_half() {
+        // Symmetric square sprite (verts at corners of [0,2]×[0,2], pivot
+        // center). Target 4×2. The first copy should land at x ∈ [0, 2],
+        // second copy at x ∈ [-2, 0]. Both at y ∈ [-1, 1].
+        let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
+        let m = atlas_sprite_mesh(
+            &entry, Method::Mx, Some((4.0, 2.0)), Affine::default(),
+            AtlasSize { width: 8, height: 8 }, 1.0,
+        );
+        // First copy bottom-left: src (0,0) → pivot-rel (-1,-1) → scale (1,1) → translate (1,1) → slice (0,0) → offset (0,-1) → (0,-1).
+        assert_eq!(m.verts[0], [0.0, -1.0]);
+        // First copy top-right: src (2,2) → pivot-rel (1,1) → scale (1,1) → translate (1,1) → slice (2,2) → offset (0,-1) → (2,1).
+        assert_eq!(m.verts[3], [2.0, 1.0]);
+        // Second copy mirrors X around slice origin (0): (0,-1) → (0,-1), (2,1) → (-2,1).
+        assert_eq!(m.verts[4], [0.0, -1.0]);
+        assert_eq!(m.verts[7], [-2.0, 1.0]);
+    }
+
+    #[test]
+    fn mx_uvs_repeated_verbatim() {
+        let entry = quad_entry(10, 20, 2, 2, (0.5, 0.5));
+        let m = atlas_sprite_mesh(
+            &entry, Method::Mx, Some((4.0, 2.0)), Affine::default(),
+            AtlasSize { width: 100, height: 100 }, 1.0,
+        );
+        assert_eq!(m.uvs[..4], m.uvs[4..]);
+    }
+
+    #[test]
+    fn my_doubles_along_y() {
+        let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
+        let m = atlas_sprite_mesh(
+            &entry, Method::My, Some((2.0, 4.0)), Affine::default(),
+            AtlasSize { width: 8, height: 8 }, 1.0,
+        );
+        // First copy (Y+): src (0,0) → (-1,-1) * (1,1) + (1,1) = (0,0); + offset (-1,0) → (-1, 0). Wait, mirror_pivot = (0, 0.5), rect_pivot = (0.5, 0.5).
+        // offset = (0 - 0.5, 0.5 - 0.5) * (2, 4) = (-1, 0).
+        // src bottom-left (0,0) → (0,0)+offset = (-1, 0).
+        assert_eq!(m.verts[0], [-1.0, 0.0]);
+        // src top-right (2,2) → slice (2, 2) → +offset → (1, 2).
+        assert_eq!(m.verts[3], [1.0, 2.0]);
+        // Second copy mirrors Y around slice origin: (1, 2) → (1, -2) → +offset (-1, 0)? No, that's wrong logic. Let me re-derive.
+        // After translate, slice frame: src (0,0) → (0,0); src(2,2) → (2,2). Then v.y = -v.y for second copy: (0,0) → (0,0); (2,2) → (2,-2).
+        // Then +offset (-1, 0): first copy (0,0) → (-1,0); first copy (2,2) → (1,2); second copy (0,0) → (-1,0); second copy (2,-2) → (1,-2).
+        assert_eq!(m.verts[4], [-1.0, 0.0]);
+        assert_eq!(m.verts[7], [1.0, -2.0]);
+    }
+
+    #[test]
+    fn mxy_quadruples_verts() {
+        let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
+        let m = atlas_sprite_mesh(
+            &entry, Method::Mxy, Some((4.0, 4.0)), Affine::default(),
+            AtlasSize { width: 8, height: 8 }, 1.0,
+        );
+        assert_eq!(m.verts.len(), 16, "4× source");
+        assert_eq!(m.tris.len(), 24);
+        // Target 4×4, sprite 2×2 PPU 1. slice = sliceSize = (2, 2), scale = (1, 1),
+        // translation = (1, 1), offset = (0, 0).
+        // src (2,2) → pivot-rel (1,1) → scale (1,1) → translate (2, 2) → offset (0,0) → (2, 2).
+        // Copies sign-multiply X, Y around slice origin (then add offset):
+        //   Copy0 (1,1)→(2,2), Copy1 (-1,1)→(-2,2),
+        //   Copy2 (-1,-1)→(-2,-2), Copy3 (1,-1)→(2,-2).
+        assert_eq!(m.verts[3],  [2.0, 2.0]);
+        assert_eq!(m.verts[7],  [-2.0, 2.0]);
+        assert_eq!(m.verts[11], [-2.0, -2.0]);
+        assert_eq!(m.verts[15], [2.0, -2.0]);
+    }
+
+    #[test]
+    fn mirror_method_panics_without_size_in_dispatch() {
+        // The dispatcher (build_combined) validates size before calling.
+        // Direct atlas_sprite_mesh call without size on a mirror method
+        // panics — checked via std::panic::catch_unwind.
+        let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
+        let r = std::panic::catch_unwind(|| {
+            atlas_sprite_mesh(&entry, Method::Mx, None, Affine::default(),
+                              AtlasSize { width: 8, height: 8 }, 1.0)
+        });
+        assert!(r.is_err());
     }
 
     // --- multi-part combine ---
@@ -436,10 +650,11 @@ mod tests {
 
     #[test]
     fn build_combined_errors_on_unimplemented_method() {
+        // Use a method that hasn't landed yet (Tx is phase 5).
         let combined = make_combined("BX", vec![Part::AtlasSprite {
             sprite: "A".into(),
-            method: Method::Mx,
-            size: Some((1.0, 1.0)),
+            method: Method::Tx,
+            size: Some((4.0, 1.0)),
             border_mult: 1.0,
             affine: Affine::default(),
             mirror_x: false, mirror_y: false,
@@ -451,7 +666,7 @@ mod tests {
             AtlasSize { width: 16, height: 16 },
             1.0,
         ).unwrap_err();
-        assert!(matches!(err, CombineError::MethodUnimplemented { method: Method::Mx, .. }), "{err:?}");
+        assert!(matches!(err, CombineError::MethodUnimplemented { method: Method::Tx, .. }), "{err:?}");
     }
 
     #[test]
