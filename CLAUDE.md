@@ -171,7 +171,7 @@ Do **not** port: `prefab-saloon/src/lib/prefab/{parser,serializer,templates}.ts`
 
 - Rust stable. `rlib` only (no binary, no cdylib). The cdylib path was retired when sprite-author was folded into the BoxcatBridge cdylib at `meow-tower/Packages/com.boxcat.libs/Native~/bridge/`.
 - `[profile.release] panic = "unwind"` — required by the bridge's outer `catch_unwind`. Inner code returns `Result`; `unwrap`/`expect` reserved for genuine bugs.
-- Custom Unity-flavor YAML emitter; no `serde_yaml`. `unity_float_format` matches C# `ToString("R")` — table-driven tests seeded from every distinct float in the golden corpus.
+- Custom Unity-flavor YAML emitter; no `serde_yaml`. `yaml::float` matches C# `ToString("R")` — table-driven tests in `yaml::tests::float_corpus_full_roundtrip` seeded from every distinct float in the golden corpus.
 - Golden-file `assert_eq!` over committed Unity-emitted samples. `.gitattributes` pins `*.asset binary` and `*.asset.meta binary` to prevent CRLF conversion.
 - Cross-platform concerns (universal macOS dylib, Windows UCRT linkage) now live in the bridge crate, not here.
 

@@ -1,0 +1,9 @@
+# Pin LF line endings on the byte-exact golden corpus so a Windows
+# checkout with autocrlf=true can't silently corrupt the fixtures.
+# See CLAUDE.md "Known byte-exactness traps".
+*.asset      binary
+*.asset.meta binary
+*.tpsheet    binary
+*.tps        binary
+*.png.meta   binary
+*.tps.meta   binary
