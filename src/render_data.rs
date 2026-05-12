@@ -242,6 +242,39 @@ mod tests {
     }
 
     #[test]
+    fn pixel_to_local_uses_precomputed_reciprocal() {
+        // `pixel_to_local` mirrors SheetLoader.AssignToSprite's
+        // `(p - pivot * size) * vertexScale` — the multiply-by-reciprocal
+        // form (vertexScale = spriteScale / ppu precomputed) matches Unity's
+        // f32 rounding. Direct-division `(p - pivot*size) / ppu` rounds 1
+        // ULP differently in some cases. This test pins one of the
+        // Cake__DecoLeft verts so any refactor that swaps multiply for
+        // divide surfaces here, not in the byte-exact golden.
+        let v = Vertex { x: 60.0, y: 0.0 };
+        let rect = Rect { x: 0, y: 0, w: 80, h: 80 };
+        let pivot = Pivot { x: 0.5, y: 0.5 };
+        let vertex_scale = 1.0_f32 / 80.0; // ppu=80, spriteScale=1
+        let p = pixel_to_local(v, rect, pivot, vertex_scale);
+        // Mathematically (60 − 40) / 80 = 0.25; in f32 multiply-by-recip
+        // we get the same bit pattern as the C# emitter.
+        assert_eq!(p.x.to_bits(), 0.25_f32.to_bits());
+        assert_eq!(p.y.to_bits(), (-0.5_f32).to_bits());
+        assert_eq!(p.z, 0.0);
+    }
+
+    #[test]
+    fn pixel_to_uv_normalizes_against_atlas_size() {
+        let v = Vertex { x: 30.0, y: 20.0 };
+        let rect = Rect { x: 100, y: 50, w: 80, h: 80 };
+        let uv = pixel_to_uv(v, rect, 1024, 512);
+        // (100+30)/1024 = 0.126953125 (exact in f32 since 130 = 2 × 5 × 13
+        // and 1024 = 2^10 — the reciprocal is exact-ish, the division
+        // rounds cleanly here).
+        assert!((uv.u - 130.0_f32 / 1024.0).abs() < 1e-7, "{}", uv.u);
+        assert!((uv.v - 70.0_f32 / 512.0).abs() < 1e-7, "{}", uv.v);
+    }
+
+    #[test]
     fn align_to_16_basic() {
         assert_eq!(align_to_16(0), 0);
         assert_eq!(align_to_16(1), 16);
