@@ -160,8 +160,8 @@ pub fn render_asset_meta(guid: &[u8; 16]) -> String {
 /// Resolve `(guid, shape)` for a sprite. If the `.asset.meta` exists,
 /// both are read from it (preserve branch — the same bytes go back out);
 /// otherwise mint a fresh GUID with [`MetaShape::FRESH`] (the mint
-/// branch). Used by [`pipeline::generate`] so the inline read+detect
-/// doesn't drift from the helper API.
+/// branch). Used by [`crate::pipeline::generate`] so the inline
+/// read+detect doesn't drift from the helper API.
 pub fn resolve_sprite_meta<P: AsRef<Path>>(
     asset_meta_path: P,
 ) -> Result<([u8; 16], MetaShape), MetaError> {
