@@ -2703,4 +2703,93 @@ mod tests {
         assert!((out[0] - 10.0).abs() < 1e-5, "{out:?}");
         assert!((out[1] - 2.0).abs() < 1e-5, "{out:?}");
     }
+
+    // --- apply_transform op-order regression guards ---
+
+    // Builds a SliceCtx for apply_transform-only tests; the slice/mirror
+    // fields are unread on that code path so they get filler values.
+    fn ctx_for_transform(
+        affine: Affine,
+        ui_scale: f32,
+        offset: (f32, f32),
+        canvas_scale: f32,
+    ) -> SliceCtx {
+        SliceCtx {
+            sprite_pivot_norm: (0.5, 0.5),
+            sprite_bound_size: (1.0, 1.0),
+            part_pivot: (0.5, 0.5),
+            border_mult: 1.0,
+            affine,
+            ui_scale,
+            offset,
+            canvas_scale,
+        }
+    }
+
+    #[test]
+    fn apply_transform_identity_defaults_collapse_to_apply_affine() {
+        // ui_scale=1, offset=(0,0), canvas_scale=1 collapses the canvas chain
+        // to `v * 1 + 0 * 1 = v` — exactly representable, so the result is
+        // byte-identical to apply_affine across non-trivial affine values.
+        let affine = Affine { tx: 1.5, ty: -2.25, sx: 1.25, sy: -0.75, rot_deg: 30.0 };
+        let ctx = ctx_for_transform(affine, 1.0, (0.0, 0.0), 1.0);
+        let v = [3.5, 4.5];
+        let from_transform = apply_transform(v, &ctx);
+        let from_affine = apply_affine(v, affine);
+        assert_eq!(from_transform[0].to_bits(), from_affine[0].to_bits());
+        assert_eq!(from_transform[1].to_bits(), from_affine[1].to_bits());
+    }
+
+    #[test]
+    fn apply_transform_ui_scale_only_post_multiplies() {
+        // 0.725 × 100 = 72.5 (exactly representable f32).
+        let ctx = ctx_for_transform(Affine::default(), 100.0, (0.0, 0.0), 1.0);
+        let out = apply_transform([0.725, 0.0], &ctx);
+        assert_eq!(out[0].to_bits(), 72.5_f32.to_bits());
+        assert_eq!(out[1], 0.0);
+    }
+
+    #[test]
+    fn apply_transform_matrix_op_order_diverges_from_naive_by_one_ulp() {
+        // v=0.1, offset=-300, canvas_scale=0.01 — algebraically -2.999.
+        // Matrix order (v × cs + off × cs)     → 0xc03fef9e
+        // Naive order ((v + off) × cs)         → 0xc03fef9d (1 ULP lower)
+        // The Silloutte1 byte-exact match requires the matrix order; this
+        // test pins that op order at the unit level so any regression is
+        // caught before the full pipeline test runs.
+        let ctx = ctx_for_transform(Affine::default(), 1.0, (-300.0, 0.0), 0.01);
+        let out = apply_transform([0.1, 0.0], &ctx);
+        assert_eq!(
+            out[0].to_bits(),
+            0xc03fef9e,
+            "expected matrix-style op order (0xc03fef9e), got 0x{:08x} — \
+             apply_transform may have regressed to naive `(v + off) * cs`",
+            out[0].to_bits()
+        );
+    }
+
+    #[test]
+    fn apply_transform_affine_translate_applied_last_in_world_units() {
+        // After the canvas chain, affine.tx/ty add in world units (not
+        // canvas pixels). Sanity: v=0, ui=100, offset=50, cs=0.01, tx=7
+        // → canvas: 0*100=0, then 0*0.01 + 50*0.01 = 0.5, then +tx=7.5.
+        let ctx = ctx_for_transform(
+            Affine { tx: 7.0, ty: 0.0, ..Affine::default() },
+            100.0, (50.0, 0.0), 0.01,
+        );
+        let out = apply_transform([0.0, 0.0], &ctx);
+        assert!((out[0] - 7.5).abs() < 1e-6, "{out:?}");
+    }
+
+    #[test]
+    fn apply_transform_affine_scale_runs_before_canvas_chain() {
+        // sx=-1 (the only non-1 affine scale Silloutte1 uses) flips the
+        // input before the × ui_scale step. v=0.5 → ×-1 → -0.5 → ×100 → -50.
+        let ctx = ctx_for_transform(
+            Affine { sx: -1.0, ..Affine::default() },
+            100.0, (0.0, 0.0), 1.0,
+        );
+        let out = apply_transform([0.5, 0.0], &ctx);
+        assert_eq!(out[0].to_bits(), (-50.0_f32).to_bits());
+    }
 }
