@@ -101,7 +101,6 @@ fn assert_silloutte_byte_exact(sprite_name: &str, dir: &Path) {
 }
 
 #[test]
-#[ignore = "byte-exact target; run with --include-ignored to attempt"]
 fn silloutte1_byte_exact() {
     let dir = run_pipeline("silloutte1");
     assert_silloutte_byte_exact("Silloutte1", &dir);
@@ -109,7 +108,6 @@ fn silloutte1_byte_exact() {
 }
 
 #[test]
-#[ignore = "byte-exact target; run with --include-ignored to attempt"]
 fn silloutte2_byte_exact() {
     let dir = run_pipeline("silloutte2");
     assert_silloutte_byte_exact("Silloutte2", &dir);
@@ -117,7 +115,6 @@ fn silloutte2_byte_exact() {
 }
 
 #[test]
-#[ignore = "byte-exact target; run with --include-ignored to attempt"]
 fn silloutte3_byte_exact() {
     let dir = run_pipeline("silloutte3");
     assert_silloutte_byte_exact("Silloutte3", &dir);

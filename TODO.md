@@ -59,7 +59,7 @@ All three items landed (per-atlas golden layout under `tests/golden/<atlas>/`, d
 
 Deferred from v1:
 
-- ~~**Byte-exact `CanvasSpriteAuthor.Publish()` reproduction.**~~ **SOLVED** for Silloutte1 (`tests/golden_fab_silloutte.rs` passes byte-exact under `--include-ignored`). Fix involved four changes:
+- ~~**Byte-exact `CanvasSpriteAuthor.Publish()` reproduction.**~~ **SOLVED** for Silloutte1/2/3 (`tests/golden_fab_silloutte.rs` runs in default CI). Fix involved four changes:
     - **Schema additions**: `Combined.canvasScale`, `Part::AtlasSprite.uiScale`, `Part::AtlasSprite.offset`, `Part::Polygon.triangles` (UISolid quad index override).
     - **`local_src_verts`**: multiply-by-precomputed-reciprocal `(px - pivot_px) * (1/ppu)` (matches Unity's stored `Sprite.vertices`).
     - **Per-part transform**: `apply_transform` does `v_canvas × canvasScale + offset × canvasScale + translation` in that exact f32 op order (mirrors `Matrix4x4.MultiplyPoint`'s precomputed translation row). The algebraically-equivalent `(v + offset) × canvasScale` rounds 1 ULP differently.
