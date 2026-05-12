@@ -315,12 +315,17 @@ fn polygon_mesh_with_tris(
 ///
 /// Source verts in the tpsheet entry are atlas-pixel, sprite-rect-relative
 /// (px ∈ [0, w]). They get converted to the part's local frame (pivot-relative
-/// world units) via `(px - w·pivotX, py - h·pivotY) / ppu`, then the
-/// per-method slice/mirror math transforms into the target-rect frame, and
-/// finally the per-part affine is applied.
+/// world units) via `(px - w·pivotX, py - h·pivotY) * (1/ppu)` — multiply by
+/// a precomputed reciprocal, not direct division, to match Unity's f32 op
+/// order for `Sprite.vertices` (see `local_src_verts`). The per-method
+/// slice/mirror/tile math then transforms into the target-rect frame, and
+/// `apply_transform` runs each vert through the canvas chain (affine →
+/// uiScale → canvasScale + m13). With identity canvas-chain values the
+/// final step collapses to the plain per-part affine.
 ///
-/// Unimplemented methods panic — the dispatcher (`build_combined`) is the
-/// only place that decides supported-method policy.
+/// Every `Method` variant is wired (ID / MX / MY / MXY plus the slice-grid
+/// family and the TX/TY/TX_MC3 tilers). FX/FY/FXY are rejected at parse
+/// time in favor of negative `sx`/`sy`.
 #[allow(clippy::too_many_arguments)] // public dispatch surface — each arg is meaningful
 pub fn atlas_sprite_mesh(
     entry: &SpriteEntry,
