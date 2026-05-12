@@ -2,7 +2,7 @@
 
 > **Related:** [[TODO.md]], [[BENCHMARKS.md]], [[fab.md]]
 
-Native library (`cdylib`) called from Unity's `TPSheetPostprocessor` via P/Invoke. Authors Unity Sprite `.asset` files byte-exactly from a TexturePacker `.tpsheet` + `.tps` + atlas `.png`.
+Rust `rlib` consumed by meow-tower via the shared **BoxcatBridge** cdylib (see `Packages/com.boxcat.libs/Native~/bridge/` in `meow-tower`). Authors Unity Sprite `.asset` files byte-exactly from a TexturePacker `.tpsheet` + `.tps` + atlas `.png`.
 
 ## Purpose
 
@@ -14,9 +14,9 @@ The bar is **byte-exactness**: output must equal what Unity's `EditorUtility.Cop
 
 ## Goal
 
-- **Input** (path-based, via FFI): tpsheet path, tps path, atlas `.png` path, output sprite dir, prefix string, PPU.
+- **Input** (path-based): tpsheet path, tps path, atlas `.png` path, output sprite dir, prefix string, PPU.
 - **Output**: byte-exact `.asset` + matching `.asset.meta` per sprite. Orphan `.asset`/`.asset.meta` pruned. `.tpsheet` + `.tpsheet.meta` deleted on success.
-- **Failure**: all-or-nothing. Nothing written, nothing deleted, error returned to C# for `Debug.LogError`.
+- **Failure**: all-or-nothing. Nothing written, nothing deleted, error returned to the caller.
 
 ## Non-Goals
 
@@ -34,85 +34,46 @@ Unity import → TPSheetPostprocessor.OnPostprocessAllAssets
        ↓
    For each *.tpsheet: prefix from TPSImporter (.tps), PPU from TextureImporter (.png)
        ↓
-   P/Invoke → unity_sprite_author::generate (Rust cdylib)
+   BoxcatBridge.SpriteAuthorGenerate → bxc_sprite_author_generate (cdylib) →
+   unity_sprite_author::pipeline::generate (this rlib)
        ↓
    For each written/deleted path: AssetDatabase.ImportAsset / DeleteAsset
        ↓
    (.tpsheet + .tpsheet.meta gone; .asset + .asset.meta written or pruned)
 ```
 
-## C# ↔ Rust contract
+## Public Rust API
 
-```c
-typedef struct {
-    const char* tpsheet_path;     // utf-8, null-terminated
-    const char* tps_path;
-    const char* atlas_png_path;   // sibling .png.meta read by Rust for atlas GUID
-    const char* sprite_dir;       // output dir (e.g. .../Orgel/)
-    const char* prefix;           // "" if none
-    float       ppu;              // from TextureImporter.spritePixelsPerUnit
-} GenerateInputs;
-
-// Output arena. C# reads the path lists, copies strings to managed memory,
-// then calls free_output once. Inner pointers invalid after free.
-typedef struct {
-    const char* const* written_paths;   // length = written_len
-    uintptr_t          written_len;
-    const char* const* deleted_paths;   // length = deleted_len; INCLUDES the consumed .tpsheet
-    uintptr_t          deleted_len;
-    void*              _arena;          // opaque; owned by Rust until free_output
-} GenerateOutput;
-
-typedef struct {
-    int32_t     code;             // 0 = success
-    const char* message;          // null on success; freed via free_error
-} ErrorOut;
-
-uint32_t abi_version(void);                 // C# asserts on first call; bump on any struct change
-int32_t  generate(const GenerateInputs* in, GenerateOutput* out, ErrorOut* err);
-void     free_output(GenerateOutput* out);
-void     free_error(ErrorOut* err);
-```
-
-- Rust allocates output buffers via the opaque `_arena`; C# calls `free_output` exactly once after copying all strings to managed memory. C# wraps the call in an `IDisposable` `SafeHandle`-style struct so `free_output` runs even on exceptions.
-- Outermost `extern "C"` body is exactly `catch_unwind(AssertUnwindSafe(|| inner_generate(...)))`. `inner_generate` returns `Result<_, Error>`; never panics in normal control flow. `unwrap`/`expect` are bugs.
-- **Two-phase commit** (mandatory): Phase 1 collects all `(path, bytes)` pairs in memory — any error here = nothing written. Phase 2 writes each `.asset` + `.asset.meta` to a `.tmp` sibling, then atomic-renames after all temps succeed. Only after every rename succeeds: prune orphans, delete `.tpsheet` + `.tpsheet.meta`. On phase-2 failure: clean up `.tmp` files, leave originals, return error. Pre-existing `.tmp` files from prior crashes are deleted at function entry.
-- **Skip-write-if-equal**: before writing, read existing bytes; if identical, skip. Avoids mtime churn that would re-import dependents in Unity.
-- **No global state**: no `OnceCell`, `lazy_static`, thread-locals, or caches outliving a `generate` call. Mono does not unload native plugins on domain reload — global state would leak across script recompiles.
-- `.tpsheet` + `.tpsheet.meta` deletion happens inside Rust on success only. Both paths are reported in `deleted_paths` so C# can call `AssetDatabase.DeleteAsset` on them.
-- Native binary lives at `meow-tower/Assets/50_Modules/Tools/TexturePacker/Editor/{libunity_sprite_author.dylib,unity_sprite_author.dll}`. The `Editor/` subfolder makes Unity treat it as editor-only automatically, no manual plugin-import flags required.
-
-C# call pattern (canonical):
-
-```csharp
-using var output = NativeSpriteAuthor.Generate(inputs);  // throws on error
-foreach (var path in output.WrittenPaths)
-    AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceUpdate);
-foreach (var path in output.DeletedPaths)
-    AssetDatabase.DeleteAsset(path);
-```
-
-`StartAssetEditing` is **not** wrapped around this — Rust writes raw bytes that the editing batch wouldn't observe anyway. `AssetDatabase.Refresh()` is **not** called — too coarse, retriggers postprocessors.
-
-Native Rust callers can skip the FFI layer and call `pipeline::generate` directly:
+The only entry point callers use is `pipeline::generate`. The crate has no FFI of its own — the BoxcatBridge cdylib in meow-tower wraps this fn behind `bxc_sprite_author_generate` and handles C# marshalling.
 
 ```rust
 use std::path::Path;
 use unity_sprite_author::pipeline;
 
-let inputs = pipeline::GenerateInputs {
+let result = pipeline::generate(&pipeline::GenerateInputs {
     tpsheet_path:   Path::new("Assets/Atlas.tpsheet"),
     tps_path:       Path::new("Assets/Atlas.tps"),
-    atlas_png_path: Path::new("Assets/Atlas.png"),
-    sprite_dir:     Path::new("Assets/Sprites"),
-    prefix:         "Atlas",
-    ppu:            100.0,
-};
-let result = pipeline::generate(&inputs)?;
+    atlas_png_path: Path::new("Assets/Atlas.png"),  // sibling .png.meta read for atlas GUID
+    sprite_dir:     Path::new("Assets/Sprites"),    // output dir
+    prefix:         "Atlas",                        // "" if none
+    ppu:            100.0,                          // from TextureImporter.spritePixelsPerUnit
+})?;
 // result.written_paths — new/updated sprite .asset paths (caller invokes
 //                       AssetDatabase.ImportAsset on each in Unity)
 // result.deleted_paths — pruned .asset paths + the consumed .tpsheet(.meta)
 ```
+
+### Invariants
+
+- **No panics in normal control flow.** `pipeline::generate` returns `Result<GenerateOutput, Error>`. `unwrap`/`expect` reserved for genuine bugs. The bridge wraps the call in `catch_unwind` and surfaces panics as `rc=2` with the panic message.
+- **Two-phase commit** (mandatory): Phase 1 collects all `(path, bytes)` pairs in memory — any error here = nothing written. Phase 2 writes each `.asset` + `.asset.meta` to a `.tmp` sibling, then atomic-renames after all temps succeed. Only after every rename succeeds: prune orphans, delete `.tpsheet` + `.tpsheet.meta`. On phase-2 failure: clean up `.tmp` files, leave originals, return error. Pre-existing `.tmp` files from prior crashes are deleted at function entry.
+- **Skip-write-if-equal**: before writing, read existing bytes; if identical, skip. Avoids mtime churn that would re-import dependents in Unity.
+- **No global state**: no `OnceCell`, `lazy_static`, thread-locals, or caches outliving a `generate` call. Mono does not unload native plugins on domain reload — global state would leak across script recompiles.
+- `.tpsheet` + `.tpsheet.meta` deletion happens inside this crate on success only. Both paths are reported in `deleted_paths` so the caller can route them through `AssetDatabase.DeleteAsset`.
+
+### Caller-side notes (Unity / C#)
+
+`StartAssetEditing` is **not** wrapped around the call — Rust writes raw bytes that the editing batch wouldn't observe anyway. `AssetDatabase.Refresh()` is **not** called — too coarse, retriggers postprocessors. The canonical C# integration is `meow-tower`'s `TPSheetPostprocessor.cs` calling `BoxcatBridge.SpriteAuthorGenerate(...)`.
 
 ## GUID policy
 
@@ -178,12 +139,13 @@ Reference asset for parity testing: `meow-tower/Assets/21_Collections/OrgelConte
 
 ## Reference Implementations
 
-C# integration (matched-pair to this crate):
-- `meow-tower/Assets/50_Modules/Tools/TexturePacker/TPSheetPostprocessor.cs` — `OnPostprocessAllAssets` entry point.
-- `meow-tower/Assets/50_Modules/Tools/TexturePacker/NativeSpriteAuthor.cs` — P/Invoke wrapper; mirror struct-for-struct with `src/ffi.rs`.
-- `meow-tower/Assets/50_Modules/Tools/TexturePacker/TPSImporter.cs` — `ScriptedImporter` holding `_prefix` on `.tps`.
-- `meow-tower/Assets/50_Modules/Tools/TexturePacker/TexturePackerUtils.cs` — `.tps` parsing for `spriteScale` (and `_prefix` reader for menu items).
-- `meow-tower/Assets/50_Modules/Tools/TexturePacker/SheetLoader.cs` — historical tpsheet parser. No longer on the import path; useful as a cross-reference for our parser.
+C# integration (matched-pair to this crate, in `meow-tower`):
+- `Packages/com.boxcat.libs/TexturePacker/TPSheetPostprocessor.cs` — `OnPostprocessAllAssets` entry point; calls `BoxcatBridge.SpriteAuthorGenerate(...)`.
+- `Packages/com.boxcat.libs/Native/BoxcatBridge.cs` — `SpriteAuthorGenerate` wrapper + `SpriteAuthorResult` shape; marshals UTF-8 paths and frees the native arena.
+- `Packages/com.boxcat.libs/Native~/bridge/src/lib.rs` — `bxc_sprite_author_generate` / `bxc_sprite_author_free` exports wrapping `unity_sprite_author::pipeline::generate`.
+- `Packages/com.boxcat.libs/TexturePacker/TPSImporter.cs` — `ScriptedImporter` holding `_prefix` on `.tps`.
+- `Packages/com.boxcat.libs/TexturePacker/TexturePackerUtils.cs` — `.tps` parsing for `spriteScale` (and `_prefix` reader for menu items).
+- `Packages/com.boxcat.libs/TexturePacker/SheetLoader.cs` — historical tpsheet parser. No longer on the import path; useful as a cross-reference for our parser.
 
 TS port for mesh internals (proven byte-exact for `m_IndexBuffer`, float-tolerant elsewhere):
 - `prefab-saloon/src/lib/sprite/tpsheet-parser.ts`
@@ -207,28 +169,11 @@ Do **not** port: `prefab-saloon/src/lib/prefab/{parser,serializer,templates}.ts`
 
 ## Tech
 
-- Rust stable. `cdylib` only, no binary.
-- Cross-compile targets:
-  - `aarch64-apple-darwin` + `x86_64-apple-darwin` via `cargo zigbuild`, combined into a universal dylib via `lipo`.
-  - `x86_64-pc-windows-gnu` via `cargo zigbuild`. Despite the `-gnu` triple, the resulting DLL imports the `api-ms-win-crt-*` API sets — i.e. UCRT, the same CRT MSVC has shipped against since VS 2015 — so it's ABI-compatible with Unity Editor on Windows 10+. Win7/8.1 are out of scope (not supported by current Unity LTS). Verify CRT linkage post-build with `strings unity_sprite_author.dll | grep -i 'api-ms-win-crt'` (no `msvcrt.dll`, no `vcruntime`).
-- `[profile.release] panic = "unwind"` (required by `catch_unwind`). The outermost extern fn is the only `catch_unwind` site; inner code returns `Result`. `unwrap`/`expect` reserved for genuine bugs.
+- Rust stable. `rlib` only (no binary, no cdylib). The cdylib path was retired when sprite-author was folded into the BoxcatBridge cdylib at `meow-tower/Packages/com.boxcat.libs/Native~/bridge/`.
+- `[profile.release] panic = "unwind"` — required by the bridge's outer `catch_unwind`. Inner code returns `Result`; `unwrap`/`expect` reserved for genuine bugs.
 - Custom Unity-flavor YAML emitter; no `serde_yaml`. `unity_float_format` matches C# `ToString("R")` — table-driven tests seeded from every distinct float in the golden corpus.
 - Golden-file `assert_eq!` over committed Unity-emitted samples. `.gitattributes` pins `*.asset binary` and `*.asset.meta binary` to prevent CRLF conversion.
-- Symbol-export sanity check (CI/local): `nm -gU target/release/libunity_sprite_author.dylib | grep -E '^_(generate|free_output|free_error|abi_version)$'`.
-- macOS post-build: `codesign --sign - --force --timestamp=none <dylib>` (ad-hoc).
-- Single-programmer team. Native binary built locally and committed to `Assets/Plugins/Editor/`. Windows porting team pulls the committed `.dll`; only the maintainer needs Rust toolchain.
-
-### Universal macOS build recipe
-
-```sh
-cargo zigbuild --release --target aarch64-apple-darwin
-cargo zigbuild --release --target x86_64-apple-darwin
-lipo -create \
-  target/aarch64-apple-darwin/release/libunity_sprite_author.dylib \
-  target/x86_64-apple-darwin/release/libunity_sprite_author.dylib \
-  -output Assets/Plugins/Editor/libunity_sprite_author.dylib
-codesign --sign - --force --timestamp=none Assets/Plugins/Editor/libunity_sprite_author.dylib
-```
+- Cross-platform concerns (universal macOS dylib, Windows UCRT linkage) now live in the bridge crate, not here.
 
 ## Migration
 
@@ -239,18 +184,17 @@ One-shot rollout shipped (meow-tower commits `0d9143ec…668fd2eb`). The `.tpshe
 ```
 unity-sprite-author/
 ├── src/
-│   ├── lib.rs              # FFI exports, panic catch, memory ownership
-│   ├── ffi.rs              # extern "C" types, conversions, free_*
+│   ├── lib.rs              # module declarations
 │   ├── pipeline.rs         # orchestrate: parse → build → write → prune → delete
 │   ├── tpsheet.rs          # parser (mirrors SheetLoader.cs)
 │   ├── tps.rs              # minimal parser (spriteScale lookup)
 │   ├── meta.rs             # .png.meta GUID read; .asset.meta read/write
-│   ├── geometry.rs         # SpriteGeometry from tpsheet (+ rect fallback)
 │   ├── render_data.rs      # _typelessdata, m_IndexBuffer, uvTransform
-│   ├── sprite.rs           # SpriteAsset value type
 │   ├── emit.rs             # SpriteAsset → bytes
 │   ├── yaml.rs             # Unity-flavor YAML + unity_float_format
-│   └── guid.rs             # Unity GUID generate/format/parse
+│   ├── triangulator.rs     # tight-mesh outline tracer
+│   ├── combine.rs          # fab combined-sprite mesh stitching
+│   └── fab.rs              # .tps.fab.json sidecar parser
 ├── tests/
 │   ├── golden_parity.rs    # full byte-equality across multiple atlases
 │   └── golden/             # committed .tpsheet + .tps + .png.meta + expected .asset

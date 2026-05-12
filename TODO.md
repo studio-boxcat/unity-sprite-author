@@ -43,11 +43,7 @@ Old m_Offset analysis (kept for history; ignore the "unsolved" framing):
 
 ## Build & deployment
 
-- macOS dylib `codesign --sign -` step in build recipe.
-- Hand-author `.dylib.meta` / `.dll.meta` plugin-import flags (Editor only, all platforms off). Commit alongside binaries.
-- `cargo xwin` setup for Windows builds from macOS.
-- `abi_version()` handshake: bump on every FFI struct change. C# asserts on first call.
-- `git_sha()` build stamp via `vergen` for diagnostic logging (optional).
+Build/deploy concerns (universal macOS dylib, `cargo xwin` Windows cross, `.dylib.meta` plugin-import flags, codesign) moved to the BoxcatBridge crate in meow-tower when the cdylib path was retired. Nothing left for this crate to deploy directly.
 
 ## Test infrastructure
 

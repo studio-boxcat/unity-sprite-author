@@ -10,7 +10,7 @@ crate-type = ["rlib"]
 
 # Runtime deps held to serde for the .tps.fab.json manifest (see docs/fab.md).
 # Everything else is hand-rolled: custom YAML emitter, custom hex, std-only
-# entropy. Criterion is dev-only; it does not appear in the cdylib.
+# entropy. Criterion is dev-only.
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

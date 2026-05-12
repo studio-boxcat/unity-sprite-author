@@ -47,7 +47,7 @@ Reconsider if the workload changes:
 - Invocation overhead (Unity calling the dylib for *every* asset refresh, not just tpsheet imports) becomes routine.
 - Bulk "Reimport All" over 200+ atlases stalls developers.
 
-If/when caching is added: per-atlas key = `blake3(tpsheet_bytes, tps_bytes, atlas_guid_bytes, prefix, ppu_bytes)`. Value = the `GenerateOutput` (paths + cached bytes). Default location `./config/unity-sprite-author/cache.bin`, env-overridable. Binary format with magic `"USAC"`, u32 version, repeated entries `(key_hash[16], sprite_dir_len_u16, sprite_dir, written_count_u32, [(path_len_u16, path, asset_len_u32, asset_bytes, meta_len_u32, meta_bytes)], deleted_count_u32, [(path_len_u16, path)])`. Hand-rolled to avoid pulling `bincode`/`serde` into the cdylib.
+If/when caching is added: per-atlas key = `blake3(tpsheet_bytes, tps_bytes, atlas_guid_bytes, prefix, ppu_bytes)`. Value = the `GenerateOutput` (paths + cached bytes). Default location `./config/unity-sprite-author/cache.bin`, env-overridable. Binary format with magic `"USAC"`, u32 version, repeated entries `(key_hash[16], sprite_dir_len_u16, sprite_dir, written_count_u32, [(path_len_u16, path, asset_len_u32, asset_bytes, meta_len_u32, meta_bytes)], deleted_count_u32, [(path_len_u16, path)])`. Hand-rolled to keep `bincode`/`serde` out of the BoxcatBridge cdylib (this crate is consumed as an rlib through that bridge).
 
 ## What dominates the 28 ms FS portion
 
