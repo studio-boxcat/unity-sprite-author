@@ -118,10 +118,9 @@ table in [[CLAUDE.md]] with these deltas:
 - `_typelessdata` UVs are already atlas-normalized from the per-part emit
   step — no further uv transform.
 - `m_IndexBuffer` is the combined triangle list, u16 LE.
-- `textureRect.{w,h}`: newly-emitted fabricated sprites set
-  `textureRect == m_Rect` (geometry is manifest-driven; Unity does no
-  tightness pass over a sprite it didn't create). The preserve-on-disk rule
-  still applies on subsequent re-emits.
+- `textureRect == m_Rect` always. The on-disk preserve branch is being dropped
+  crate-wide (see [[TODO.md]]); any sprite whose existing `.asset` has
+  divergent `textureRect.{w,h}` fails loud out of `generate()`.
 
 ## Pipeline integration
 

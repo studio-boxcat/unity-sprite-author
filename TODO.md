@@ -6,7 +6,7 @@ Deferred items surfaced during planning.
 
 ## Byte-exactness gaps to validate
 
-- ~~**`textureRect` sub-pixel shrink for some polygon-trimmed sprites.**~~ **SOLVED** (commit `285f264`): preserve `textureRect.{w,h}` from the on-disk `.asset` when present. Unity's native `Sprite.cpp` runs an alpha-edge-aware tightness pass that's not derivable from rect+verts alone, but on a re-emit we don't need to derive it — the on-disk value is already correct. New sprites without an existing `.asset` use `m_Rect.{w,h}` as the textureRect (no tightness pass to reproduce until Unity creates the asset itself). Closed the 3-sprite (FriendInvite emoji) gap → 100% byte-exact across the meow-tower corpus.
+- ~~**`textureRect` sub-pixel shrink for some polygon-trimmed sprites.**~~ **SOLVED** (commit `285f264`), then **SUPERSEDED**: the preserve branch defended exactly 3 sprites (FriendInvite emoji), all legacy `spriteMode: 2 → 1` migration artifacts. To-do: drop preserve and return a hard error from `generate()` naming the divergent sprite, per the `.tps.fab.json` follow-ups section below. After the 3 sprites are deleted + re-emitted under the new path, the corpus stays 100% byte-exact with one less code path.
 
 - ~~**`m_Offset` formula — X solved, Y unsolved.**~~ **SOLVED** in iteration 3: `m_Offset = (rect.pos + pivot * rect.size) - (rect.pos + rect.size * 0.5)`. The `rect.x`/`rect.y` mathematically cancel but introduce f32 rounding noise that exactly matches Unity. Verified across all 6 stuck fixtures; e2e byte-exact rate jumped 64% → 81% across the meow-tower corpus.
 
@@ -72,8 +72,8 @@ Deferred from v1:
 - **Bilinear UV sampling for polygon parts** (UV maps 0..1 onto `polygonSprite`'s full atlas rect). Defer until a non-solid polygon part appears.
 - **`FX`/`FY`/`FXY` method aliases** that desugar to negative `sx`/`sy`. Skipped in v1 to keep one obvious way.
 
-Open contract questions:
+Decided:
 
-- **Explicit FFI input for manifest path?** v1 uses implicit discovery (`<tps_path>.fab.json`). Alternative: add `const char* fab_path` to `GenerateInputs` and bump `abi_version`. Implicit matches how `.png.meta` / `.tps.meta` siblings are already discovered, so no reason to flip unless C# needs to override.
-- **Skip-write-if-equal cost on fabricated sprites**: combined sprites have larger byte payloads (multi-part mesh) so the read cost is proportionally larger but still cheap. Re-measure after Phase 3 lands; only revisit if a fixture pushes total emission time noticeably.
-- **`textureRect.{w,h}` on first emit vs re-emit for fabricated sprites**: v1 sets `textureRect == m_Rect` on first emit (no Unity tightness pass to reproduce, since Unity never created the asset) and preserves on-disk on re-emit. Confirm with a real fixture that subsequent re-emits don't churn `textureRect` bytes; if they do, drop the preserve branch for fabricated sprites entirely and always re-emit.
+- **Manifest discovery is implicit** (`<tps_path>.fab.json`). No FFI parameter; no `abi_version` bump. Matches how `.png.meta` / `.tps.meta` siblings are already discovered. Revisit only if a real need to override appears.
+- **Skip-write-if-equal kept**, including for fabricated sprites. Combined `.asset`s are only ~25% larger than per-tpsheet sprites (~7-8 KB vs ~6 KB avg); per-file read stays sub-20 µs, ~5-20× cheaper than the write it avoids, and dwarfed by the avoided Unity reimport of dependents. One code path, no special case.
+- **Drop the on-disk `textureRect` preserve branch; fail loud instead.** Corpus survey: 7,257 atlas-fed `.asset` files across 128 atlases, **3 divergent**, all FriendInvite emoji (`Emoji-Emoji_Frog/Heart/Unicorn`) — legacy artifacts from a `spriteMode: 2 → 1` migration on 2026-05-05. Zero golden fixtures exercise preserve. Replace with an error from `generate()` naming the sprite + `m_Rect.{w,h}` + on-disk `textureRect.{w,h}`. Applies uniformly to per-tpsheet and fabricated sprites (no per-type branch needed). One-time cleanup: delete those 3 `.asset`s next time `FriendInvite.tps` is reimported; Unity re-emits them with `textureRect == m_Rect`. Sub-pixel — visually invisible.
