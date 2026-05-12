@@ -164,7 +164,9 @@ fn e2e_meow_tower_byte_exact() {
             tps_path.exists(),
             "missing .tps for {tpsheet_path:?} (stem mismatch?)"
         );
-        let tpsheet_meta_path = parent.join(format!("{base}.tpsheet.meta"));
+        // _prefix moved from .tpsheet.meta to .tps.meta in the TPSImporter
+        // migration (see scripts/migrate-tpsheet-meta.sh + CLAUDE.md "Migration").
+        let tps_meta_path = parent.join(format!("{base}.tps.meta"));
         let sprite_dir = parent.join(&base);
 
         let Ok(png_meta_text) = fs::read_to_string(&png_meta_path) else {
@@ -185,7 +187,7 @@ fn e2e_meow_tower_byte_exact() {
             stats.parse_failures.push((tpsheet_path.clone(), "no guid in .png.meta".into()));
             continue;
         };
-        let prefix = extract_prefix(&tpsheet_meta_path);
+        let prefix = extract_prefix(&tps_meta_path);
 
         let Ok(tpsheet_text) = fs::read_to_string(tpsheet_path) else {
             stats.atlases_parse_failed += 1;
