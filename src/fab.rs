@@ -46,46 +46,48 @@ pub enum Part {
     AtlasSprite {
         sprite: String,
         method: Method,
-        // Target rect, world units. `None` ⇒ native-scale (UIIconMeshGen
-        // path). `Some` ⇒ size-fitted (UISliceMeshGen path). Rejected on
-        // methods that don't accept the opposite shape.
+        /// Target rect, world units. `None` ⇒ native-scale (UIIconMeshGen
+        /// path). `Some` ⇒ size-fitted (UISliceMeshGen path). Rejected on
+        /// methods that don't accept the opposite shape.
         size: Option<(f32, f32)>,
-        // Target-rect pivot in 0..1. Defaults to (0.5, 0.5). For
-        // SpriteMeshAuthor-tree fixtures (Box prefabs) this stays at the
-        // default; CanvasSpriteAuthor-style hierarchies have per-RectTransform
-        // pivots like (0, 0.5) or (0.5, 0) that shift each part's mesh
-        // relative to its anchored position.
+        /// Target-rect pivot in 0..1. Defaults to `(0.5, 0.5)`. For
+        /// SpriteMeshAuthor-tree fixtures (Box prefabs) this stays at the
+        /// default; CanvasSpriteAuthor-style hierarchies have per-
+        /// RectTransform pivots like `(0, 0.5)` or `(0.5, 0)` that shift
+        /// each part's mesh relative to its anchored position.
         part_pivot: [f32; 2],
-        // Slice-method border multiplier. Only used by methods that declare a
-        // border in their source rect; rejected on ID / mirror / tile (non-MC3)
-        // methods at parse time.
+        /// Slice-method border multiplier. Only used by methods that
+        /// declare a border in their source rect; rejected on ID / mirror /
+        /// tile (non-MC3) methods at parse time.
         border_mult: f32,
         affine: Affine,
-        // Per-part scale applied AFTER the affine, BEFORE `offset` + the
-        // combined `canvas_scale`. Default 1.0. For CanvasSpriteAuthor
-        // reproduction, set to UIIcon._scaleFactor (typically 100).
+        /// Per-part scale applied AFTER the affine, BEFORE `offset` + the
+        /// combined `canvas_scale`. Default `1.0`. For CanvasSpriteAuthor
+        /// reproduction, set to `UIIcon._scaleFactor` (typically 100).
         ui_scale: f32,
-        // Per-part canvas-pixel offset applied AFTER `ui_scale`, BEFORE the
-        // combined `canvas_scale`. Default (0, 0). For CanvasSpriteAuthor,
-        // this is the part's `RectTransform.anchoredPosition`.
+        /// Per-part canvas-pixel offset applied AFTER `ui_scale`, BEFORE
+        /// the combined `canvas_scale`. Default `(0, 0)`. For
+        /// CanvasSpriteAuthor, this is the part's
+        /// `RectTransform.anchoredPosition`.
         offset: [f32; 2],
     },
     Polygon {
         polygon_sprite: String,
         vertices: Vec<[f32; 2]>,
-        // Optional explicit triangle indices. When absent, the combine path
-        // ear-clips `vertices` via the Triangulator. When present, this
-        // overrides triangulation — useful for matching Unity's specific
-        // index patterns (e.g. UISolid quad: (0, 2, 3, 3, 1, 0)).
+        /// Optional explicit triangle indices. When absent, the combine
+        /// path ear-clips `vertices` via the Triangulator. When present,
+        /// this overrides triangulation — useful for matching Unity's
+        /// specific index patterns (e.g. UISolid quad: `(0, 2, 3, 3, 1, 0)`).
         triangles: Option<Vec<u16>>,
         affine: Affine,
-        // Canvas-chain transform, same as atlas-sprite parts. Polygons under
-        // CanvasSpriteAuthor (e.g. UISolid backgrounds) need the matrix-style
-        // `v × canvas_scale + offset × canvas_scale` op order because
-        // anchored positions comparable to half-extents would otherwise
-        // round 1+ ULP differently from Unity's emit. UISolid itself has no
-        // per-part scale factor, so `ui_scale` defaults to 1.0; SpriteRenderer
-        // / Box prefab callers keep all three at identity.
+        /// Canvas-chain transform, same as atlas-sprite parts. Polygons
+        /// under CanvasSpriteAuthor (e.g. UISolid backgrounds) need the
+        /// matrix-style `v × canvas_scale + offset × canvas_scale` op
+        /// order because anchored positions comparable to half-extents
+        /// would otherwise round 1+ ULP differently from Unity's emit.
+        /// UISolid itself has no per-part scale factor, so `ui_scale`
+        /// defaults to `1.0`; SpriteRenderer / Box prefab callers keep
+        /// all three at identity.
         ui_scale: f32,
         offset: [f32; 2],
     },
