@@ -104,6 +104,7 @@ pub fn atlas_sprite_mesh(
     entry: &SpriteEntry,
     method: Method,
     size: Option<(f32, f32)>,
+    part_pivot: [f32; 2],
     affine: Affine,
     atlas: AtlasSize,
     ppu: f32,
@@ -116,6 +117,7 @@ pub fn atlas_sprite_mesh(
     let ctx = SliceCtx {
         sprite_pivot_norm: (entry.pivot.x, entry.pivot.y),
         sprite_bound_size: (entry.rect.w as f32 / ppu, entry.rect.h as f32 / ppu),
+        part_pivot: (part_pivot[0], part_pivot[1]),
         affine,
     };
     match method {
@@ -139,6 +141,7 @@ struct SrcMesh {
 struct SliceCtx {
     sprite_pivot_norm: (f32, f32),
     sprite_bound_size: (f32, f32),
+    part_pivot: (f32, f32),
     affine: Affine,
 }
 
@@ -187,9 +190,6 @@ fn slice_vertex_translation(
     SliceXform { scale, translation, offset }
 }
 
-// In fab v1 the target rect always pivots at (0.5, 0.5) — see docs/fab.md.
-const TARGET_RECT_PIVOT: (f32, f32) = (0.5, 0.5);
-
 enum MirrorAxis { X, Y, Xy }
 
 // MX / MY / MXY: place 2 or 4 mirrored copies of src into the target rect.
@@ -206,7 +206,7 @@ fn mirror_method(src: &SrcMesh, ctx: &SliceCtx, target_size: (f32, f32), axis: M
                            &[(1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)][..]),
     };
     let x = slice_vertex_translation(
-        target_size, TARGET_RECT_PIVOT, ctx.sprite_pivot_norm, ctx.sprite_bound_size,
+        target_size, ctx.part_pivot, ctx.sprite_pivot_norm, ctx.sprite_bound_size,
         slice, mirror_pivot,
     );
 
@@ -282,7 +282,7 @@ where
         });
 
         let part_mesh = match part {
-            Part::AtlasSprite { method, size, affine, .. } => {
+            Part::AtlasSprite { method, size, part_pivot, affine, .. } => {
                 if !is_method_supported(*method) {
                     return Err(CombineError::MethodUnimplemented {
                         combined: combined.name.clone(),
@@ -290,7 +290,7 @@ where
                         method: *method,
                     });
                 }
-                atlas_sprite_mesh(&entry, *method, *size, *affine, atlas, ppu)
+                atlas_sprite_mesh(&entry, *method, *size, *part_pivot, *affine, atlas, ppu)
             }
             Part::Polygon { vertices, affine, .. } => {
                 polygon_mesh(vertices, *affine, entry.rect, atlas)
@@ -428,7 +428,7 @@ mod tests {
         // pixel pivot = (1, 2). local verts = (pixel − pivot)/PPU.
         let entry = quad_entry(10, 20, 2, 4, (0.5, 0.5));
         let m = atlas_sprite_mesh(
-            &entry, Method::Id, None, Affine::default(),
+            &entry, Method::Id, None, [0.5, 0.5], Affine::default(),
             AtlasSize { width: 100, height: 100 },
             100.0,
         );
@@ -445,7 +445,7 @@ mod tests {
     fn atlas_sprite_id_with_translation() {
         let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
-            &entry, Method::Id, None,
+            &entry, Method::Id, None, [0.5, 0.5],
             Affine { tx: 5.0, ty: 7.0, ..Affine::default() },
             AtlasSize { width: 16, height: 16 },
             1.0,
@@ -466,7 +466,7 @@ mod tests {
         // 2×2 halves sitting side-by-side, target rect centered at origin.
         let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
-            &entry, Method::Mx, Some((4.0, 2.0)), Affine::default(),
+            &entry, Method::Mx, Some((4.0, 2.0)), [0.5, 0.5], Affine::default(),
             AtlasSize { width: 8, height: 8 }, 1.0,
         );
         assert_eq!(m.verts.len(), 8, "2× source verts");
@@ -484,7 +484,7 @@ mod tests {
         // second copy at x ∈ [-2, 0]. Both at y ∈ [-1, 1].
         let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
-            &entry, Method::Mx, Some((4.0, 2.0)), Affine::default(),
+            &entry, Method::Mx, Some((4.0, 2.0)), [0.5, 0.5], Affine::default(),
             AtlasSize { width: 8, height: 8 }, 1.0,
         );
         // First copy bottom-left: src (0,0) → pivot-rel (-1,-1) → scale (1,1) → translate (1,1) → slice (0,0) → offset (0,-1) → (0,-1).
@@ -500,7 +500,7 @@ mod tests {
     fn mx_uvs_repeated_verbatim() {
         let entry = quad_entry(10, 20, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
-            &entry, Method::Mx, Some((4.0, 2.0)), Affine::default(),
+            &entry, Method::Mx, Some((4.0, 2.0)), [0.5, 0.5], Affine::default(),
             AtlasSize { width: 100, height: 100 }, 1.0,
         );
         assert_eq!(m.uvs[..4], m.uvs[4..]);
@@ -510,7 +510,7 @@ mod tests {
     fn my_doubles_along_y() {
         let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
-            &entry, Method::My, Some((2.0, 4.0)), Affine::default(),
+            &entry, Method::My, Some((2.0, 4.0)), [0.5, 0.5], Affine::default(),
             AtlasSize { width: 8, height: 8 }, 1.0,
         );
         // First copy (Y+): src (0,0) → (-1,-1) * (1,1) + (1,1) = (0,0); + offset (-1,0) → (-1, 0). Wait, mirror_pivot = (0, 0.5), rect_pivot = (0.5, 0.5).
@@ -530,7 +530,7 @@ mod tests {
     fn mxy_quadruples_verts() {
         let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
-            &entry, Method::Mxy, Some((4.0, 4.0)), Affine::default(),
+            &entry, Method::Mxy, Some((4.0, 4.0)), [0.5, 0.5], Affine::default(),
             AtlasSize { width: 8, height: 8 }, 1.0,
         );
         assert_eq!(m.verts.len(), 16, "4× source");
@@ -554,7 +554,7 @@ mod tests {
         // panics — checked via std::panic::catch_unwind.
         let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
         let r = std::panic::catch_unwind(|| {
-            atlas_sprite_mesh(&entry, Method::Mx, None, Affine::default(),
+            atlas_sprite_mesh(&entry, Method::Mx, None, [0.5, 0.5], Affine::default(),
                               AtlasSize { width: 8, height: 8 }, 1.0)
         });
         assert!(r.is_err());
@@ -571,6 +571,7 @@ mod tests {
             sprite: sprite.into(),
             method: Method::Id,
             size: None,
+            part_pivot: [0.5, 0.5],
             border_mult: 1.0,
             affine,
             mirror_x: false,
@@ -655,6 +656,7 @@ mod tests {
             sprite: "A".into(),
             method: Method::Tx,
             size: Some((4.0, 1.0)),
+            part_pivot: [0.5, 0.5],
             border_mult: 1.0,
             affine: Affine::default(),
             mirror_x: false, mirror_y: false,

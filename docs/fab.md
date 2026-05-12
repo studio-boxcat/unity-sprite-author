@@ -47,6 +47,9 @@ absent, behavior is unchanged. No FFI parameter, no `abi_version` bump.
           "rotDeg": 0,
           "mirrorX": false, "mirrorY": false,// UV-mirror duplication; honored only by slice methods
           "width":  null, "height": null,    // required for non-ID methods (target rect, world units)
+          "partPivot": [0.5, 0.5],           // target-rect pivot, normalized 0..1. Default [0.5,0.5].
+                                             //   Box prefabs leave it default; UI hierarchies (e.g.
+                                             //   CanvasSpriteAuthor) carry mixed pivots like (0,0.5).
           "borderMult": 1.0                  // optional, default 1; ignored when method has no border
         },
         // --- polygon part (custom verts over a solid sprite) ---
@@ -80,9 +83,9 @@ absent, behavior is unchanged. No FFI parameter, no `abi_version` bump.
   preserved — violations are parse errors naming the offending part.
   Method list and constraints live in that file; this crate is a faithful port.
 - Polygon parts must not declare atlas-sprite-only fields
-  (`method`, `width`, `height`, `borderMult`, `mirrorX`, `mirrorY`).
-  Mixing the two shapes signals a typo; the parser rejects rather than
-  silently dropping fields.
+  (`method`, `width`, `height`, `borderMult`, `mirrorX`, `mirrorY`,
+  `partPivot`). Mixing the two shapes signals a typo; the parser rejects
+  rather than silently dropping fields.
 
 ### Per-part transform
 

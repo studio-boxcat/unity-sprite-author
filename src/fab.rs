@@ -34,6 +34,12 @@ pub enum Part {
         // width / height: target rect, world units. Required when method != Id.
         // For Id, None means "use the sprite's native rect".
         size: Option<(f32, f32)>,
+        // Target-rect pivot in 0..1. Defaults to (0.5, 0.5). For
+        // SpriteMeshAuthor-tree fixtures (Box prefabs) this stays at the
+        // default; CanvasSpriteAuthor-style hierarchies have per-RectTransform
+        // pivots like (0, 0.5) or (0.5, 0) that shift each part's mesh
+        // relative to its anchored position.
+        part_pivot: [f32; 2],
         border_mult: f32,
         affine: Affine,
         mirror_x: bool,
@@ -201,6 +207,7 @@ mod raw {
         pub border_mult: Option<f32>,
         pub mirror_x: Option<bool>,
         pub mirror_y: Option<bool>,
+        pub part_pivot: Option<[f32; 2]>,
 
         // polygon discriminator
         pub polygon_sprite: Option<String>,
@@ -318,6 +325,7 @@ fn translate_part(combined: &str, p: raw::Part) -> Result<Part, FabError> {
                 sprite,
                 method,
                 size,
+                part_pivot: p.part_pivot.unwrap_or([0.5, 0.5]),
                 border_mult: p.border_mult.unwrap_or(1.0),
                 affine,
                 mirror_x: p.mirror_x.unwrap_or(false),
@@ -341,11 +349,12 @@ fn translate_part(combined: &str, p: raw::Part) -> Result<Part, FabError> {
             // author sees the issue.
             if p.method.is_some() || p.width.is_some() || p.height.is_some()
                 || p.border_mult.is_some() || p.mirror_x.is_some() || p.mirror_y.is_some()
+                || p.part_pivot.is_some()
             {
                 return Err(FabError::PartShape {
                     combined: combined.to_string(),
                     reason: "polygon parts cannot declare \
-                             method/width/height/borderMult/mirrorX/mirrorY",
+                             method/width/height/borderMult/mirrorX/mirrorY/partPivot",
                 });
             }
             Ok(Part::Polygon { polygon_sprite, vertices, affine })
@@ -399,10 +408,11 @@ mod tests {
         assert_eq!(c.pivot, [0.5, 0.5]);
         assert_eq!(c.border, [0.0, 0.0, 0.0, 0.0]);
         match &c.parts[0] {
-            Part::AtlasSprite { sprite, method, size, affine, mirror_x, mirror_y, border_mult } => {
+            Part::AtlasSprite { sprite, method, size, part_pivot, affine, mirror_x, mirror_y, border_mult } => {
                 assert_eq!(sprite, "Body");
                 assert_eq!(*method, Method::Id);
                 assert_eq!(*size, None);
+                assert_eq!(*part_pivot, [0.5, 0.5]);
                 assert_eq!(*affine, Affine::default());
                 assert!(!mirror_x);
                 assert!(!mirror_y);
@@ -504,11 +514,28 @@ mod tests {
     }
 
     #[test]
+    fn part_pivot_defaults_and_overrides() {
+        let m = parse_ok(r#"{ "version": 1, "combined": [{ "name": "X", "parts": [
+            { "sprite": "A" },
+            { "sprite": "B", "partPivot": [0, 0.5] }
+        ] }] }"#);
+        match &m.combined[0].parts[0] {
+            Part::AtlasSprite { part_pivot, .. } => assert_eq!(*part_pivot, [0.5, 0.5]),
+            _ => panic!(),
+        }
+        match &m.combined[0].parts[1] {
+            Part::AtlasSprite { part_pivot, .. } => assert_eq!(*part_pivot, [0.0, 0.5]),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
     fn rejects_polygon_with_atlas_sprite_fields() {
         // Mixing an atlas-sprite-only field onto a polygon part is a shape
         // mix-up — surface it instead of silently dropping the field.
         for extra in [r#""method": "ID""#, r#""width": 1, "height": 1"#,
-                      r#""borderMult": 0.5"#, r#""mirrorX": true"#, r#""mirrorY": true"#] {
+                      r#""borderMult": 0.5"#, r#""mirrorX": true"#, r#""mirrorY": true"#,
+                      r#""partPivot": [0, 0.5]"#] {
             let json = format!(
                 r#"{{ "version": 1, "combined": [{{ "name": "X", "parts": [
                     {{ "polygonSprite": "C", "vertices": [[0,0],[1,0],[0,1]], {extra} }}
