@@ -109,7 +109,8 @@ pub struct Geometry {
 
 impl Geometry {
     // Rect fallback when tpsheet line carries no polygon data.
-    // Matches SheetLoader.cs:170-175.
+    // Matches `SpriteGeometry.Rect` in SheetLoader.cs (same vertex /
+    // index layout — 4 corner verts + the `0,2,1,1,2,3` triangle list).
     fn rect(w: u32, h: u32) -> Self {
         let w = w as f32;
         let h = h as f32;
@@ -281,7 +282,8 @@ fn parse_sprite_line(
 ) -> Result<SpriteEntry, ParseError> {
     let tokens: Vec<&str> = line.split(';').collect();
     // 11 tokens minimum either way: name + 4 rect + 2 pivot (consumed even when
-    // pivotpoints=disabled, mirroring SheetLoader.cs:117-121) + 4 border.
+    // pivotpoints=disabled — the C# side at the `ti += 2; // skip pivot` branch
+    // in SheetLoader.cs still advances past the pivot tokens) + 4 border.
     const MIN_TOKENS: usize = 11;
     if tokens.len() < MIN_TOKENS {
         return Err(ParseError::ShortSpriteLine {
