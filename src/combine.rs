@@ -240,7 +240,23 @@ pub fn polygon_mesh(
     polygon_sprite_rect: Rect,
     atlas: AtlasSize,
 ) -> PartMesh {
-    let tris = triangulator::triangulate(vertices);
+    polygon_mesh_with_tris(vertices, None, affine, polygon_sprite_rect, atlas)
+}
+
+// Polygon-part mesh with optional explicit triangles. When `tris_override` is
+// `Some`, those indices are used verbatim (caller-validated for length and
+// range upstream). Otherwise we ear-clip via the triangulator.
+fn polygon_mesh_with_tris(
+    vertices: &[[f32; 2]],
+    tris_override: Option<&[u16]>,
+    affine: Affine,
+    polygon_sprite_rect: Rect,
+    atlas: AtlasSize,
+) -> PartMesh {
+    let tris = match tris_override {
+        Some(t) => t.to_vec(),
+        None => triangulator::triangulate(vertices),
+    };
 
     let verts: Vec<[f32; 2]> = vertices.iter().map(|v| apply_affine(*v, affine)).collect();
 
@@ -1472,8 +1488,8 @@ where
                 check_method_constraints(*method, &entry, &combined.name, source_name)?;
                 atlas_sprite_mesh(&entry, *method, *size, *part_pivot, *border_mult, *affine, atlas, ppu)
             }
-            Part::Polygon { vertices, affine, .. } => {
-                polygon_mesh(vertices, *affine, entry.rect, atlas)
+            Part::Polygon { vertices, triangles, affine, .. } => {
+                polygon_mesh_with_tris(vertices, triangles.as_deref(), *affine, entry.rect, atlas)
             }
         };
 

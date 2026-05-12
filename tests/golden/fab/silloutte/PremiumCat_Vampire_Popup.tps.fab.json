@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "combined": [
+    {
+      "name": "Silloutte1",
+      "parts": [
+        { "polygonSprite": "Color_32264DBD",
+          "vertices": [[-1.0625, -2.725], [1.0625, -2.725], [-1.0625, 2.725], [1.0625, 2.725]],
+          "triangles": [0, 2, 3, 3, 1, 0],
+          "tx": 0, "ty": -0.2225 },
+        { "sprite": "Mansion_Silloutte__1__B", "method": "MX",
+          "sx": 1.25, "sy": 1.25, "tx": 0, "ty": -2.9475 },
+        { "sprite": "Mansion_Silloutte__1__S", "method": "ID",
+          "sx": 1.25, "sy": 1.25, "tx": 1.0625, "ty": -0.265 },
+        { "sprite": "Mansion_Silloutte__1__S", "method": "ID",
+          "sx": -1.25, "sy": 1.25, "tx": -1.0625, "ty": -0.265 },
+        { "sprite": "Mansion_Silloutte__1__T", "method": "MX",
+          "sx": 1.25, "sy": 1.25, "tx": 0, "ty": 2.5025 }
+      ]
+    }
+  ]
+}

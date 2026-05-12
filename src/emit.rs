@@ -90,8 +90,12 @@ pub fn emit(asset: &SpriteAsset) -> Result<String, EmitError> {
     // rect.y ∈ {30, 149, 151, 164, 190, 385} and h ∈ {75, 76, 78, 81, 102, 115}.
     let rx = asset.rect.x as f32;
     let ry = asset.rect.y as f32;
-    let w = asset.rect.w as f32;
-    let h = asset.rect.h as f32;
+    // Fabricated sprites carry f32 dims via SpriteSource; the u32 rect.{w,h}
+    // are zeroed because they're not meaningful for fab outputs.
+    let (w, h) = match asset.source {
+        SpriteSource::Tpsheet => (asset.rect.w as f32, asset.rect.h as f32),
+        SpriteSource::Fabricated { rect_w_f, rect_h_f } => (rect_w_f, rect_h_f),
+    };
     let off_x = (rx + asset.pivot.x * w) - (rx + w * 0.5);
     let off_y = (ry + asset.pivot.y * h) - (ry + h * 0.5);
     writeln!(

@@ -50,6 +50,11 @@ pub enum Part {
     Polygon {
         polygon_sprite: String,
         vertices: Vec<[f32; 2]>,
+        // Optional explicit triangle indices. When absent, the combine path
+        // ear-clips `vertices` via the Triangulator. When present, this
+        // overrides triangulation — useful for matching Unity's specific
+        // index patterns (e.g. UISolid quad: (0, 2, 3, 3, 1, 0)).
+        triangles: Option<Vec<u16>>,
         affine: Affine,
     },
 }
@@ -239,6 +244,7 @@ mod raw {
         // polygon discriminator
         pub polygon_sprite: Option<String>,
         pub vertices: Option<Vec<[f32; 2]>>,
+        pub triangles: Option<Vec<u16>>,
 
         // shared affine
         pub tx: Option<f32>,
@@ -400,7 +406,24 @@ fn translate_part(combined: &str, p: raw::Part) -> Result<Part, FabError> {
                              method/width/height/borderMult/partPivot",
                 });
             }
-            Ok(Part::Polygon { polygon_sprite, vertices, affine })
+            // Validate explicit triangles when given: must be a multiple of 3
+            // and every index must be in range.
+            if let Some(tris) = &p.triangles {
+                if tris.len() % 3 != 0 {
+                    return Err(FabError::PartShape {
+                        combined: combined.to_string(),
+                        reason: "polygon `triangles` length must be a multiple of 3",
+                    });
+                }
+                let n = vertices.len() as u16;
+                if tris.iter().any(|&i| i >= n) {
+                    return Err(FabError::PartShape {
+                        combined: combined.to_string(),
+                        reason: "polygon `triangles` index out of range",
+                    });
+                }
+            }
+            Ok(Part::Polygon { polygon_sprite, vertices, triangles: p.triangles, affine })
         }
     }
 }
@@ -476,7 +499,7 @@ mod tests {
             }]
         }"#);
         match &m.combined[0].parts[0] {
-            Part::Polygon { polygon_sprite, vertices, affine } => {
+            Part::Polygon { polygon_sprite, vertices, affine, .. } => {
                 assert_eq!(polygon_sprite, "Color_3F314EFF");
                 assert_eq!(vertices.len(), 4);
                 assert_eq!(*affine, Affine::default());
