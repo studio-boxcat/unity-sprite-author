@@ -37,9 +37,13 @@ Old m_Offset analysis (kept for history; ignore the "unsolved" framing):
 - **`m_AtlasRD` vs `m_RD` divergence**: identical for non-SpriteAtlas sprites (verified). Confirm the constraint with a SpriteAtlas-managed fixture; panic on `m_SpriteAtlas != {fileID:0}` until that's spec'd.
 - ~~**Float format unit-test table**~~ — landed in `yaml::tests::float_corpus_full_roundtrip` (commit pending). Scans every `.asset` under `tests/golden/`, extracts every distinct fractional float literal (93 currently), and asserts `yaml::float()` round-trips each one bit-exactly. Future Rust Display divergence from C# `ToString("R")` will surface here as a unit-test failure rather than a golden-byte mismatch.
 
-## C# integration items
+## C# integration & Unity-side ergonomics
 
-- First-time atlas import PPU: fresh PNG has `spritePixelsPerUnit = 100` default. Document the gotcha; developer must set PPU on the `.png` and trigger reimport for the first import to pick up custom PPU. Alternative: move PPU onto `TPSImporter`.
+Concerns that live in meow-tower / BoxcatBridge now, not in this rlib:
+
+- First-time atlas import PPU gotcha — owned by `TPSheetPostprocessor.cs` / `TPSImporter.cs` docs in meow-tower.
+- Plugin reload requires Editor restart on dylib commit — owned by BoxcatBridge.
+- macOS Gatekeeper / quarantine xattr on first checkout — owned by BoxcatBridge.
 
 ## Build & deployment
 
@@ -47,14 +51,7 @@ Build/deploy concerns (universal macOS dylib, `cargo xwin` Windows cross, `.dyli
 
 ## Test infrastructure
 
-- `tests/golden/` directory layout: per-atlas folder containing `.tpsheet`, `.tps`, `.png.meta`, `.tpsheet.meta`, and the full set of expected `.asset` + `.asset.meta` files. Tests stage these into `target/test-tmp/<test>/` before running the pipeline (so the preserve-existing-meta branch is exercised).
-- Diff harness: on byte-equality mismatch, write `target/diff/<name>.{actual,expected}` and print first divergent offset + 32-byte hex window.
-- ~~Mint-branch unit test using a seeded `StdRng`~~ — landed as `meta::tests::mint_guid_from_seeds_is_deterministic`. The `mint_guid()` entropy source is `std::collections::hash_map::RandomState` (no `rand` dep); the test seam is a `mint_guid_from(lo: u64, hi: u64)` helper that `mint_guid()` wraps. The unit test pins both the byte order and the rendered `.asset.meta` containing the minted `guid:` line.
-
-## Unity-side ergonomics (post-MVP)
-
-- Plugin reload requires Editor restart on dylib commit. Document; consider a build-stamp the wrapper logs at startup.
-- macOS Gatekeeper / quarantine xattr handling on first checkout.
+All three items landed (per-atlas golden layout under `tests/golden/<atlas>/`, diff harness in `src/emit.rs` + `tests/golden_fab_silloutte.rs` writing `target/diff/<name>.{actual,expected}`, deterministic mint-branch seam at `meta::tests::mint_guid_from_seeds_is_deterministic`). Nothing outstanding.
 
 ## `.tps.fab.json` follow-ups
 
