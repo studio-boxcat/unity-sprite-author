@@ -42,8 +42,8 @@ pub struct TpsData {
 
 impl TpsData {
     // Returns InvertScale for the sprite. Falls back to 1.0 if not found
-    // (mirrors TPSData.GetInvertedScale + TryGetSpriteInfo at
-    // TexturePackerUtils.cs:31-41).
+    // (mirrors `TPSData.GetInvertedScale` + `TryGetSpriteInfo` in
+    // meow-tower/Packages/com.boxcat.libs/TexturePacker/TexturePackerUtils.cs).
     //
     // The fallback split on '-' handles aliases for sprites packed from
     // sub-folders: TexturePacker writes `OrgelEvent~/BG/Day_Brush.png` as

@@ -175,10 +175,12 @@ pub fn build(
     sprite_scale: f32,
     atlas: AtlasSize,
 ) -> RenderData {
-    // Two distinct f32 divisions, mirroring TPSheetPostprocessor.cs:130-140:
-    //   SpriteFactory.Create(..., ppu: ppu / spriteScale, ...)
-    //   geo.AssignToSprite(..., spriteScale / ppu)
-    // ptu and vertex_scale are NOT exact reciprocals in f32; both are stored.
+    // Two distinct f32 divisions — both used to live in the C# side at
+    // `SpriteFactory.Create(..., ppu: ppu / spriteScale, ...)` paired with
+    // `geo.AssignToSprite(..., spriteScale / ppu)`, and both moved into this
+    // crate when sprite emit went native. The two are NOT exact reciprocals
+    // in f32, so we compute and store them separately to keep byte-exact
+    // parity with the historical C# emit.
     let pixels_to_units = ppu / sprite_scale;
     let vertex_scale = sprite_scale / ppu;
 
