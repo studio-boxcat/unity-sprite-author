@@ -14,7 +14,9 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::combine::{self, AtlasSize as CombineAtlas};
 use crate::emit::{self, EmitError, SpriteAsset};
+use crate::fab;
 use crate::meta;
 use crate::render_data::{self, AtlasSize};
 use crate::tps;
@@ -30,6 +32,8 @@ pub enum Error {
     AtlasSizeUnknown,
     EmptySheet,
     DuplicateSpriteName(String),
+    Fab(fab::FabError),
+    Combine(combine::CombineError),
     // On-disk .asset's textureRect.{w,h} doesn't match the rect we'd emit.
     // Only seen on Unity sprites authored under SpriteMeshType.Tight +
     // spriteMode: Multiple, which ran an alpha-edge tightness pass we can't
@@ -56,6 +60,8 @@ impl fmt::Display for Error {
                 f,
                 "duplicate sprite name after prefix application: {name:?}"
             ),
+            Self::Fab(e) => write!(f, "fab.json: {e}"),
+            Self::Combine(e) => write!(f, "fab combine: {e}"),
             Self::TextureRectDivergence { sprite, on_disk, emitted } => write!(
                 f,
                 "textureRect drift on {sprite:?}: on-disk ({}, {}) vs emitted ({}, {}). \
@@ -113,6 +119,16 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
     let atlas_meta_text = read_to_string(&atlas_meta_path)?;
     let atlas_guid = meta::parse_guid(&atlas_meta_text).map_err(Error::Meta)?;
 
+    // Optional `.tps.fab.json` sidecar (see docs/fab.md). When present, it
+    // declares fabricated combined sprites built from referenced parts; those
+    // parts are excluded from per-tpsheet emission and pruned from disk by the
+    // existing orphan path.
+    let manifest = load_fab_manifest(input.tps_path)?;
+    let part_names: HashSet<String> = manifest
+        .as_ref()
+        .map(collect_part_names)
+        .unwrap_or_default();
+
     // For each sprite, gather (asset_path, asset_bytes, meta_path, meta_bytes).
     let mut writes: Vec<(PathBuf, Vec<u8>)> = Vec::with_capacity(sheet.sprites.len() * 2);
     let mut written_asset_paths: Vec<PathBuf> = Vec::with_capacity(sheet.sprites.len());
@@ -125,6 +141,13 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
     let mut current_asset_names_ci: HashSet<String> = HashSet::with_capacity(sheet.sprites.len());
 
     for sprite in &sheet.sprites {
+        // Parts referenced by the fab manifest don't get their own .asset —
+        // they survive only inside the combined sprite. Existing on-disk
+        // .assets for them are caught as orphans below.
+        if part_names.contains(&sprite.name) {
+            continue;
+        }
+
         let asset_name = format!("{}{}", input.prefix, sprite.name);
         if !current_asset_names_ci.insert(asset_name.to_ascii_lowercase()) {
             return Err(Error::DuplicateSpriteName(asset_name));
@@ -182,6 +205,22 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
             meta::render_asset_meta_with_shape(&own_guid, meta_shape).into_bytes(),
         ));
         written_asset_paths.push(asset_path);
+    }
+
+    // Combined sprites declared in the fab manifest, emitted after per-tpsheet
+    // sprites so any name collision surfaces as DuplicateSpriteName (the
+    // case-insensitive set already covers it).
+    if let Some(manifest) = &manifest {
+        emit_combined_sprites(
+            manifest,
+            &sheet,
+            input,
+            atlas_size,
+            &atlas_guid,
+            &mut current_asset_names_ci,
+            &mut writes,
+            &mut written_asset_paths,
+        )?;
     }
 
     // Compute prune set: existing .asset files not in current sprite set.
@@ -318,6 +357,120 @@ fn with_tmp_suffix(p: &Path) -> PathBuf {
     let mut tmp = p.to_path_buf();
     tmp.as_mut_os_string().push(".tmp");
     tmp
+}
+
+// ---------------------------------------------------------------------------
+// `.tps.fab.json` integration.
+
+fn fab_manifest_path(tps_path: &Path) -> PathBuf {
+    let mut p = tps_path.to_path_buf();
+    p.as_mut_os_string().push(".fab.json");
+    p
+}
+
+fn load_fab_manifest(tps_path: &Path) -> Result<Option<fab::Manifest>, Error> {
+    let path = fab_manifest_path(tps_path);
+    match fs::read_to_string(&path) {
+        Ok(text) => fab::parse(&text).map(Some).map_err(Error::Fab),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(Error::Io { path, source }),
+    }
+}
+
+fn collect_part_names(m: &fab::Manifest) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for c in &m.combined {
+        for p in &c.parts {
+            match p {
+                fab::Part::AtlasSprite { sprite, .. } => { out.insert(sprite.clone()); }
+                fab::Part::Polygon { polygon_sprite, .. } => { out.insert(polygon_sprite.clone()); }
+            }
+        }
+    }
+    out
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_combined_sprites(
+    manifest: &fab::Manifest,
+    sheet: &tpsheet::Sheet,
+    input: &GenerateInputs,
+    atlas_size: AtlasSize,
+    atlas_guid: &[u8; 16],
+    current_asset_names_ci: &mut HashSet<String>,
+    writes: &mut Vec<(PathBuf, Vec<u8>)>,
+    written_asset_paths: &mut Vec<PathBuf>,
+) -> Result<(), Error> {
+    // Build a sprite-name → SpriteEntry lookup for the combine pass.
+    let sprite_by_name: std::collections::HashMap<&str, &tpsheet::SpriteEntry> =
+        sheet.sprites.iter().map(|s| (s.name.as_str(), s)).collect();
+
+    let combine_atlas = CombineAtlas { width: atlas_size.width, height: atlas_size.height };
+
+    for c in &manifest.combined {
+        let asset_name = format!("{}{}", input.prefix, c.name);
+        if !current_asset_names_ci.insert(asset_name.to_ascii_lowercase()) {
+            return Err(Error::DuplicateSpriteName(asset_name));
+        }
+
+        let asset_path = input.sprite_dir.join(format!("{asset_name}.asset"));
+        let meta_path = input.sprite_dir.join(format!("{asset_name}.asset.meta"));
+
+        let mesh = combine::build_combined(
+            c,
+            |name| sprite_by_name.get(name).map(|s| (*s).clone()),
+            combine_atlas,
+            input.ppu,
+        ).map_err(Error::Combine)?;
+
+        let ((rect_w_f, rect_h_f), (px, py)) = combine::calc_rect_and_pivot(&mesh.verts, input.ppu);
+
+        let rd = render_data::build_fabricated(
+            &mesh.verts, &mesh.uvs, &mesh.tris,
+            rect_w_f, rect_h_f, (px, py), input.ppu,
+        );
+
+        let (own_guid, meta_shape) = meta::resolve_sprite_meta(&meta_path).map_err(Error::Meta)?;
+
+        // Fabricated sprites have rect.{x,y}=0 and f32 dims in m_Rect /
+        // textureRect. The TextureRectDivergence guard compares against the
+        // emitted (rect_w_f, rect_h_f).
+        if let Some((w, h)) = meta::read_existing_texture_rect_size(&asset_path)
+            && (w, h) != (rect_w_f, rect_h_f)
+        {
+            return Err(Error::TextureRectDivergence {
+                sprite: asset_name,
+                on_disk: (w, h),
+                emitted: (rect_w_f, rect_h_f),
+            });
+        }
+
+        let sprite_asset = SpriteAsset {
+            name: asset_name.clone(),
+            rect: tpsheet::Rect { x: 0, y: 0, w: 0, h: 0 }, // {w,h} ignored in Fabricated mode
+            border: tpsheet::Border {
+                left: c.border[0] as i32,
+                bottom: c.border[1] as i32,
+                right: c.border[2] as i32,
+                top: c.border[3] as i32,
+            },
+            pivot: tpsheet::Pivot { x: px, y: py },
+            pixels_to_units: input.ppu,
+            own_guid,
+            atlas_guid: *atlas_guid,
+            render_data: rd,
+            source: emit::SpriteSource::Fabricated { rect_w_f, rect_h_f },
+        };
+
+        let asset_bytes = emit::emit(&sprite_asset).map_err(Error::Emit)?.into_bytes();
+        writes.push((asset_path.clone(), asset_bytes));
+        writes.push((
+            meta_path,
+            meta::render_asset_meta_with_shape(&own_guid, meta_shape).into_bytes(),
+        ));
+        written_asset_paths.push(asset_path);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -552,6 +705,81 @@ mod tests {
         assert!(written.contains("Cake__DecoLeft"));
         let _ = golden_text;
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pipeline_emits_combined_sprite_and_excludes_parts() {
+        // Drop a fab.json next to Orgel.tps that references a single
+        // tpsheet entry as a polygon part. The pipeline should:
+        //   - parse the manifest
+        //   - emit a combined .asset (named per the manifest)
+        //   - skip per-tpsheet emission of the referenced part
+        let dir = copy_orgel_to_temp("fab_combined");
+
+        // Pick a sprite from Orgel.tpsheet to use as a polygon source.
+        // Cake__DecoLeft is a known fixture.
+        let fab_text = r#"{
+            "version": 1,
+            "combined": [{
+                "name": "FAB_DecoCombined",
+                "parts": [{
+                    "polygonSprite": "Cake__DecoLeft",
+                    "vertices": [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]]
+                }]
+            }]
+        }"#;
+        fs::write(dir.join("Orgel.tps.fab.json"), fab_text).unwrap();
+
+        let inputs = GenerateInputs {
+            tpsheet_path: &dir.join("Orgel.tpsheet"),
+            tps_path: &dir.join("Orgel.tps"),
+            atlas_png_path: &dir.join("Orgel.png"),
+            sprite_dir: &dir.join("sprites"),
+            prefix: "",
+            ppu: 80.0,
+        };
+        let out = generate(&inputs).unwrap();
+
+        // Combined .asset was written.
+        let combined = dir.join("sprites/FAB_DecoCombined.asset");
+        assert!(combined.exists(), "combined .asset missing");
+        assert!(out.written_paths.iter().any(|p| p == &combined));
+
+        // Part-sprite .asset is NOT in the written set (Cake__DecoLeft is
+        // a part of the combined). It WILL be in deleted_paths because the
+        // staged fixture had it on disk; orphan prune catches it.
+        assert!(
+            !out.written_paths.iter().any(|p| p.ends_with("Cake__DecoLeft.asset")),
+            "part sprite should not be in written set",
+        );
+        assert!(
+            out.deleted_paths.iter().any(|p| p.ends_with("Cake__DecoLeft.asset")),
+            "part sprite should be pruned as orphan",
+        );
+
+        // Sanity: emitted bytes start with the Sprite YAML header.
+        let bytes = fs::read(&combined).unwrap();
+        let head = std::str::from_utf8(&bytes[..40]).unwrap();
+        assert!(head.starts_with("%YAML 1.1\n"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pipeline_propagates_fab_parse_errors() {
+        let dir = copy_orgel_to_temp("fab_parse_error");
+        fs::write(dir.join("Orgel.tps.fab.json"), "not json").unwrap();
+        let inputs = GenerateInputs {
+            tpsheet_path: &dir.join("Orgel.tpsheet"),
+            tps_path: &dir.join("Orgel.tps"),
+            atlas_png_path: &dir.join("Orgel.png"),
+            sprite_dir: &dir.join("sprites"),
+            prefix: "",
+            ppu: 80.0,
+        };
+        let e = generate(&inputs).unwrap_err();
+        assert!(matches!(e, Error::Fab(_)), "got {e:?}");
         let _ = fs::remove_dir_all(&dir);
     }
 }

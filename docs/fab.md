@@ -156,26 +156,33 @@ table in [[CLAUDE.md]] with these deltas:
 ## Pipeline integration
 
 Slots into the existing two-phase commit (see the C# ↔ Rust contract section
-of [[CLAUDE.md]]). Phase-1 deltas only:
+of [[CLAUDE.md]]) — landed. Phase-1 deltas:
 
-- Load `<tps_path>.fab.json` if present and validate.
-- Emit one `(path, bytes)` pair per combined entry, alongside the per-tpsheet
-  pairs.
-- Remove part sprites from the per-tpsheet emission set; their on-disk
-  predecessors (if any) get orphan-pruned in phase 2.
+- `pipeline::generate` looks for `<tps_path>.fab.json` next to the `.tps`.
+  Present → `fab::parse` (`FabError` propagates as `pipeline::Error::Fab`);
+  absent → behavior unchanged.
+- For each `combined` entry: `combine::build_combined` → `calc_rect_and_pivot`
+  → `render_data::build_fabricated` → `emit::SpriteAsset { source: Fabricated }`
+  → bytes appended to writes. `CombineError` propagates as
+  `pipeline::Error::Combine`.
+- Sprites referenced by any combined entry are skipped in the per-tpsheet
+  emission loop. Their on-disk `.asset` predecessors (if any) are pruned as
+  orphans in phase 2 — no special-case code needed.
 
 ## Phasing
 
-Each phase ends with cargo test green and a golden fixture covering the new
+Each phase ends with cargo test green and a unit fixture covering the new
 path.
 
-1. `src/fab.rs` + serde model + schema validation. No pipeline change.
-2. Triangulator + polygon-only combine path.
+1. `src/fab.rs` + serde model + schema validation. ✓
+2. Triangulator + polygon-only combine path. ✓
 3. Affine + `ID` method for atlas-sprite parts; multi-part combine; pivot;
-   combined `m_Rect`.
-4. `MX` / `MY` / `MXY` mirror duplication.
-5. `TX` / `TY` / `TX_MC3` tiling.
+   combined `m_Rect`. ✓
+4. `MX` / `MY` / `MXY` mirror duplication (dual-strategy: native-scale via
+   `UIIconMeshGen` or slice-fitted via `UISliceMeshGen` depending on `width`/
+   `height` presence). ✓
+5. `TX` / `TY` / `TX_MC3` tiling. Pending.
 6. Slice-grid family — `R1C3`, `R3C3*`, then `MX_*`, `MY_*`, `MXY_*`.
-7. Part exclusion in pipeline; end-to-end orphan-prune verification.
-
-Phases 4–6 share dispatch + grid-index tables and may collapse if cohesive.
+   Pending.
+7. Pipeline integration: fab.json discovery, combined emission, part
+   exclusion, orphan-prune verification. ✓
