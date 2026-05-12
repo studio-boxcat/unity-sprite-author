@@ -1,10 +1,13 @@
-// Multi-fixture byte-exact parity test. Runs the emit pipeline over every
-// sprite in tests/golden/orgel/ where the committed .tps is consistent with
-// the committed .asset (i.e., m_PixelsToUnits == 80 → sprite_scale == 1).
+// Multi-sprite byte-exact parity test against the bundled Orgel fixture.
+// Walks every sprite in `tests/golden/orgel/sprites/` whose committed
+// `.asset` has `m_PixelsToUnits == 80` (i.e., the sibling `.tps` still
+// records `spriteScale == 1` for that sprite) and asserts the rust emit
+// matches the committed golden byte-for-byte.
 //
-// The other 54 sprites in Orgel have m_PixelsToUnits != 80, meaning the .tps
-// was edited after the .asset goldens were emitted by Unity. Validating those
-// requires regenerating the goldens — see TODO.md.
+// The other 54 of 62 Orgel sprites have `m_PixelsToUnits != 80`, meaning
+// the `.tps` was edited after the `.asset` goldens were emitted by Unity.
+// Validating those requires regenerating the goldens — procedure lives in
+// [`docs/unity-probes.md#d-non-10-spritescale-fixture-refresh`].
 
 use std::fs;
 use std::path::Path;
