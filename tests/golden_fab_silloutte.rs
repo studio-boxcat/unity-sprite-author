@@ -51,11 +51,8 @@ fn stage_fixture(name: &str) -> PathBuf {
     dst
 }
 
-#[test]
-#[ignore = "byte-exact target; run with --include-ignored to attempt"]
-fn silloutte1_byte_exact() {
-    let dir = stage_fixture("byte_exact");
-
+fn run_pipeline(name: &str) -> std::path::PathBuf {
+    let dir = stage_fixture(name);
     let inputs = GenerateInputs {
         tpsheet_path: &dir.join("PremiumCat_Vampire_Popup.tpsheet"),
         tps_path: &dir.join("PremiumCat_Vampire_Popup.tps"),
@@ -64,43 +61,68 @@ fn silloutte1_byte_exact() {
         prefix: "",
         ppu: 100.0,
     };
-    let out = pipeline::generate(&inputs).expect("generate failed");
+    pipeline::generate(&inputs).expect("generate failed");
+    dir
+}
 
-    let combined_path = dir.join("PremiumCat_Vampire_Popup/Silloutte1.asset");
-    assert!(
-        out.written_paths.iter().any(|p| p == &combined_path),
-        "Silloutte1.asset not in written set",
-    );
-
-    let got = fs::read(&combined_path).unwrap();
+fn assert_silloutte_byte_exact(sprite_name: &str, dir: &Path) {
+    let combined_path = dir
+        .join("PremiumCat_Vampire_Popup")
+        .join(format!("{sprite_name}.asset"));
+    let got = fs::read(&combined_path).unwrap_or_else(|e| {
+        panic!("{sprite_name}.asset not emitted at {}: {e}", combined_path.display())
+    });
     let golden = fs::read(
         Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/golden/fab/silloutte/Silloutte1.asset"),
+            .join(format!("tests/golden/fab/silloutte/{sprite_name}.asset")),
     )
     .unwrap();
-
     if got == golden {
-        let _ = fs::remove_dir_all(&dir);
-        return; // byte-exact match
+        return;
     }
-
-    // Mismatch — dump the first divergence with surrounding context.
     let off = first_diff(&got, &golden).unwrap();
     let lo = off.saturating_sub(32);
     let hi_g = (off + 32).min(got.len());
     let hi_e = (off + 32).min(golden.len());
     let _ = fs::create_dir_all("target/diff");
-    let _ = fs::write("target/diff/Silloutte1.actual", &got);
-    let _ = fs::write("target/diff/Silloutte1.expected", &golden);
+    let _ = fs::write(format!("target/diff/{sprite_name}.actual"), &got);
+    let _ = fs::write(format!("target/diff/{sprite_name}.expected"), &golden);
     panic!(
-        "Silloutte1 byte mismatch at offset {off} \
+        "{sprite_name} byte mismatch at offset {off} \
          (got len={}, golden len={}):\n\
             got     [{lo}..{hi_g}]: {:?}\n\
             golden  [{lo}..{hi_e}]: {:?}\n\
-         Diff files written to target/diff/Silloutte1.{{actual,expected}}.",
+         Diff files written to target/diff/{sprite_name}.{{actual,expected}}.",
         got.len(),
         golden.len(),
         String::from_utf8_lossy(&got[lo..hi_g]),
         String::from_utf8_lossy(&golden[lo..hi_e]),
     );
+}
+
+#[test]
+#[ignore = "byte-exact target; run with --include-ignored to attempt"]
+fn silloutte1_byte_exact() {
+    let dir = run_pipeline("silloutte1");
+    assert_silloutte_byte_exact("Silloutte1", &dir);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+#[ignore = "byte-exact target; run with --include-ignored to attempt"]
+fn silloutte2_byte_exact() {
+    let dir = run_pipeline("silloutte2");
+    assert_silloutte_byte_exact("Silloutte2", &dir);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// Currently fails with a uniform ~1-ULP y-shift on every position-stream f32;
+// see TODO.md's `.tps.fab.json` follow-ups and `docs/unity-probes.md#e-silloutte3`
+// for the root-anchored hypothesis. Run with `--include-ignored` to attempt.
+#[test]
+#[ignore = "Silloutte3 1-ULP y-shift unsolved; needs Unity matrix probe"]
+fn silloutte3_byte_exact() {
+    let dir = run_pipeline("silloutte3");
+    assert_silloutte_byte_exact("Silloutte3", &dir);
+    let _ = fs::remove_dir_all(&dir);
 }

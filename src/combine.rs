@@ -240,25 +240,47 @@ pub fn polygon_mesh(
     polygon_sprite_rect: Rect,
     atlas: AtlasSize,
 ) -> PartMesh {
-    polygon_mesh_with_tris(vertices, None, affine, polygon_sprite_rect, atlas)
+    polygon_mesh_with_tris(vertices, None, affine, polygon_sprite_rect, atlas, 1.0, [0.0, 0.0], 1.0)
 }
 
 // Polygon-part mesh with optional explicit triangles. When `tris_override` is
 // `Some`, those indices are used verbatim (caller-validated for length and
 // range upstream). Otherwise we ear-clip via the triangulator.
+//
+// `ui_scale` / `offset` / `canvas_scale` mirror the atlas-sprite chain — when
+// all three are at their identity defaults (1.0, (0,0), 1.0) the canvas chain
+// collapses to a plain affine, so `polygon_mesh` callers (SpriteRenderer / Box
+// prefabs) are unaffected. Polygons under CanvasSpriteAuthor must thread the
+// real values: UISolid has no per-part scale (`ui_scale = 1`) but inherits the
+// combined `canvas_scale = 0.01` and carries the part's anchored position as
+// `offset` so f32 op order matches Unity's matrix-style emit.
+#[allow(clippy::too_many_arguments)]
 fn polygon_mesh_with_tris(
     vertices: &[[f32; 2]],
     tris_override: Option<&[u16]>,
     affine: Affine,
     polygon_sprite_rect: Rect,
     atlas: AtlasSize,
+    ui_scale: f32,
+    offset: [f32; 2],
+    canvas_scale: f32,
 ) -> PartMesh {
     let tris = match tris_override {
         Some(t) => t.to_vec(),
         None => triangulator::triangulate(vertices),
     };
 
-    let verts: Vec<[f32; 2]> = vertices.iter().map(|v| apply_affine(*v, affine)).collect();
+    let ctx = SliceCtx {
+        sprite_pivot_norm: (0.5, 0.5),
+        sprite_bound_size: (1.0, 1.0),
+        part_pivot: (0.5, 0.5),
+        border_mult: 1.0,
+        affine,
+        ui_scale,
+        offset: (offset[0], offset[1]),
+        canvas_scale,
+    };
+    let verts: Vec<[f32; 2]> = vertices.iter().map(|v| apply_transform(*v, &ctx)).collect();
 
     // Multiply-by-reciprocal to match Unity's SolidUVCache, which averages
     // DataUtility.GetInnerUV's already-multiplied innerUV.x/innerUV.z. The
@@ -1538,8 +1560,17 @@ where
                     *ui_scale, *offset, combined.canvas_scale,
                 )
             }
-            Part::Polygon { vertices, triangles, affine, .. } => {
-                polygon_mesh_with_tris(vertices, triangles.as_deref(), *affine, entry.rect, atlas)
+            Part::Polygon { vertices, triangles, affine, ui_scale, offset, .. } => {
+                polygon_mesh_with_tris(
+                    vertices,
+                    triangles.as_deref(),
+                    *affine,
+                    entry.rect,
+                    atlas,
+                    *ui_scale,
+                    *offset,
+                    combined.canvas_scale,
+                )
             }
         };
 
@@ -1558,6 +1589,7 @@ where
     })
 }
 
+#[cfg(test)]
 fn apply_affine(v: [f32; 2], a: Affine) -> [f32; 2] {
     // T · R · S applied to v: scale → rotate → translate.
     let sx = v[0] * a.sx;

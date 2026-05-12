@@ -70,6 +70,15 @@ pub enum Part {
         // index patterns (e.g. UISolid quad: (0, 2, 3, 3, 1, 0)).
         triangles: Option<Vec<u16>>,
         affine: Affine,
+        // Canvas-chain transform, same as atlas-sprite parts. Polygons under
+        // CanvasSpriteAuthor (e.g. UISolid backgrounds) need the matrix-style
+        // `v × canvas_scale + offset × canvas_scale` op order because
+        // anchored positions comparable to half-extents would otherwise
+        // round 1+ ULP differently from Unity's emit. UISolid itself has no
+        // per-part scale factor, so `ui_scale` defaults to 1.0; SpriteRenderer
+        // / Box prefab callers keep all three at identity.
+        ui_scale: f32,
+        offset: [f32; 2],
     },
 }
 
@@ -416,15 +425,16 @@ fn translate_part(combined: &str, p: raw::Part) -> Result<Part, FabError> {
             }
             // Atlas-sprite-only fields on a polygon part signal a shape
             // mix-up (typo, schema confusion). Reject explicitly so the
-            // author sees the issue.
+            // author sees the issue. `uiScale` / `offset` ARE accepted —
+            // polygons under CanvasSpriteAuthor need the same canvas chain
+            // as atlas-sprite parts for byte-exact f32 op order.
             if p.method.is_some() || p.width.is_some() || p.height.is_some()
                 || p.border_mult.is_some() || p.part_pivot.is_some()
-                || p.ui_scale.is_some() || p.offset.is_some()
             {
                 return Err(FabError::PartShape {
                     combined: combined.to_string(),
                     reason: "polygon parts cannot declare \
-                             method/width/height/borderMult/partPivot/uiScale/offset",
+                             method/width/height/borderMult/partPivot",
                 });
             }
             // Validate explicit triangles when given: must be a multiple of 3
@@ -444,7 +454,14 @@ fn translate_part(combined: &str, p: raw::Part) -> Result<Part, FabError> {
                     });
                 }
             }
-            Ok(Part::Polygon { polygon_sprite, vertices, triangles: p.triangles, affine })
+            Ok(Part::Polygon {
+                polygon_sprite,
+                vertices,
+                triangles: p.triangles,
+                affine,
+                ui_scale: p.ui_scale.unwrap_or(1.0),
+                offset: p.offset.unwrap_or([0.0, 0.0]),
+            })
         }
     }
 }

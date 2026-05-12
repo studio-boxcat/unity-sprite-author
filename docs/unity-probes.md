@@ -136,6 +136,52 @@ the SpriteAtlas data through.
 (no-op)" or a list of divergent fields with example bytes for one
 sprite — that list becomes the spec for the new emit branch.
 
+## E. Silloutte3 — root-anchored y-shift
+
+**Question.** With root `m_AnchoredPosition = (141.8, 370.875)`, every typelessdata
+y-coordinate in `Silloutte3.asset` is shifted by ~1 ULP (at scale 1.0, = 2⁻²³)
+relative to a pure `v_canvas × canvasScale + offset × canvasScale` Rust chain.
+Silloutte1 + Silloutte2 (root at origin) pass byte-exactly; only Silloutte3 drifts.
+60/184 position-stream f32s differ; UVs are all byte-exact. The shift is uniform
+(not per-part), so it's almost certainly an artifact of Unity's matrix chain.
+
+**Hypothesis.** Each child's mesh transform is computed as
+`parent_world_matrix * child_local_matrix`. With root anchored ≠ 0, the parent
+matrix's translation row carries `root.anchored × canvasScale = 3.70875` of
+precision-eating noise. When the Sprite emit re-localizes into the sprite's
+own frame, the round-trip `(v_world + root_world_offset) − root_world_offset`
+shifts every vert by ~1 ULP at scale 1.0.
+
+**Procedure.**
+
+1. Open Unity on the meow-tower checkout.
+2. With `Silloutte3.prefab` in the prefab stage, run via `just scratch` (or the
+   editor console):
+   ```csharp
+   var go = GameObject.Find("Silloutte3");
+   var auth = go.GetComponent<Boxcat.Core.CanvasSpriteAuthor>();
+   // Dump the matrix this child computes for its mesh:
+   foreach (Transform child in go.transform)
+   {
+       var mat = go.transform.worldToLocalMatrix * child.localToWorldMatrix;
+       Debug.Log($"{child.name}: m={mat}");
+   }
+   ```
+3. Tabulate `mat.m11`, `mat.m13` for each child as **f32 bit patterns**
+   (`BitConverter.SingleToInt32Bits`) — that's the exact translation row
+   Unity uses when transforming each child's vert into the combined mesh.
+4. Cross-check: does the round-trip `(local_v × m11 + m13) - m13` produce the
+   exact 1-ULP shift observed in `target/diff/Silloutte3.actual`? If yes,
+   port that op order into `combine::apply_transform`. If no, the matrix
+   chain isn't the source — keep probing.
+5. Optional: also dump `Sprite.vertices` after `SpriteFactory.CreateFromMesh`
+   so we can compare the round-trip directly.
+
+**Result format.** A 5-row table (one per part) of `(m11_hex, m13_hex)` plus
+the post-localize bit pattern for one polygon vert, dropped into TODO.md so
+the f32 op order can be ported back into `apply_transform` (or a Silloutte-
+specific transform helper if the chain only fires when `root.anchored ≠ 0`).
+
 ## D. Non-1.0 `spriteScale` fixture refresh
 
 **Question.** 54 of 62 Orgel sprites have `spriteScale != 1.0` in the

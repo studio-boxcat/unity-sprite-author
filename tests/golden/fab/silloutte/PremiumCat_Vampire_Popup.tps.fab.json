@@ -6,9 +6,9 @@
       "canvasScale": 0.01,
       "parts": [
         { "polygonSprite": "Color_32264DBD",
-          "vertices": [[-1.0625, -2.725], [1.0625, -2.725], [-1.0625, 2.725], [1.0625, 2.725]],
+          "vertices": [[-106.25, -272.5], [106.25, -272.5], [-106.25, 272.5], [106.25, 272.5]],
           "triangles": [0, 2, 3, 3, 1, 0],
-          "tx": 0, "ty": -0.2225 },
+          "offset": [0, -22.25] },
         { "sprite": "Mansion_Silloutte__1__B", "method": "MX",
           "uiScale": 100, "offset": [0, -294.75] },
         { "sprite": "Mansion_Silloutte__1__S", "method": "ID",
@@ -17,6 +17,41 @@
           "sx": -1, "uiScale": 100, "offset": [-106.25, -26.5] },
         { "sprite": "Mansion_Silloutte__1__T", "method": "MX",
           "uiScale": 100, "offset": [0, 250.25] }
+      ]
+    },
+    {
+      "name": "Silloutte2",
+      "canvasScale": 0.01,
+      "parts": [
+        { "polygonSprite": "Color_32264DBD",
+          "vertices": [[-50.625, -211.4125], [50.625, -211.4125], [-50.625, 211.4125], [50.625, 211.4125]],
+          "triangles": [0, 2, 3, 3, 1, 0],
+          "offset": [10.175001, -11.612498] },
+        { "sprite": "Mansion_Silloutte__2__T", "method": "ID",
+          "uiScale": 100, "offset": [-40.45, 199.79999] },
+        { "sprite": "Mansion_Silloutte__2__L", "method": "ID",
+          "uiScale": 100, "offset": [-40.45, 20.724998] },
+        { "sprite": "Mansion_Silloutte__2__B", "method": "ID",
+          "uiScale": 100, "offset": [4.5500007, -223.025] },
+        { "sprite": "Mansion_Silloutte__2__R", "method": "ID",
+          "uiScale": 100, "offset": [60.8, -10.274999] }
+      ]
+    },
+    {
+      "name": "Silloutte3",
+      "canvasScale": 0.01,
+      "parts": [
+        { "polygonSprite": "Color_32264DBD",
+          "vertices": [[-58.75, -66.875], [58.75, -66.875], [-58.75, 66.875], [58.75, 66.875]],
+          "triangles": [0, 2, 3, 3, 1, 0] },
+        { "sprite": "Mansion_Silloutte__3__B", "method": "ID",
+          "uiScale": 100, "offset": [0, -66.875] },
+        { "sprite": "Mansion_Silloutte__3__S", "method": "ID",
+          "uiScale": 100, "offset": [58.75, 8] },
+        { "sprite": "Mansion_Silloutte__3__S", "method": "ID",
+          "sx": -1, "uiScale": 100, "offset": [-58.75, 8] },
+        { "sprite": "Mansion_Silloutte__3__T", "method": "MX",
+          "uiScale": 100, "offset": [0, 160.625] }
       ]
     }
   ]
