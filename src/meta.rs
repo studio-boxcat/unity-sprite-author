@@ -16,6 +16,10 @@ use std::path::Path;
 
 use crate::yaml::guid_hex;
 
+/// Errors raised by the `.meta` I/O helpers — disk failures plus the
+/// two parse failure modes (the `guid:` line is malformed, or the file
+/// has no `guid:` line at all). Surfaced through
+/// [`crate::pipeline::Error::Meta`].
 #[derive(Debug)]
 pub enum MetaError {
     Io(io::Error),

@@ -50,6 +50,10 @@ pub struct AtlasSize {
     pub height: u32,
 }
 
+/// Errors raised by [`build_combined`] — slice-method source-rect
+/// constraint violations and missing sprite references. Each `Display`
+/// impl names the combined entry + the offending part so the message
+/// is self-contained.
 #[derive(Debug)]
 pub enum CombineError {
     SpriteNotFound { combined: String, sprite: String },

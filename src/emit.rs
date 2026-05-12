@@ -10,12 +10,13 @@ use crate::render_data::RenderData;
 use crate::tpsheet::{Border, Pivot, Rect};
 use crate::yaml::{float, guid_hex, yaml_string};
 
-// Reserved for future hard-fail conditions in the emit pipeline. Kept as an
-// enum (not `()`) so callers can pattern-match without churn when new
-// failure modes appear. The previous `NonZeroBorderUnsupported` variant was
-// retired in favor of empirical proof: 50/51 non-zero-border sprites in the
-// meow-tower corpus emit byte-exactly under the current formula; the lone
-// outlier is .tps drift, not a formula bug.
+/// Reserved for future hard-fail conditions in the emit pipeline. Kept
+/// as an `enum` (not `()`) so callers can pattern-match without churn
+/// when new failure modes appear. The previous `NonZeroBorderUnsupported`
+/// variant was retired in favor of empirical proof: 50/51 non-zero-border
+/// sprites in the meow-tower corpus emit byte-exactly under the current
+/// formula; the lone outlier is `.tps` drift, not a formula bug. Surfaced
+/// through [`crate::pipeline::Error::Emit`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EmitError {}
 

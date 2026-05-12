@@ -13,6 +13,9 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
+/// Errors raised by [`parse`] / [`parse_str`]. Disk I/O failures and the
+/// one parse failure mode (a `spriteScale` value that doesn't parse as
+/// `f32`). Surfaced through [`crate::pipeline::Error::Tps`].
 #[derive(Debug)]
 pub enum TpsError {
     Io(io::Error),

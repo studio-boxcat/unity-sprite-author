@@ -126,6 +126,10 @@ impl Geometry {
     }
 }
 
+/// Errors raised by [`parse`] — unsupported `:format=` version, missing
+/// header keys, malformed sprite lines (wrong token count, unparseable
+/// numeric tokens), or geometry-block shape mismatches. Surfaced through
+/// [`crate::pipeline::Error::Tpsheet`].
 #[derive(Debug)]
 pub enum ParseError {
     Empty,

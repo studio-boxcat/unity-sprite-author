@@ -166,6 +166,9 @@ impl Method {
 // ---------------------------------------------------------------------------
 // Errors.
 
+/// Parse / validation errors raised by [`parse`]. Each `Display` impl
+/// names the offending combined / sprite / option so the C# postprocessor
+/// can surface a single-line `Debug.LogError` without further context.
 #[derive(Debug)]
 pub enum FabError {
     Json(serde_json::Error),
