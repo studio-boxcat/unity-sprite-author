@@ -527,6 +527,77 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_mint_then_preserve_is_byte_idempotent() {
+        // The fresh-mint path is the half of the "Bootstrap experiment" we
+        // can verify without Unity in the loop. Stage the fixture WITHOUT
+        // the committed sprite-side .asset.meta files so the first run
+        // mints fresh GUIDs; on the second run, the preserve branch must
+        // read them back and re-emit byte-identical .asset bytes (so
+        // skip-write-if-equal can take every output).
+        let dir = copy_orgel_to_temp("mint_then_preserve");
+        let sprite_dir = dir.join("sprites");
+        // Wipe the staged sprites/ so the first run starts with no
+        // pre-existing .asset / .asset.meta to read from.
+        fs::remove_dir_all(&sprite_dir).unwrap();
+        let tpsheet = dir.join("Orgel.tpsheet");
+        let inputs = GenerateInputs {
+            tpsheet_path: &tpsheet,
+            tps_path: &dir.join("Orgel.tps"),
+            atlas_png_path: &dir.join("Orgel.png"),
+            sprite_dir: &sprite_dir,
+            prefix: "",
+            ppu: 80.0,
+        };
+        let saved_tpsheet =
+            fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/orgel/Orgel.tpsheet"))
+                .unwrap();
+        let saved_meta = fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/golden/orgel/Orgel.tpsheet.meta"),
+        )
+        .unwrap();
+
+        let first = generate(&inputs).unwrap();
+        assert!(
+            !first.written_paths.is_empty(),
+            "first run should have minted + written sprites"
+        );
+
+        // Snapshot every written .asset + .asset.meta from the first run.
+        let snapshots: Vec<(PathBuf, Vec<u8>)> = first
+            .written_paths
+            .iter()
+            .map(|p| (p.clone(), fs::read(p).unwrap()))
+            .collect();
+
+        // Restore the .tpsheet pair the first run consumed.
+        fs::write(&tpsheet, &saved_tpsheet).unwrap();
+        let mut tpsheet_meta = tpsheet.clone();
+        tpsheet_meta.as_mut_os_string().push(".meta");
+        fs::write(&tpsheet_meta, &saved_meta).unwrap();
+
+        let second = generate(&inputs).unwrap();
+        assert!(
+            second.written_paths.is_empty(),
+            "second pass should skip every write (preserve branch reads back \
+             the minted meta and re-emits byte-identical bytes); wrote {} paths",
+            second.written_paths.len()
+        );
+
+        // Belt-and-braces: even though the second pass reported zero writes,
+        // assert that what's on disk still matches what the first run wrote.
+        for (path, expected) in &snapshots {
+            let actual = fs::read(path).unwrap();
+            assert_eq!(
+                actual, *expected,
+                "{} drifted between runs",
+                path.display()
+            );
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn pipeline_second_run_is_idempotent_for_unchanged_inputs() {
         // After one successful run, a second run with identical inputs
         // should report zero `written_paths` (the skip-write-if-equal
