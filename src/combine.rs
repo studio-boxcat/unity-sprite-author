@@ -41,6 +41,7 @@ pub struct AtlasSize {
 pub enum CombineError {
     SpriteNotFound { combined: String, sprite: String },
     MethodUnimplemented { combined: String, sprite: String, method: Method },
+    SliceConstraint { combined: String, sprite: String, method: Method, reason: &'static str },
 }
 
 impl fmt::Display for CombineError {
@@ -51,6 +52,9 @@ impl fmt::Display for CombineError {
             ),
             Self::MethodUnimplemented { combined, sprite, method } => write!(
                 f, "combined {combined:?} part {sprite:?}: method {method} not implemented yet",
+            ),
+            Self::SliceConstraint { combined, sprite, method, reason } => write!(
+                f, "combined {combined:?} part {sprite:?} (method {method}): {reason}",
             ),
         }
     }
@@ -93,7 +97,37 @@ pub fn calc_rect_and_pivot(verts: &[[f32; 2]], ppu: f32) -> ((f32, f32), (f32, f
 }
 
 fn is_method_supported(m: Method) -> bool {
-    matches!(m, Method::Id | Method::Mx | Method::My | Method::Mxy | Method::Tx | Method::Ty)
+    matches!(m, Method::Id | Method::Mx | Method::My | Method::Mxy
+              | Method::Tx | Method::Ty | Method::TxMc3)
+}
+
+// Source-rect / border constraints asserted by each slice method in
+// UISliceMeshGen.cs + Tiling.cs. The fab.rs parser has no tpsheet access,
+// so these checks fire at build time instead — same `fail loud` outcome,
+// surfaced through CombineError::SliceConstraint.
+fn check_method_constraints(
+    method: Method,
+    entry: &SpriteEntry,
+    combined: &str,
+    sprite: &str,
+) -> Result<(), CombineError> {
+    let err = |reason| CombineError::SliceConstraint {
+        combined: combined.to_string(),
+        sprite: sprite.to_string(),
+        method,
+        reason,
+    };
+    // Other methods (ID, MX/MY/MXY, TX, TY) have no source-rect constraints
+    // in v1; slice grids (phase 6) will add their own clauses.
+    if matches!(method, Method::TxMc3) {
+        if entry.border.left != 0 {
+            return Err(err("left border must be 0 (TX_MC3 expects mirrored edges)"));
+        }
+        if entry.border.right <= 0 {
+            return Err(err("right border must be > 0 (TX_MC3 needs edge width)"));
+        }
+    }
+    Ok(())
 }
 
 /// Build the mesh for a single polygon part.
@@ -134,11 +168,13 @@ pub fn polygon_mesh(
 ///
 /// Unimplemented methods panic — the dispatcher (`build_combined`) is the
 /// only place that decides supported-method policy.
+#[allow(clippy::too_many_arguments)] // public dispatch surface — each arg is meaningful
 pub fn atlas_sprite_mesh(
     entry: &SpriteEntry,
     method: Method,
     size: Option<(f32, f32)>,
     part_pivot: [f32; 2],
+    border_mult: f32,
     affine: Affine,
     atlas: AtlasSize,
     ppu: f32,
@@ -152,6 +188,7 @@ pub fn atlas_sprite_mesh(
         sprite_pivot_norm: (entry.pivot.x, entry.pivot.y),
         sprite_bound_size: (entry.rect.w as f32 / ppu, entry.rect.h as f32 / ppu),
         part_pivot: (part_pivot[0], part_pivot[1]),
+        border_mult,
         affine,
     };
     match method {
@@ -175,6 +212,7 @@ pub fn atlas_sprite_mesh(
         },
         Method::Tx  => tile_axis(entry, atlas, ppu, &ctx, size.expect("tx size"), TileAxis::X),
         Method::Ty  => tile_axis(entry, atlas, ppu, &ctx, size.expect("ty size"), TileAxis::Y),
+        Method::TxMc3 => tile_x_mc3(entry, atlas, ppu, &ctx, size.expect("tx_mc3 size")),
         _ => panic!("method {method} not implemented"),
     }
 }
@@ -189,6 +227,7 @@ struct SliceCtx {
     sprite_pivot_norm: (f32, f32),
     sprite_bound_size: (f32, f32),
     part_pivot: (f32, f32),
+    border_mult: f32,
     affine: Affine,
 }
 
@@ -453,6 +492,125 @@ fn push_quad(tris: &mut Vec<u16>, a: u16, b: u16, c: u16, d: u16) {
     tris.extend_from_slice(&[a, b, d, a, d, c]);
 }
 
+// TX_MC3: 3-section layout along X — mirrored left edge | tiled centre |
+// right edge. Port of Tiling.cs TileX_MC3. Source border requirements
+// (left == 0, right > 0) are validated by `check_method_constraints`
+// before this runs.
+fn tile_x_mc3(
+    entry: &SpriteEntry,
+    atlas: AtlasSize,
+    ppu: f32,
+    ctx: &SliceCtx,
+    target: (f32, f32),
+) -> PartMesh {
+    let (target_w, target_h) = target;
+    let pp = ctx.part_pivot;
+
+    // Target-rect bounds in part-local space.
+    let x_min = -target_w * pp.0;
+    let x_max = target_w * (1.0 - pp.0);
+    let y_min = -target_h * pp.1;
+    let y_max = target_h * (1.0 - pp.1);
+
+    // Edge width in world units. C# uses sprite.border.z * borderMult — the
+    // border is pixels in our tpsheet, so divide by PPU first.
+    let edge_w = (entry.border.right as f32 / ppu) * ctx.border_mult;
+
+    let aw = atlas.width as f32;
+    let ah = atlas.height as f32;
+    let u_min = entry.rect.x as f32 / aw;
+    let u_max = (entry.rect.x + entry.rect.w) as f32 / aw;
+    let v_min = entry.rect.y as f32 / ah;
+    let v_max = (entry.rect.y + entry.rect.h) as f32 / ah;
+
+    // innerU = lerp(uMin, uMax, (w - borderRight) / w). The "lerp" is f32
+    // (uMax - uMin) * t + uMin form to keep f32 ordering close to C#.
+    let sprite_w = entry.rect.w as f32;
+    let t = (sprite_w - entry.border.right as f32) / sprite_w;
+    let inner_u = u_min + (u_max - u_min) * t;
+
+    let x_l = x_min + edge_w;
+    let x_r = x_max - edge_w;
+    let centre_w = (x_r - x_l).max(0.0);
+
+    // Centre-tile metrics. tile_scale = edgeW / borderRight (world / pixels);
+    // tile_size_rect = (spriteW - borderRight) * tile_scale.
+    let tile_scale = if entry.border.right > 0 {
+        edge_w / (entry.border.right as f32 / ppu)
+    } else {
+        0.0
+    };
+    let tile_size_rect = (sprite_w - entry.border.right as f32) / ppu * tile_scale;
+
+    let (tile_cols, tail_fract, has_tail) = if centre_w <= TAIL_EPSILON || tile_size_rect <= TAIL_EPSILON {
+        (0usize, 0.0, false)
+    } else {
+        let tiles = centre_w / tile_size_rect;
+        let full_tiles = tiles.floor() as usize;
+        let tf = tiles - full_tiles as f32;
+        let ht = tf > TAIL_EPSILON;
+        // tileCols = fullTiles - 1 + (hasTail ? 1 : 0) per C#. Saturate at 0
+        // when fullTiles is 0 to avoid underflow.
+        let cols = full_tiles.saturating_sub(1) + if ht { 1 } else { 0 };
+        (cols, tf, ht)
+    };
+
+    let total_cols = 4 + tile_cols;
+    let mut verts: Vec<[f32; 2]> = Vec::with_capacity(total_cols * 2);
+    let mut uvs: Vec<[f32; 2]> = Vec::with_capacity(total_cols * 2);
+
+    // Helper: push a column (two verts, bottom + top, at the same x with same u).
+    let push_col = |x: f32, u: f32, verts: &mut Vec<[f32; 2]>, uvs: &mut Vec<[f32; 2]>| {
+        verts.push([x, y_min]);
+        verts.push([x, y_max]);
+        uvs.push([u, v_min]);
+        uvs.push([u, v_max]);
+    };
+
+    // Col 0: left edge outer — mirrored, UV = uMax.
+    push_col(x_min, u_max, &mut verts, &mut uvs);
+    // Col 1: left edge inner — UV = innerU.
+    push_col(x_l, inner_u, &mut verts, &mut uvs);
+
+    // Centre tile columns: x advances; UV ping-pongs between uMin and innerU.
+    let mut x = x_l;
+    for i in 0..tile_cols {
+        let is_last = i == tile_cols - 1 && has_tail;
+        let delta = if is_last { tail_fract * tile_size_rect } else { tile_size_rect };
+        x += delta;
+        // Mirror C#: colIdx = i + 1 (1-based within centre); IsEven picks
+        // forward vs back. forward → uMin (or partial sample), back → innerU
+        // (or partial sample).
+        let col_idx = i + 1;
+        let flow_forward = col_idx % 2 == 0;
+        let u = match (is_last, flow_forward) {
+            (false, true)  => u_min,
+            (false, false) => inner_u,
+            (true,  true)  => sample_partial_uv(inner_u, u_min, tail_fract, true),
+            (true,  false) => sample_partial_uv(u_min, inner_u, tail_fract, false),
+        };
+        push_col(x, u, &mut verts, &mut uvs);
+    }
+
+    // Col N-1: right edge inner.
+    push_col(x_r, inner_u, &mut verts, &mut uvs);
+    // Col N: right edge outer — UV = uMax (not mirrored on the right).
+    push_col(x_max, u_max, &mut verts, &mut uvs);
+
+    // Indices: simple linear quads.
+    let quad_count = total_cols.saturating_sub(1);
+    let mut tris: Vec<u16> = Vec::with_capacity(quad_count * 6);
+    for i in 0..quad_count {
+        let a = (i * 2) as u16;
+        push_quad(&mut tris, a, a + 1, a + 2, a + 3);
+    }
+
+    // Apply affine.
+    let verts: Vec<[f32; 2]> = verts.iter().map(|v| apply_affine(*v, ctx.affine)).collect();
+
+    PartMesh { verts, uvs, tris }
+}
+
 // Native-scale mirror duplication, matching UIIconMeshGen.{MX, MY, MXY}.
 // No target rect: each src vert is taken at its native pivot-relative
 // world-unit position, mirrored about the origin, and the affine is applied.
@@ -577,7 +735,7 @@ where
         });
 
         let part_mesh = match part {
-            Part::AtlasSprite { method, size, part_pivot, affine, .. } => {
+            Part::AtlasSprite { method, size, part_pivot, border_mult, affine, .. } => {
                 if !is_method_supported(*method) {
                     return Err(CombineError::MethodUnimplemented {
                         combined: combined.name.clone(),
@@ -585,7 +743,8 @@ where
                         method: *method,
                     });
                 }
-                atlas_sprite_mesh(&entry, *method, *size, *part_pivot, *affine, atlas, ppu)
+                check_method_constraints(*method, &entry, &combined.name, source_name)?;
+                atlas_sprite_mesh(&entry, *method, *size, *part_pivot, *border_mult, *affine, atlas, ppu)
             }
             Part::Polygon { vertices, affine, .. } => {
                 polygon_mesh(vertices, *affine, entry.rect, atlas)
@@ -723,7 +882,7 @@ mod tests {
         // pixel pivot = (1, 2). local verts = (pixel − pivot)/PPU.
         let entry = quad_entry(10, 20, 2, 4, (0.5, 0.5));
         let m = atlas_sprite_mesh(
-            &entry, Method::Id, None, [0.5, 0.5], Affine::default(),
+            &entry, Method::Id, None, [0.5, 0.5], 1.0, Affine::default(),
             AtlasSize { width: 100, height: 100 },
             100.0,
         );
@@ -740,7 +899,7 @@ mod tests {
     fn atlas_sprite_id_with_translation() {
         let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
-            &entry, Method::Id, None, [0.5, 0.5],
+            &entry, Method::Id, None, [0.5, 0.5], 1.0,
             Affine { tx: 5.0, ty: 7.0, ..Affine::default() },
             AtlasSize { width: 16, height: 16 },
             1.0,
@@ -761,7 +920,7 @@ mod tests {
         // 2×2 halves sitting side-by-side, target rect centered at origin.
         let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
-            &entry, Method::Mx, Some((4.0, 2.0)), [0.5, 0.5], Affine::default(),
+            &entry, Method::Mx, Some((4.0, 2.0)), [0.5, 0.5], 1.0, Affine::default(),
             AtlasSize { width: 8, height: 8 }, 1.0,
         );
         assert_eq!(m.verts.len(), 8, "2× source verts");
@@ -779,7 +938,7 @@ mod tests {
         // second copy at x ∈ [-2, 0]. Both at y ∈ [-1, 1].
         let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
-            &entry, Method::Mx, Some((4.0, 2.0)), [0.5, 0.5], Affine::default(),
+            &entry, Method::Mx, Some((4.0, 2.0)), [0.5, 0.5], 1.0, Affine::default(),
             AtlasSize { width: 8, height: 8 }, 1.0,
         );
         // First copy bottom-left: src (0,0) → pivot-rel (-1,-1) → scale (1,1) → translate (1,1) → slice (0,0) → offset (0,-1) → (0,-1).
@@ -795,7 +954,7 @@ mod tests {
     fn mx_uvs_repeated_verbatim() {
         let entry = quad_entry(10, 20, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
-            &entry, Method::Mx, Some((4.0, 2.0)), [0.5, 0.5], Affine::default(),
+            &entry, Method::Mx, Some((4.0, 2.0)), [0.5, 0.5], 1.0, Affine::default(),
             AtlasSize { width: 100, height: 100 }, 1.0,
         );
         assert_eq!(m.uvs[..4], m.uvs[4..]);
@@ -805,7 +964,7 @@ mod tests {
     fn my_doubles_along_y() {
         let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
-            &entry, Method::My, Some((2.0, 4.0)), [0.5, 0.5], Affine::default(),
+            &entry, Method::My, Some((2.0, 4.0)), [0.5, 0.5], 1.0, Affine::default(),
             AtlasSize { width: 8, height: 8 }, 1.0,
         );
         // First copy (Y+): src (0,0) → (-1,-1) * (1,1) + (1,1) = (0,0); + offset (-1,0) → (-1, 0). Wait, mirror_pivot = (0, 0.5), rect_pivot = (0.5, 0.5).
@@ -825,7 +984,7 @@ mod tests {
     fn mxy_quadruples_verts() {
         let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
-            &entry, Method::Mxy, Some((4.0, 4.0)), [0.5, 0.5], Affine::default(),
+            &entry, Method::Mxy, Some((4.0, 4.0)), [0.5, 0.5], 1.0, Affine::default(),
             AtlasSize { width: 8, height: 8 }, 1.0,
         );
         assert_eq!(m.verts.len(), 16, "4× source");
@@ -912,7 +1071,7 @@ mod tests {
         // side ⇒ vert_count = 10 (5 vert pairs along X).
         let entry = quad_entry(0, 0, 1, 1, (0.5, 0.5));
         let m = atlas_sprite_mesh(
-            &entry, Method::Tx, Some((4.0, 2.0)), [0.5, 0.5], Affine::default(),
+            &entry, Method::Tx, Some((4.0, 2.0)), [0.5, 0.5], 1.0, Affine::default(),
             AtlasSize { width: 8, height: 8 }, 1.0,
         );
         assert_eq!(m.verts.len(), 10, "5 vert pairs for cols_half=2");
@@ -935,7 +1094,7 @@ mod tests {
         // (5 vert pairs along Y).
         let entry = quad_entry(0, 0, 1, 1, (0.5, 0.5));
         let m = atlas_sprite_mesh(
-            &entry, Method::Ty, Some((2.0, 4.0)), [0.5, 0.5], Affine::default(),
+            &entry, Method::Ty, Some((2.0, 4.0)), [0.5, 0.5], 1.0, Affine::default(),
             AtlasSize { width: 8, height: 8 }, 1.0,
         );
         assert_eq!(m.verts.len(), 10);
@@ -953,12 +1112,91 @@ mod tests {
         // The centre seam (verts 0, 1) should sample uMin of the source rect.
         let entry = quad_entry(10, 0, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
-            &entry, Method::Tx, Some((4.0, 2.0)), [0.5, 0.5], Affine::default(),
+            &entry, Method::Tx, Some((4.0, 2.0)), [0.5, 0.5], 1.0, Affine::default(),
             AtlasSize { width: 100, height: 100 }, 1.0,
         );
         // u_min = rect.x / atlas_w = 10 / 100 = 0.1.
         assert!((m.uvs[0][0] - 0.1).abs() < 1e-6);
         assert!((m.uvs[1][0] - 0.1).abs() < 1e-6);
+    }
+
+    // --- TX_MC3 ---
+
+    fn quad_entry_with_border(
+        rx: u32, ry: u32, w: u32, h: u32,
+        pivot: (f32, f32),
+        border_left: i32, border_right: i32,
+    ) -> SpriteEntry {
+        let mut e = quad_entry(rx, ry, w, h, pivot);
+        e.border.left = border_left;
+        e.border.right = border_right;
+        e
+    }
+
+    #[test]
+    fn tx_mc3_validates_border_left_zero() {
+        // Left border != 0 → SliceConstraint error.
+        let entry = quad_entry_with_border(0, 0, 10, 4, (0.5, 0.5), 2, 2);
+        let combined = make_combined("BX", vec![Part::AtlasSprite {
+            sprite: "A".into(), method: Method::TxMc3,
+            size: Some((6.0, 4.0)), part_pivot: [0.5, 0.5],
+            border_mult: 1.0, affine: Affine::default(),
+        }]);
+        let err = build_combined(
+            &combined, |_| Some(entry.clone()),
+            AtlasSize { width: 16, height: 16 }, 1.0,
+        ).unwrap_err();
+        assert!(matches!(err, CombineError::SliceConstraint { method: Method::TxMc3, .. }), "{err:?}");
+    }
+
+    #[test]
+    fn tx_mc3_validates_border_right_positive() {
+        let entry = quad_entry_with_border(0, 0, 10, 4, (0.5, 0.5), 0, 0);
+        let combined = make_combined("BX", vec![Part::AtlasSprite {
+            sprite: "A".into(), method: Method::TxMc3,
+            size: Some((6.0, 4.0)), part_pivot: [0.5, 0.5],
+            border_mult: 1.0, affine: Affine::default(),
+        }]);
+        let err = build_combined(
+            &combined, |_| Some(entry.clone()),
+            AtlasSize { width: 16, height: 16 }, 1.0,
+        ).unwrap_err();
+        assert!(matches!(err, CombineError::SliceConstraint { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn tx_mc3_emits_4_columns_when_centre_collapses() {
+        // 4×4 sprite with border.right = 4 (full width) ⇒ tile_size_rect = 0
+        // ⇒ no centre tiles. Total cols = 4 (leftOuter, leftInner, rightInner,
+        // rightOuter) ⇒ 8 verts, 3 quads ⇒ 18 indices.
+        let entry = quad_entry_with_border(0, 0, 4, 4, (0.5, 0.5), 0, 4);
+        let m = atlas_sprite_mesh(
+            &entry, Method::TxMc3, Some((8.0, 4.0)), [0.5, 0.5], 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+        );
+        assert_eq!(m.verts.len(), 8);
+        assert_eq!(m.tris.len(), 18);
+        // Bounds: target rect 8×4 centred on origin → X ∈ [-4, 4], Y ∈ [-2, 2].
+        let xs: Vec<f32> = m.verts.iter().map(|v| v[0]).collect();
+        assert!((xs.iter().copied().fold(f32::INFINITY, f32::min) + 4.0).abs() < 1e-5);
+        assert!((xs.iter().copied().fold(f32::NEG_INFINITY, f32::max) - 4.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn tx_mc3_left_edge_mirrors_uv_to_u_max() {
+        // Col 0 should sample u_max (mirrored); col 1 samples inner_u; col N
+        // samples u_max (right edge outer).
+        let entry = quad_entry_with_border(0, 0, 4, 4, (0.5, 0.5), 0, 4);
+        let m = atlas_sprite_mesh(
+            &entry, Method::TxMc3, Some((8.0, 4.0)), [0.5, 0.5], 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0,
+        );
+        // u_max = (0 + 4) / 16 = 0.25. Verts 0/1 are col 0 (left outer).
+        assert!((m.uvs[0][0] - 0.25).abs() < 1e-6, "{:?}", m.uvs[0]);
+        // Verts 6/7 are col 3 (right outer).
+        assert!((m.uvs[6][0] - 0.25).abs() < 1e-6);
+        // Verts 2/3 are col 1 (left inner). inner_u = lerp(uMin, uMax, 0/4) = uMin = 0.
+        assert!((m.uvs[2][0]).abs() < 1e-6);
     }
 
     #[test]
@@ -968,7 +1206,7 @@ mod tests {
         // First copy: same. Second copy: X-flipped about origin (0,0).
         let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
-            &entry, Method::Mx, None, [0.5, 0.5], Affine::default(),
+            &entry, Method::Mx, None, [0.5, 0.5], 1.0, Affine::default(),
             AtlasSize { width: 8, height: 8 }, 1.0,
         );
         assert_eq!(m.verts.len(), 8);
@@ -985,7 +1223,7 @@ mod tests {
     fn icon_my_mirrors_y_axis() {
         let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
-            &entry, Method::My, None, [0.5, 0.5], Affine::default(),
+            &entry, Method::My, None, [0.5, 0.5], 1.0, Affine::default(),
             AtlasSize { width: 8, height: 8 }, 1.0,
         );
         assert_eq!(m.verts.len(), 8);
@@ -996,7 +1234,7 @@ mod tests {
     fn icon_mxy_quadruples_about_origin() {
         let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
-            &entry, Method::Mxy, None, [0.5, 0.5], Affine::default(),
+            &entry, Method::Mxy, None, [0.5, 0.5], 1.0, Affine::default(),
             AtlasSize { width: 8, height: 8 }, 1.0,
         );
         assert_eq!(m.verts.len(), 16);
