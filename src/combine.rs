@@ -2,8 +2,13 @@
 // `Combined.parts` in declared order and produces a single (verts, uvs, tris)
 // triple that downstream emit::SpriteAsset consumes.
 //
-// Phase 2 ships the polygon path only. Atlas-sprite parts + slice methods
-// arrive in later phases (see docs/fab.md).
+// Supports both shapes from `docs/fab.md`: polygon parts (ear-clipped or
+// with an explicit `triangles` override) and atlas-sprite parts under the
+// full `Method` enum — `ID` / `MX` / `MY` / `MXY` / `TX` / `TY` / `TX_MC3`
+// / the slice-grid family (`R*`, `MX_R*`, `MY_R*`, `MXY_R*`). Each part is
+// then composed through `apply_transform` to reproduce Unity's
+// `CanvasSpriteAuthor` matrix chain bit-for-bit (see the "Per-part
+// transform" section in fab.md).
 
 use std::fmt;
 

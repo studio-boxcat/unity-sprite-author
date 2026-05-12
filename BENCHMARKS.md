@@ -24,7 +24,7 @@ Hardware: Apple Silicon (Darwin 25.3), `cargo bench` release profile (LTO=thin, 
 | `tpsheet_parse_orgel` | 107 µs | one-shot |
 | `render_data_build_cake_decoleft` | 306 ns | per-sprite mesh encoding |
 | `emit_cake_decoleft` | 2.75 µs | per-sprite YAML emission |
-| `meta_render_asset_meta` | 50 ns | 189-byte template |
+| `meta_render_asset_meta` | 50 ns | 186-byte Modern template (fresh-mint shape) |
 | `yaml_guid_hex` | 31 ns | 16-byte LUT encoder |
 
 Pure CPU portion of the full pipeline: **~0.3 ms** for 62 sprites
