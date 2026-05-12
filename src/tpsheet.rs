@@ -13,7 +13,7 @@ pub struct Sheet {
     pub sprites: Vec<SpriteEntry>,
 }
 
-// Mirrors the C# `TexInfo` struct (SheetLoader.cs:26-42). Only `width` and
+// Mirrors the C# `TexInfo` struct in SheetLoader.cs. Only `width` and
 // `height` feed the Sprite `.asset` emit; the rest belong to the texture
 // importer side (which our pipeline doesn't touch). Retained so the parser
 // is a faithful 1:1 of the C# parse, which matters when diff-checking.
