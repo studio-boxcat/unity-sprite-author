@@ -13,22 +13,24 @@ The .prefab is the source-of-truth; the .asset is what Unity emits when
 
 ## Status
 
-All crate infrastructure required for byte-exact reproduction has landed
-(Phases 1–7 in `docs/fab.md`). What remains is *authoring* the
-`<atlas>.tps.fab.json` manifests:
+**All three sprites byte-exact** under default `cargo test`
+(`tests/golden_fab_silloutte.rs`). Manifest at
+`PremiumCat_Vampire_Popup.tps.fab.json`.
 
-- For each part (`SR` / `T` / `B` / `Image` / `SL`), translate the prefab's
-  `RectTransform.{anchoredPosition, sizeDelta, pivot}` and the
-  `CanvasSpriteAuthor._scaleFactor` (`0.01`) into per-part `tx` / `ty` /
-  `partPivot` / `sx` / `sy`.
-- UIIcon parts (`SR`, `T`, `B`, `SL`) map to method `Id` (native-scale).
-- UISolid parts (`Image`) map to `Part::Polygon` with the four corner verts
-  of `sizeDelta * scaleFactor`.
-- `combine::calc_rect_and_pivot` should yield `m_Rect (282.5, 770)` and
-  `m_Pivot (0.5, 0.40551946)` matching `Silloutte1.asset`.
+Manifest authoring recipe (for future fab fixtures):
 
-The pipeline integration test
-`pipeline::tests::pipeline_emits_combined_sprite_and_excludes_parts`
-demonstrates the end-to-end wiring on a synthetic single-polygon fab.
-
-Tracked at `TODO.md` "byte-exact `CanvasSpriteAuthor.Publish()` reproduction".
+- For each part, translate the prefab's
+  `RectTransform.{anchoredPosition, sizeDelta, m_Pivot}` and the
+  `CanvasSpriteAuthor._scaleFactor` (`0.01`) into the part's
+  `offset` / `partPivot` / `uiScale` (`100` for UIIcon, `1` for UISolid).
+- UIIcon `_method` 0/1/2/3 → `"ID"` / `"MX"` / `"MY"` / `"MXY"`.
+  `_method` 4/5/6 (FX / FY / FXY) → `"ID"` plus negative `sx` / `sy`.
+- UISolid parts map to `Part::Polygon` with the four corner verts in
+  canvas pixels (`±sizeDelta/2`) and an explicit `triangles: [0, 2, 3, 3, 1, 0]`
+  for the BL/BR/TL/TR vertex layout.
+- Resolve sprite GUIDs in the prefab against the atlas's per-sprite
+  `.asset.meta` files to recover tpsheet entry names.
+- Set the combined `canvasScale: 0.01` and `rootAnchored: [<root_ap_x>, <root_ap_y>]`
+  from the prefab root's `RectTransform.anchoredPosition`. The root anchored
+  matters for byte-exactness — see `combine::compute_m13_axis` for the
+  FMA-fused chain that captures Unity's `Mesh.CombineMeshes` residual.
