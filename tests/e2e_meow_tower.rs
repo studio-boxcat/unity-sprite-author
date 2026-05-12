@@ -230,11 +230,6 @@ fn e2e_meow_tower_byte_exact() {
                 invert_scale,
                 atlas_size,
             );
-            // Mirror the pipeline's behavior: preserve the on-disk
-            // textureRect (the only field that varies between FullRect
-            // and Tight atlases) so this comparison is what the live
-            // pipeline would produce.
-            let texture_rect_size = meta::read_existing_texture_rect_size(&asset_path);
             let asset = SpriteAsset {
                 name: asset_name.clone(),
                 rect: sprite.rect,
@@ -244,7 +239,6 @@ fn e2e_meow_tower_byte_exact() {
                 own_guid,
                 atlas_guid,
                 render_data: rd,
-                texture_rect_size,
             };
 
             let generated_asset = match emit::emit(&asset) {
@@ -332,8 +326,16 @@ fn e2e_meow_tower_byte_exact() {
         "no sprites compared — fixture path wrong?"
     );
 
-    // 100% parity reached. Any future divergence is a regression.
-    const ALLOWED_ASSET_MISMATCHES: usize = 0;
+    // 3 FriendInvite emoji sprites (Emoji-Emoji_Frog/Heart/Unicorn) carry
+    // sub-pixel textureRect values minted under the legacy Tight + Multiple
+    // path and frozen by the 2026-05-05 spriteMode: 2→1 migration. The
+    // crate now hard-errors on that drift instead of silently preserving
+    // (see pipeline::Error::TextureRectDivergence). The live pipeline
+    // would refuse to overwrite those .asset files; this dry-run e2e sees
+    // them as byte mismatches. Resolution: delete those 3 .asset + .meta
+    // files in meow-tower and let Unity re-emit them under spriteMode:1
+    // (textureRect snaps to m_Rect). Then drop this allowance back to 0.
+    const ALLOWED_ASSET_MISMATCHES: usize = 3;
     const ALLOWED_META_MISMATCHES: usize = 0;
     assert_eq!(
         stats.sprites_mismatch_asset, ALLOWED_ASSET_MISMATCHES,

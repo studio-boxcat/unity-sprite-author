@@ -93,7 +93,6 @@ fn orgel_byte_exact_for_sprite_scale_1() {
             own_guid,
             atlas_guid,
             render_data: rd,
-            texture_rect_size: None,
         };
         let got = emit::emit(&asset).expect("emit succeeded");
         assert_eq!(got, golden, "byte mismatch on sprite {}", sprite.name);

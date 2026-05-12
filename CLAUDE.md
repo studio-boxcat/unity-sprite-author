@@ -140,7 +140,7 @@ tpsheet line format (semicolon-separated):
 | Sprite `.asset` field          | Source                                                              |
 | ------------------------------ | ------------------------------------------------------------------- |
 | `m_Rect`                       | tpsheet rect                                                        |
-| `textureRect`                  | tpsheet rect by default; (w,h) preserved from on-disk `.asset` when present, since Unity's polygon-trimmed sprites carry a sub-pixel `textureRect` not derivable from rect+verts alone (see `meta::extract_texture_rect_size`, `pipeline.rs:129`) |
+| `textureRect`                  | always tpsheet rect. If an existing `.asset` carries a divergent `textureRect.{w,h}` (only seen on legacy Tight + `spriteMode: Multiple` outputs), `generate()` returns `Error::TextureRectDivergence` rather than overwriting — delete the stale `.asset` and let Unity re-emit. |
 | `m_Pivot`                      | tpsheet pivot                                                       |
 | `m_Border`                     | tpsheet borders (LRTB)                                              |
 | `m_PixelsToUnits`              | `ppu / spriteScale` (PPU from importer; spriteScale from `.tps`)    |

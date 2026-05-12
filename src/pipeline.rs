@@ -30,6 +30,18 @@ pub enum Error {
     AtlasSizeUnknown,
     EmptySheet,
     DuplicateSpriteName(String),
+    // On-disk .asset's textureRect.{w,h} doesn't match the rect we'd emit.
+    // Historically this happened only on Unity sprites authored under
+    // SpriteMeshType.Tight + spriteMode: Multiple, which ran an alpha-edge
+    // tightness pass we can't reproduce. 3 sprites in the meow-tower corpus
+    // (FriendInvite emoji) were legacy artifacts from a spriteMode 2→1 flip.
+    // Resolution: delete the offending .asset so Unity re-emits it under
+    // the current spriteMode:1 path (which doesn't sub-pixel-shrink).
+    TextureRectDivergence {
+        sprite: String,
+        on_disk: (f32, f32),
+        emitted: (f32, f32),
+    },
 }
 
 impl fmt::Display for Error {
@@ -45,6 +57,13 @@ impl fmt::Display for Error {
             Self::DuplicateSpriteName(name) => write!(
                 f,
                 "duplicate sprite name after prefix application: {name:?}"
+            ),
+            Self::TextureRectDivergence { sprite, on_disk, emitted } => write!(
+                f,
+                "textureRect drift on {sprite:?}: on-disk ({}, {}) vs emitted ({}, {}). \
+                 Delete the .asset and let Unity re-emit it under spriteMode:1; \
+                 SpriteMeshType.Tight + spriteMode:Multiple is unsupported.",
+                on_disk.0, on_disk.1, emitted.0, emitted.1,
             ),
         }
     }
@@ -132,11 +151,19 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
         // and mainObjectFileID). Preserve both axes to avoid byte churn.
         let (own_guid, meta_shape) = meta::resolve_sprite_meta(&meta_path).map_err(Error::Meta)?;
 
-        // Preserve textureRect from the on-disk .asset when present. For
-        // FullRect atlases this equals (rect.w, rect.h). For Tight atlases
-        // Unity emits a sub-pixel-shrunk size that we can't reproduce
-        // without engine source — preserving avoids byte churn.
-        let texture_rect_size = meta::read_existing_texture_rect_size(&asset_path);
+        // Refuse to overwrite an .asset whose textureRect was authored under
+        // a different sprite-mesh path (Tight + spriteMode:Multiple). See
+        // Error::TextureRectDivergence.
+        let emitted_rect = (sprite.rect.w as f32, sprite.rect.h as f32);
+        if let Some((w, h)) = meta::read_existing_texture_rect_size(&asset_path)
+            && (w, h) != emitted_rect
+        {
+            return Err(Error::TextureRectDivergence {
+                sprite: asset_name,
+                on_disk: (w, h),
+                emitted: emitted_rect,
+            });
+        }
 
         let sprite_asset = SpriteAsset {
             name: asset_name.clone(),
@@ -147,7 +174,6 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
             own_guid,
             atlas_guid,
             render_data: rd,
-            texture_rect_size,
         };
 
         let asset_bytes = emit::emit(&sprite_asset).map_err(Error::Emit)?.into_bytes();

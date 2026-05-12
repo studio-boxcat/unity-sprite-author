@@ -166,12 +166,12 @@ pub fn resolve_sprite_meta<P: AsRef<Path>>(
 }
 
 /// Pull the `textureRect.{width, height}` from an existing Sprite `.asset`'s
-/// `m_RD` block. Used to preserve sub-pixel textureRect values that Unity
-/// generates via SpriteMeshType.Tight — see the field doc on
-/// [`crate::emit::SpriteAsset::texture_rect_size`].
+/// `m_RD` block. The pipeline uses this to detect drift between the on-disk
+/// textureRect and the rect we're about to emit; divergence is a hard error
+/// (see `pipeline::Error::TextureRectDivergence`).
 ///
-/// Returns `None` if the file doesn't exist or the textureRect block can't
-/// be parsed (in which case the caller should fall back to `rect.{w, h}`).
+/// Returns `None` if the file doesn't exist or the textureRect block can't be
+/// parsed (no prior asset to diff against).
 pub fn read_existing_texture_rect_size<P: AsRef<Path>>(asset_path: P) -> Option<(f32, f32)> {
     let text = fs::read_to_string(asset_path).ok()?;
     let mut in_block = false;

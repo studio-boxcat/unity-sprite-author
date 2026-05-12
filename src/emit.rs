@@ -38,15 +38,6 @@ pub struct SpriteAsset {
     pub own_guid: [u8; 16],   // also written to m_RenderDataKey
     pub atlas_guid: [u8; 16], // texture reference inside m_RD/m_AtlasRD
     pub render_data: RenderData,
-    /// Override for the (w, h) fields of `textureRect` in m_RD/m_AtlasRD.
-    /// `None` → emit `(rect.w, rect.h)` as integer floats. `Some` → use the
-    /// supplied f32s. This is the escape hatch for atlases imported with
-    /// `SpriteMeshType.Tight`, where Unity's native polygon-outline pass
-    /// produces a sub-pixel-shrunk textureRect that's not reproducible from
-    /// (rect, polygon-vertices) alone — see TODO.md "textureRect sub-pixel
-    /// shrink". For Tight atlases the pipeline reads the existing .asset's
-    /// textureRect and forwards it here.
-    pub texture_rect_size: Option<(f32, f32)>,
 }
 
 // Cake__DecoLeft.asset is ~5.2 KB; larger sprite geometry adds ~16 bytes per
@@ -118,23 +109,9 @@ pub fn emit(asset: &SpriteAsset) -> Result<String, EmitError> {
     // m_RD and m_AtlasRD are byte-identical for non-SpriteAtlas sprites
     // (verified across Orgel corpus). Guarded against SpriteAtlas use upstream.
     s.push_str("  m_RD:\n");
-    write_render_data(
-        &mut s,
-        "    ",
-        &asset.atlas_guid,
-        &asset.render_data,
-        asset.rect,
-        asset.texture_rect_size,
-    );
+    write_render_data(&mut s, "    ", &asset.atlas_guid, &asset.render_data, asset.rect);
     s.push_str("  m_AtlasRD:\n");
-    write_render_data(
-        &mut s,
-        "    ",
-        &asset.atlas_guid,
-        &asset.render_data,
-        asset.rect,
-        asset.texture_rect_size,
-    );
+    write_render_data(&mut s, "    ", &asset.atlas_guid, &asset.render_data, asset.rect);
 
     s.push_str("  m_PhysicsShape: []\n");
     s.push_str("  m_Bones: []\n");
@@ -157,7 +134,6 @@ fn write_render_data(
     atlas_guid: &[u8; 16],
     rd: &RenderData,
     rect: Rect,
-    texture_rect_size: Option<(f32, f32)>,
 ) {
     writeln!(s, "{indent}serializedVersion: 3").unwrap();
     writeln!(
@@ -201,16 +177,8 @@ fn write_render_data(
     let inner_rect = format!("{indent}  ");
     writeln!(s, "{inner_rect}x: {}", rect.x).unwrap();
     writeln!(s, "{inner_rect}y: {}", rect.y).unwrap();
-    match texture_rect_size {
-        Some((w, h)) => {
-            writeln!(s, "{inner_rect}width: {}", float(w)).unwrap();
-            writeln!(s, "{inner_rect}height: {}", float(h)).unwrap();
-        }
-        None => {
-            writeln!(s, "{inner_rect}width: {}", rect.w).unwrap();
-            writeln!(s, "{inner_rect}height: {}", rect.h).unwrap();
-        }
-    }
+    writeln!(s, "{inner_rect}width: {}", rect.w).unwrap();
+    writeln!(s, "{inner_rect}height: {}", rect.h).unwrap();
     writeln!(s, "{indent}textureRectOffset: {{x: 0, y: 0}}").unwrap();
     writeln!(s, "{indent}atlasRectOffset: {{x: -1, y: -1}}").unwrap(); // Unity default, NOT zero
     // settingsRaw is a packed bitfield representing TextureImporter settings
@@ -325,7 +293,6 @@ mod tests {
             own_guid: parse_guid_from_meta(CAKE_DECOLEFT_META),
             atlas_guid: parse_guid_from_meta(ATLAS_META),
             render_data: rd,
-            texture_rect_size: None,
         };
         let got = emit(&asset).expect("emit succeeded");
         if got != CAKE_DECOLEFT_GOLDEN {
