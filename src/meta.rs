@@ -201,6 +201,16 @@ pub fn read_existing_texture_rect_size<P: AsRef<Path>>(asset_path: P) -> Option<
     None
 }
 
+// Compose a 128-bit GUID from two pre-derived entropy words (LE-packed:
+// lo → bytes 0..8, hi → bytes 8..16). Split out so tests can pin the mint
+// path against a known seed.
+pub fn mint_guid_from(lo: u64, hi: u64) -> [u8; 16] {
+    let mut out = [0u8; 16];
+    out[..8].copy_from_slice(&lo.to_le_bytes());
+    out[8..].copy_from_slice(&hi.to_le_bytes());
+    out
+}
+
 // Mint a random 128-bit GUID. Uses two `RandomState` instances for entropy
 // (each one carries fresh SipHash keys seeded from the OS RNG by stdlib).
 // Sufficient for Unity GUID uniqueness; not crypto-grade.
@@ -209,10 +219,7 @@ pub fn mint_guid() -> [u8; 16] {
     use std::hash::BuildHasher;
     let lo = RandomState::new().hash_one(0u64);
     let hi = RandomState::new().hash_one(1u64);
-    let mut out = [0u8; 16];
-    out[..8].copy_from_slice(&lo.to_le_bytes());
-    out[8..].copy_from_slice(&hi.to_le_bytes());
-    out
+    mint_guid_from(lo, hi)
 }
 
 // Preserve existing GUID if a sibling .asset.meta exists; else mint fresh.
@@ -273,6 +280,30 @@ mod tests {
         let b = mint_guid();
         // Astronomically unlikely to collide; if this fires, panic loudly.
         assert_ne!(a, b);
+    }
+
+    // Mint branch end-to-end: a deterministic pair of entropy words produces a
+    // known 16-byte GUID, which then drops into the full .asset.meta render so
+    // the mint-branch output is pinned at the byte level (not just "non-zero").
+    #[test]
+    fn mint_guid_from_seeds_is_deterministic() {
+        let g = mint_guid_from(0xDEAD_BEEF_CAFE_F00D, 0x0123_4567_89AB_CDEF);
+        // LE byte order for both halves: lo[0..8] then hi[0..8].
+        assert_eq!(
+            g,
+            [
+                0x0d, 0xf0, 0xfe, 0xca, 0xef, 0xbe, 0xad, 0xde,
+                0xef, 0xcd, 0xab, 0x89, 0x67, 0x45, 0x23, 0x01,
+            ]
+        );
+        // Drop into the modern meta render so the mint branch is exercised
+        // end-to-end at the byte level, not just at the helper boundary.
+        let meta = render_asset_meta(&g);
+        assert!(
+            meta.contains("guid: 0df0fecaefbeaddeefcdab8967452301\n"),
+            "rendered meta missing minted guid line: {meta}"
+        );
+        assert_eq!(meta.len(), 186);
     }
 
     #[test]

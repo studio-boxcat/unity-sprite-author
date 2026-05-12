@@ -49,7 +49,7 @@ Build/deploy concerns (universal macOS dylib, `cargo xwin` Windows cross, `.dyli
 
 - `tests/golden/` directory layout: per-atlas folder containing `.tpsheet`, `.tps`, `.png.meta`, `.tpsheet.meta`, and the full set of expected `.asset` + `.asset.meta` files. Tests stage these into `target/test-tmp/<test>/` before running the pipeline (so the preserve-existing-meta branch is exercised).
 - Diff harness: on byte-equality mismatch, write `target/diff/<name>.{actual,expected}` and print first divergent offset + 32-byte hex window.
-- Mint-branch unit test using a seeded `StdRng`.
+- ~~Mint-branch unit test using a seeded `StdRng`~~ — landed as `meta::tests::mint_guid_from_seeds_is_deterministic`. The `mint_guid()` entropy source is `std::collections::hash_map::RandomState` (no `rand` dep); the test seam is a `mint_guid_from(lo: u64, hi: u64)` helper that `mint_guid()` wraps. The unit test pins both the byte order and the rendered `.asset.meta` containing the minted `guid:` line.
 
 ## Unity-side ergonomics (post-MVP)
 
