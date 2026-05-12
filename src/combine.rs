@@ -694,11 +694,7 @@ fn slice_r1c3(
     ctx: &SliceCtx,
     target: (f32, f32),
 ) -> PartMesh {
-    let (target_w, target_h) = target;
-    let x_min = -target_w * ctx.part_pivot.0;
-    let x_max = target_w * (1.0 - ctx.part_pivot.0);
-    let y_min = -target_h * ctx.part_pivot.1;
-    let y_max = target_h * (1.0 - ctx.part_pivot.1);
+    let (x_min, y_min, x_max, y_max) = target_rect_bounds(target, ctx.part_pivot);
 
     let bl = entry.border.left as f32 * ctx.border_mult / ppu;
     let br = entry.border.right as f32 * ctx.border_mult / ppu;
@@ -745,11 +741,7 @@ fn slice_mx_r1c3(
     ctx: &SliceCtx,
     target: (f32, f32),
 ) -> PartMesh {
-    let (target_w, target_h) = target;
-    let x_min = -target_w * ctx.part_pivot.0;
-    let x_max = target_w * (1.0 - ctx.part_pivot.0);
-    let y_min = -target_h * ctx.part_pivot.1;
-    let y_max = target_h * (1.0 - ctx.part_pivot.1);
+    let (x_min, y_min, x_max, y_max) = target_rect_bounds(target, ctx.part_pivot);
 
     let b = entry.rect.w as f32 * ctx.border_mult / ppu;
     let x = [x_min, x_min + b, x_max - b, x_max];
@@ -856,6 +848,33 @@ fn slice_mxy_r3c3(
     PartMesh { verts, uvs, tris }
 }
 
+// --- shared slice helpers ---
+
+// Compute the part's target-rect bounds in pivot-relative world units.
+// Returns (x_min, y_min, x_max, y_max).
+fn target_rect_bounds(target: (f32, f32), part_pivot: (f32, f32)) -> (f32, f32, f32, f32) {
+    let (tw, th) = target;
+    let x_min = -tw * part_pivot.0;
+    let x_max = tw * (1.0 - part_pivot.0);
+    let y_min = -th * part_pivot.1;
+    let y_max = th * (1.0 - part_pivot.1);
+    (x_min, y_min, x_max, y_max)
+}
+
+// Row-major vertex grid: outputs (xs.len() * ys.len()) verts, iterating
+// y outer, x inner. Matches the layout GridPos.SetUp_R*C* writes.
+fn grid_verts(xs: &[f32], ys: &[f32]) -> Vec<[f32; 2]> {
+    let mut out = Vec::with_capacity(xs.len() * ys.len());
+    for &y in ys {
+        for &x in xs {
+            out.push([x, y]);
+        }
+    }
+    out
+}
+
+// --- MX slice grid ports follow ---
+
 // MX_R1C4: 2 rows × 5 cols, mirror-X with double centre column. 10 verts,
 // 4 quads. C# ignores borderMult (hardcodes 1); we honor ctx.border_mult
 // for consistency with sibling methods. Constraint: borders all 0 except
@@ -867,21 +886,12 @@ fn slice_mx_r1c4(
     ctx: &SliceCtx,
     target: (f32, f32),
 ) -> PartMesh {
-    let (target_w, target_h) = target;
-    let x_min = -target_w * ctx.part_pivot.0;
-    let x_max = target_w * (1.0 - ctx.part_pivot.0);
-    let y_min = -target_h * ctx.part_pivot.1;
-    let y_max = target_h * (1.0 - ctx.part_pivot.1);
+    let (x_min, y_min, x_max, y_max) = target_rect_bounds(target, ctx.part_pivot);
     let br = entry.border.right as f32 * ctx.border_mult / ppu;
 
     let xs = [x_min, x_min + br, (x_min + x_max) * 0.5, x_max - br, x_max];
     let ys = [y_min, y_max];
-    let mut verts_local: Vec<[f32; 2]> = Vec::with_capacity(10);
-    for &yy in &ys {
-        for &xx in &xs {
-            verts_local.push([xx, yy]);
-        }
-    }
+    let verts_local = grid_verts(&xs, &ys);
 
     let grid = UvGrid::for_entry(entry, atlas, ctx.border_mult);
     // Row 0: u3, u2, u0, u2, u3 (mirror about centre at u0).
@@ -909,22 +919,13 @@ fn slice_mx_r3c2(
     ctx: &SliceCtx,
     target: (f32, f32),
 ) -> PartMesh {
-    let (target_w, target_h) = target;
-    let x_min = -target_w * ctx.part_pivot.0;
-    let x_max = target_w * (1.0 - ctx.part_pivot.0);
-    let y_min = -target_h * ctx.part_pivot.1;
-    let y_max = target_h * (1.0 - ctx.part_pivot.1);
+    let (x_min, y_min, x_max, y_max) = target_rect_bounds(target, ctx.part_pivot);
     let bb = entry.border.bottom as f32 * ctx.border_mult / ppu;
     let bt = entry.border.top as f32 * ctx.border_mult / ppu;
 
     let xs = [x_min, (x_min + x_max) * 0.5, x_max];
     let ys = [y_min, y_min + bb, y_max - bt, y_max];
-    let mut verts_local: Vec<[f32; 2]> = Vec::with_capacity(12);
-    for &yy in &ys {
-        for &xx in &xs {
-            verts_local.push([xx, yy]);
-        }
-    }
+    let verts_local = grid_verts(&xs, &ys);
 
     let grid = UvGrid::for_entry(entry, atlas, ctx.border_mult);
     // Cols (3): outer=u3, centre=u0, outer=u3 (mirror around centre).
@@ -951,23 +952,14 @@ fn slice_mx_r3c4(
     ctx: &SliceCtx,
     target: (f32, f32),
 ) -> PartMesh {
-    let (target_w, target_h) = target;
-    let x_min = -target_w * ctx.part_pivot.0;
-    let x_max = target_w * (1.0 - ctx.part_pivot.0);
-    let y_min = -target_h * ctx.part_pivot.1;
-    let y_max = target_h * (1.0 - ctx.part_pivot.1);
+    let (x_min, y_min, x_max, y_max) = target_rect_bounds(target, ctx.part_pivot);
     let br = entry.border.right as f32 * ctx.border_mult / ppu;
     let bb = entry.border.bottom as f32 * ctx.border_mult / ppu;
     let bt = entry.border.top as f32 * ctx.border_mult / ppu;
 
     let xs = [x_min, x_min + br, (x_min + x_max) * 0.5, x_max - br, x_max];
     let ys = [y_min, y_min + bb, y_max - bt, y_max];
-    let mut verts_local: Vec<[f32; 2]> = Vec::with_capacity(20);
-    for &yy in &ys {
-        for &xx in &xs {
-            verts_local.push([xx, yy]);
-        }
-    }
+    let verts_local = grid_verts(&xs, &ys);
 
     let grid = UvGrid::for_entry(entry, atlas, ctx.border_mult);
     // Per SetUp_MX_R3C4: per-row UV pattern (u3, u2, u0, u2, u3) with v
@@ -995,11 +987,7 @@ fn slice_mx_r3c6(
     ctx: &SliceCtx,
     target: (f32, f32),
 ) -> PartMesh {
-    let (target_w, target_h) = target;
-    let x_min = -target_w * ctx.part_pivot.0;
-    let x_max = target_w * (1.0 - ctx.part_pivot.0);
-    let y_min = -target_h * ctx.part_pivot.1;
-    let y_max = target_h * (1.0 - ctx.part_pivot.1);
+    let (x_min, y_min, x_max, y_max) = target_rect_bounds(target, ctx.part_pivot);
     let bl = entry.border.left as f32 * ctx.border_mult / ppu;
     let br = entry.border.right as f32 * ctx.border_mult / ppu;
     let bb = entry.border.bottom as f32 * ctx.border_mult / ppu;
@@ -1008,12 +996,7 @@ fn slice_mx_r3c6(
 
     let xs = [x_min, x_min + br, x_mid - bl, x_mid, x_mid + bl, x_max - br, x_max];
     let ys = [y_min, y_min + bb, y_max - bt, y_max];
-    let mut verts_local: Vec<[f32; 2]> = Vec::with_capacity(28);
-    for &yy in &ys {
-        for &xx in &xs {
-            verts_local.push([xx, yy]);
-        }
-    }
+    let verts_local = grid_verts(&xs, &ys);
 
     let grid = UvGrid::for_entry(entry, atlas, ctx.border_mult);
     // Per SetUp_MX_R3C6: per-row UV pattern (u3, u2, u1, u0, u1, u2, u3)
@@ -1041,21 +1024,12 @@ fn slice_my_r3c1(
     ctx: &SliceCtx,
     target: (f32, f32),
 ) -> PartMesh {
-    let (target_w, target_h) = target;
-    let x_min = -target_w * ctx.part_pivot.0;
-    let x_max = target_w * (1.0 - ctx.part_pivot.0);
-    let y_min = -target_h * ctx.part_pivot.1;
-    let y_max = target_h * (1.0 - ctx.part_pivot.1);
+    let (x_min, y_min, x_max, y_max) = target_rect_bounds(target, ctx.part_pivot);
     let bt = entry.border.top as f32 * ctx.border_mult / ppu;
 
     let xs = [x_min, x_max];
     let ys = [y_min, y_min + bt, y_max - bt, y_max];
-    let mut verts_local: Vec<[f32; 2]> = Vec::with_capacity(8);
-    for &yy in &ys {
-        for &xx in &xs {
-            verts_local.push([xx, yy]);
-        }
-    }
+    let verts_local = grid_verts(&xs, &ys);
 
     let grid = UvGrid::for_entry(entry, atlas, ctx.border_mult);
     // Per GridUV.SetUp_MY_R3C1: outer rows → v3; inner rows → v0.
@@ -1082,21 +1056,12 @@ fn slice_my_r2c2(
     ctx: &SliceCtx,
     target: (f32, f32),
 ) -> PartMesh {
-    let (target_w, target_h) = target;
-    let x_min = -target_w * ctx.part_pivot.0;
-    let x_max = target_w * (1.0 - ctx.part_pivot.0);
-    let y_min = -target_h * ctx.part_pivot.1;
-    let y_max = target_h * (1.0 - ctx.part_pivot.1);
+    let (x_min, y_min, x_max, y_max) = target_rect_bounds(target, ctx.part_pivot);
     let br = entry.border.right as f32 * ctx.border_mult / ppu;
 
     let xs = [x_min, x_max - br, x_max];
     let ys = [y_min, (y_min + y_max) * 0.5, y_max];
-    let mut verts_local: Vec<[f32; 2]> = Vec::with_capacity(9);
-    for &yy in &ys {
-        for &xx in &xs {
-            verts_local.push([xx, yy]);
-        }
-    }
+    let verts_local = grid_verts(&xs, &ys);
 
     let grid = UvGrid::for_entry(entry, atlas, ctx.border_mult);
     // SetUp_MY_R2C2 pattern: cols 0,1 share u0; col 2 = u3.
@@ -1123,22 +1088,13 @@ fn slice_my_r2c3(
     ctx: &SliceCtx,
     target: (f32, f32),
 ) -> PartMesh {
-    let (target_w, target_h) = target;
-    let x_min = -target_w * ctx.part_pivot.0;
-    let x_max = target_w * (1.0 - ctx.part_pivot.0);
-    let y_min = -target_h * ctx.part_pivot.1;
-    let y_max = target_h * (1.0 - ctx.part_pivot.1);
+    let (x_min, y_min, x_max, y_max) = target_rect_bounds(target, ctx.part_pivot);
     let bl = entry.border.left as f32 * ctx.border_mult / ppu;
     let br = entry.border.right as f32 * ctx.border_mult / ppu;
 
     let xs = [x_min, x_min + bl, x_max - br, x_max];
     let ys = [y_min, (y_min + y_max) * 0.5, y_max];
-    let mut verts_local: Vec<[f32; 2]> = Vec::with_capacity(12);
-    for &yy in &ys {
-        for &xx in &xs {
-            verts_local.push([xx, yy]);
-        }
-    }
+    let verts_local = grid_verts(&xs, &ys);
 
     let grid = UvGrid::for_entry(entry, atlas, ctx.border_mult);
     // SetUp_MY_R2C3 pattern:
@@ -1168,22 +1124,13 @@ fn slice_my_r3c2(
     ctx: &SliceCtx,
     target: (f32, f32),
 ) -> PartMesh {
-    let (target_w, target_h) = target;
-    let x_min = -target_w * ctx.part_pivot.0;
-    let x_max = target_w * (1.0 - ctx.part_pivot.0);
-    let y_min = -target_h * ctx.part_pivot.1;
-    let y_max = target_h * (1.0 - ctx.part_pivot.1);
+    let (x_min, y_min, x_max, y_max) = target_rect_bounds(target, ctx.part_pivot);
     let br = entry.border.right as f32 * ctx.border_mult / ppu;
     let bt = entry.border.top as f32 * ctx.border_mult / ppu;
 
     let xs = [x_min, x_max - br, x_max];
     let ys = [y_min, y_min + bt, y_max - bt, y_max];
-    let mut verts_local: Vec<[f32; 2]> = Vec::with_capacity(12);
-    for &yy in &ys {
-        for &xx in &xs {
-            verts_local.push([xx, yy]);
-        }
-    }
+    let verts_local = grid_verts(&xs, &ys);
 
     let grid = UvGrid::for_entry(entry, atlas, ctx.border_mult);
     // SetUp_MY_R3C2 pattern: cols 0,1 → u0 (shared); col 2 → u3.
