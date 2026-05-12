@@ -191,13 +191,22 @@ unity-sprite-author/
 │   ├── meta.rs             # .png.meta GUID read; .asset.meta read/write
 │   ├── render_data.rs      # _typelessdata, m_IndexBuffer, uvTransform
 │   ├── emit.rs             # SpriteAsset → bytes
-│   ├── yaml.rs             # Unity-flavor YAML + unity_float_format
-│   ├── triangulator.rs     # tight-mesh outline tracer
+│   ├── yaml.rs             # Unity-flavor YAML + yaml::float (C# ToString("R"))
+│   ├── triangulator.rs     # ear-clipping triangulator for fab polygon parts
 │   ├── combine.rs          # fab combined-sprite mesh stitching
 │   └── fab.rs              # .tps.fab.json sidecar parser
 ├── tests/
-│   ├── golden_parity.rs    # full byte-equality across multiple atlases
-│   └── golden/             # committed .tpsheet + .tps + .png.meta + expected .asset
+│   ├── golden_parity.rs        # byte-equality on the Orgel corpus
+│   ├── golden_fab_silloutte.rs # byte-equality on the 3 Silloutte fab fixtures
+│   ├── e2e_meow_tower.rs       # opt-in walk of the meow-tower checkout
+│   └── golden/                 # committed .tpsheet + .tps + .png.meta + expected .asset
+├── docs/
+│   ├── fab.md              # .tps.fab.json schema + per-part transform math
+│   └── unity-probes.md     # in-Editor procedures for the four blocked TODOs
+├── examples/
+│   └── drift_report.rs     # diagnostic — runs across meow-tower, prints first diff per atlas
+├── benches/
+│   └── pipeline.rs         # criterion harness — full pipeline + per-stage hot paths
 ├── scripts/
 │   └── migrate-tpsheet-meta.sh  # --dry-run; .tpsheet.meta → .tps.meta
 └── CLAUDE.md
