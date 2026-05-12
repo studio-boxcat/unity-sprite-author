@@ -78,8 +78,8 @@ let result = pipeline::generate(&pipeline::GenerateInputs {
 ## GUID policy
 
 - For sprite `<name>` in output dir `<dir>`:
-  - If `<dir>/<prefix><name>.asset.meta` exists → read existing `guid`, preserve. Always rewrite the file from the canonical 189-byte template; the `guid` field is the only preserved value. Hand-edits to `.asset.meta` are not supported.
-  - Else → mint random 128-bit GUID, write a fresh `.asset.meta` from the same template.
+  - If `<dir>/<prefix><name>.asset.meta` exists → read existing `guid`, preserve. Detect the file's shape (Legacy189 vs Modern186, `mainObjectFileID` value) and rewrite in the same shape so on-disk bytes don't churn just because we touched the file. The `guid` and detected shape are the only preserved values. Hand-edits to other fields are not supported.
+  - Else → mint random 128-bit GUID, write a fresh `.asset.meta` in the Modern186 shape with `mainObjectFileID: 21300000`.
 - `m_RenderDataKey` in the `.asset` body uses the SAME GUID as the sibling `.asset.meta` (verified against `Cake__DecoLeft.asset.meta` corpus, 3645 files: `m_RenderDataKey` always equals own meta GUID).
 - Renames must be done in tpsheet AND Unity at the same time by the developer. This design does not detect renames automatically.
 
@@ -106,7 +106,7 @@ NativeFormatImporter:
 
 ### Test strategy for GUID determinism
 
-Random-mint conflicts with byte-equal goldens. Strategy: **tests stage the committed `.asset.meta` into the temp input dir before running the pipeline**, so only the preserve branch is exercised by golden tests. The mint branch is covered by a focused unit test using a seeded RNG.
+Random-mint conflicts with byte-equal goldens. Strategy: **tests stage the committed `.asset.meta` into the temp input dir before running the pipeline**, so only the preserve branch is exercised by golden tests. The mint branch is covered by `meta::tests::mint_guid_from_seeds_is_deterministic` — calls a `mint_guid_from(lo, hi)` helper directly with fixed entropy words so the rendered `.asset.meta` bytes are deterministic. (`mint_guid()` itself uses two `RandomState::hash_one` calls; no `rand` crate.)
 
 ## Reference: tpsheet → Sprite `.asset` field map
 
