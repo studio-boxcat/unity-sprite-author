@@ -31,8 +31,9 @@ pub enum Part {
     AtlasSprite {
         sprite: String,
         method: Method,
-        // width / height: target rect, world units. Required when method != Id.
-        // For Id, None means "use the sprite's native rect".
+        // Target rect, world units. `None` ⇒ native-scale (UIIconMeshGen
+        // path). `Some` ⇒ size-fitted (UISliceMeshGen path). Rejected on
+        // methods that don't accept the opposite shape.
         size: Option<(f32, f32)>,
         // Target-rect pivot in 0..1. Defaults to (0.5, 0.5). For
         // SpriteMeshAuthor-tree fixtures (Box prefabs) this stays at the
@@ -40,10 +41,11 @@ pub enum Part {
         // pivots like (0, 0.5) or (0.5, 0) that shift each part's mesh
         // relative to its anchored position.
         part_pivot: [f32; 2],
+        // Slice-method border multiplier. Only used by methods that declare a
+        // border in their source rect; rejected on ID / mirror / tile (non-MC3)
+        // methods at parse time.
         border_mult: f32,
         affine: Affine,
-        mirror_x: bool,
-        mirror_y: bool,
     },
     Polygon {
         polygon_sprite: String,
@@ -95,6 +97,14 @@ impl Method {
     fn requires_size(self) -> bool {
         !matches!(self, Method::Id | Method::Mx | Method::My | Method::Mxy)
     }
+
+    /// True iff the method's mesh-gen math consumes the source sprite's border
+    /// (and hence `borderMult` is a meaningful option). ID, the mirror
+    /// duplicators (MX/MY/MXY), and the plain tilers (TX/TY) don't have a
+    /// border concept; only TX_MC3 and the slice grids do.
+    fn uses_border(self) -> bool {
+        !matches!(self, Method::Id | Method::Mx | Method::My | Method::Mxy | Method::Tx | Method::Ty)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -114,6 +124,7 @@ pub enum FabError {
     MissingSize { combined: String, sprite: String, method: Method },
     NonPositiveSize { combined: String, sprite: String, w: f32, h: f32 },
     PolygonTooFewVertices { combined: String, sprite: String, n: usize },
+    UnusedOption { combined: String, sprite: String, method: Method, option: &'static str },
 }
 
 impl fmt::Display for FabError {
@@ -143,6 +154,10 @@ impl fmt::Display for FabError {
             ),
             Self::PolygonTooFewVertices { combined, sprite, n } => write!(
                 f, "combined {combined:?} polygon {sprite:?}: needs ≥ 3 vertices, got {n}",
+            ),
+            Self::UnusedOption { combined, sprite, method, option } => write!(
+                f, "combined {combined:?} part {sprite:?} (method {method}): \
+                    option {option:?} is not applicable",
             ),
         }
     }
@@ -187,6 +202,7 @@ mod raw {
     use serde::Deserialize;
 
     #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
     pub struct Manifest {
         pub version: u32,
         #[serde(default)]
@@ -194,7 +210,7 @@ mod raw {
     }
 
     #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
     pub struct Combined {
         pub name: String,
         pub pivot: Option<[f32; 2]>,
@@ -207,8 +223,10 @@ mod raw {
     // `untagged` would force exclusive-or between two structs, but the
     // ergonomics for missing-field error messages are poor. Single struct
     // with `Option` discriminators is easier to error-message well.
+    // `deny_unknown_fields` so e.g. a stale `mirrorX` from an older schema
+    // surfaces as a parse error instead of being silently dropped.
     #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
     pub struct Part {
         // atlas-sprite discriminator
         pub sprite: Option<String>,
@@ -216,8 +234,6 @@ mod raw {
         pub width: Option<f32>,
         pub height: Option<f32>,
         pub border_mult: Option<f32>,
-        pub mirror_x: Option<bool>,
-        pub mirror_y: Option<bool>,
         pub part_pivot: Option<[f32; 2]>,
 
         // polygon discriminator
@@ -331,6 +347,25 @@ fn translate_part(combined: &str, p: raw::Part) -> Result<Part, FabError> {
                     method,
                 });
             }
+            // ID never accepts a target rect.
+            if matches!(method, Method::Id) && size.is_some() {
+                return Err(FabError::UnusedOption {
+                    combined: combined.to_string(),
+                    sprite,
+                    method,
+                    option: "width/height (ID method ignores target rect)",
+                });
+            }
+            // borderMult only applies to methods that consume a border:
+            // TX_MC3 and the slice grids (R*, MX_*, MY_*, MXY_*).
+            if p.border_mult.is_some() && !method.uses_border() {
+                return Err(FabError::UnusedOption {
+                    combined: combined.to_string(),
+                    sprite,
+                    method,
+                    option: "borderMult (method has no border concept)",
+                });
+            }
 
             Ok(Part::AtlasSprite {
                 sprite,
@@ -339,8 +374,6 @@ fn translate_part(combined: &str, p: raw::Part) -> Result<Part, FabError> {
                 part_pivot: p.part_pivot.unwrap_or([0.5, 0.5]),
                 border_mult: p.border_mult.unwrap_or(1.0),
                 affine,
-                mirror_x: p.mirror_x.unwrap_or(false),
-                mirror_y: p.mirror_y.unwrap_or(false),
             })
         }
         (None, Some(polygon_sprite)) => {
@@ -359,13 +392,12 @@ fn translate_part(combined: &str, p: raw::Part) -> Result<Part, FabError> {
             // mix-up (typo, schema confusion). Reject explicitly so the
             // author sees the issue.
             if p.method.is_some() || p.width.is_some() || p.height.is_some()
-                || p.border_mult.is_some() || p.mirror_x.is_some() || p.mirror_y.is_some()
-                || p.part_pivot.is_some()
+                || p.border_mult.is_some() || p.part_pivot.is_some()
             {
                 return Err(FabError::PartShape {
                     combined: combined.to_string(),
                     reason: "polygon parts cannot declare \
-                             method/width/height/borderMult/mirrorX/mirrorY/partPivot",
+                             method/width/height/borderMult/partPivot",
                 });
             }
             Ok(Part::Polygon { polygon_sprite, vertices, affine })
@@ -419,14 +451,12 @@ mod tests {
         assert_eq!(c.pivot, [0.5, 0.5]);
         assert_eq!(c.border, [0.0, 0.0, 0.0, 0.0]);
         match &c.parts[0] {
-            Part::AtlasSprite { sprite, method, size, part_pivot, affine, mirror_x, mirror_y, border_mult } => {
+            Part::AtlasSprite { sprite, method, size, part_pivot, affine, border_mult } => {
                 assert_eq!(sprite, "Body");
                 assert_eq!(*method, Method::Id);
                 assert_eq!(*size, None);
                 assert_eq!(*part_pivot, [0.5, 0.5]);
                 assert_eq!(*affine, Affine::default());
-                assert!(!mirror_x);
-                assert!(!mirror_y);
                 assert_eq!(*border_mult, 1.0);
             }
             _ => panic!("wrong variant"),
@@ -545,8 +575,7 @@ mod tests {
         // Mixing an atlas-sprite-only field onto a polygon part is a shape
         // mix-up — surface it instead of silently dropping the field.
         for extra in [r#""method": "ID""#, r#""width": 1, "height": 1"#,
-                      r#""borderMult": 0.5"#, r#""mirrorX": true"#, r#""mirrorY": true"#,
-                      r#""partPivot": [0, 0.5]"#] {
+                      r#""borderMult": 0.5"#, r#""partPivot": [0, 0.5]"#] {
             let json = format!(
                 r#"{{ "version": 1, "combined": [{{ "name": "X", "parts": [
                     {{ "polygonSprite": "C", "vertices": [[0,0],[1,0],[0,1]], {extra} }}
@@ -554,6 +583,60 @@ mod tests {
             );
             let e = parse_err(&json);
             assert!(matches!(e, FabError::PartShape { .. }), "got {e:?} for {extra}");
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_fields_anywhere() {
+        // deny_unknown_fields catches typos and stale schema fields (e.g.
+        // mirrorX/mirrorY, which were removed when no implementation used
+        // them). Validates the parser falls in the "fail loud" camp rather
+        // than silently dropping options the user wrote.
+        for json in [
+            // unknown at top level
+            r#"{ "version": 1, "combined": [], "extra": true }"#,
+            // unknown at combined level
+            r#"{ "version": 1, "combined": [{ "name": "X", "parts": [{ "sprite": "A" }], "foo": 1 }] }"#,
+            // unknown on a Part (mirrorX is a stale schema example)
+            r#"{ "version": 1, "combined": [{ "name": "X", "parts": [{ "sprite": "A", "mirrorX": true }] }] }"#,
+        ] {
+            let e = parse_err(json);
+            assert!(matches!(e, FabError::Json(_)), "got {e:?} for {json}");
+        }
+    }
+
+    #[test]
+    fn rejects_width_height_on_id_method() {
+        // ID never takes a target rect; supplying one is an unused option.
+        let e = parse_err(r#"{ "version": 1, "combined": [{ "name": "X", "parts": [
+            { "sprite": "A", "method": "ID", "width": 1, "height": 1 }
+        ] }] }"#);
+        assert!(matches!(e, FabError::UnusedOption { method: Method::Id, .. }), "got {e:?}");
+    }
+
+    #[test]
+    fn rejects_border_mult_on_methods_without_border() {
+        for method in ["ID", "MX", "MY", "MXY", "TX", "TY"] {
+            let extra = if matches!(method, "ID" | "MX" | "MY" | "MXY") { "" }
+                        else { r#", "width": 4, "height": 1"# };
+            let json = format!(
+                r#"{{ "version": 1, "combined": [{{ "name": "X", "parts": [
+                    {{ "sprite": "A", "method": "{method}", "borderMult": 0.5{extra} }}
+                ] }}] }}"#
+            );
+            let e = parse_err(&json);
+            assert!(matches!(e, FabError::UnusedOption { .. }), "got {e:?} for {method}");
+        }
+    }
+
+    #[test]
+    fn accepts_border_mult_on_methods_with_border() {
+        let m = parse_ok(r#"{ "version": 1, "combined": [{ "name": "X", "parts": [
+            { "sprite": "A", "method": "R3C3", "width": 4, "height": 4, "borderMult": 0.5 }
+        ] }] }"#);
+        match &m.combined[0].parts[0] {
+            Part::AtlasSprite { border_mult, .. } => assert_eq!(*border_mult, 0.5),
+            _ => panic!(),
         }
     }
 

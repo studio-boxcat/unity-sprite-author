@@ -45,12 +45,14 @@ absent, behavior is unchanged. No FFI parameter, no `abi_version` bump.
           "tx": 0, "ty": 0,                  // translation, world units (post-PPU)
           "sx": 1, "sy": 1,                  // scale; negative ⇒ geometric flip (replaces FX/FY/FXY)
           "rotDeg": 0,
-          "mirrorX": false, "mirrorY": false,// UV-mirror duplication; honored only by slice methods
-          "width":  null, "height": null,    // required for non-ID methods (target rect, world units)
+          "width":  null, "height": null,    // target rect, world units. Absent ⇒ native-scale
+                                             //   (UIIconMeshGen path). Present ⇒ slice-fitted
+                                             //   (UISliceMeshGen path). Rejected on ID.
           "partPivot": [0.5, 0.5],           // target-rect pivot, normalized 0..1. Default [0.5,0.5].
                                              //   Box prefabs leave it default; UI hierarchies (e.g.
                                              //   CanvasSpriteAuthor) carry mixed pivots like (0,0.5).
-          "borderMult": 1.0                  // optional, default 1; ignored when method has no border
+          "borderMult": 1.0                  // optional, default 1. Rejected on ID / MX / MY / MXY /
+                                             //   TX / TY (none of them consume a sprite border).
         },
         // --- polygon part (custom verts over a solid sprite) ---
         {
@@ -91,9 +93,17 @@ absent, behavior is unchanged. No FFI parameter, no `abi_version` bump.
     only make sense size-fitted; omitting `width`/`height` on them is a
     parse error.
 - Polygon parts must not declare atlas-sprite-only fields
-  (`method`, `width`, `height`, `borderMult`, `mirrorX`, `mirrorY`,
-  `partPivot`). Mixing the two shapes signals a typo; the parser rejects
-  rather than silently dropping fields.
+  (`method`, `width`, `height`, `borderMult`, `partPivot`). Mixing the
+  two shapes signals a typo; the parser rejects rather than silently
+  dropping fields.
+- Unknown JSON fields anywhere in the manifest are rejected
+  (`deny_unknown_fields`). Typos and stale schema fields surface as
+  parse errors instead of being silently dropped.
+- Options that don't apply to the resolved method are rejected:
+  `width`/`height` on `ID`; `borderMult` on methods that don't consume
+  the sprite's border (`ID`, `MX`, `MY`, `MXY`, `TX`, `TY`). Surface
+  area kept tight so authoring tools (LLMs included) get clear
+  feedback instead of silent data loss.
 
 ### Per-part transform
 

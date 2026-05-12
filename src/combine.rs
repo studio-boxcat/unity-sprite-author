@@ -648,8 +648,6 @@ mod tests {
             part_pivot: [0.5, 0.5],
             border_mult: 1.0,
             affine,
-            mirror_x: false,
-            mirror_y: false,
         }
     }
 
@@ -733,7 +731,6 @@ mod tests {
             part_pivot: [0.5, 0.5],
             border_mult: 1.0,
             affine: Affine::default(),
-            mirror_x: false, mirror_y: false,
         }]);
         let a = quad_entry(0, 0, 1, 1, (0.5, 0.5));
         let err = build_combined(
