@@ -318,6 +318,73 @@ mod tests {
     }
 
     #[test]
+    fn detect_format_recognizes_legacy_trailing_space() {
+        // Legacy189: trailing space after `userData:` (and the other two).
+        let legacy = "fileFormatVersion: 2\n\
+                      guid: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n\
+                      NativeFormatImporter:\n  \
+                        externalObjects: {}\n  \
+                        mainObjectFileID: 21300000\n  \
+                        userData: \n  \
+                        assetBundleName: \n  \
+                        assetBundleVariant: \n";
+        assert_eq!(detect_format(legacy), MetaFormat::Legacy189);
+    }
+
+    #[test]
+    fn detect_format_recognizes_modern_no_trailing_space() {
+        let modern = "fileFormatVersion: 2\n\
+                      guid: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n\
+                      NativeFormatImporter:\n  \
+                        externalObjects: {}\n  \
+                        mainObjectFileID: 21300000\n  \
+                        userData:\n  \
+                        assetBundleName:\n  \
+                        assetBundleVariant:\n";
+        assert_eq!(detect_format(modern), MetaFormat::Modern186);
+    }
+
+    #[test]
+    fn read_existing_texture_rect_size_picks_up_dimensions() {
+        // Synthesize an .asset snippet with a textureRect block that the
+        // pipeline diff path would consult.
+        let dir = std::env::temp_dir().join("uspa_test_read_texrect_sizes");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Foo.asset");
+        let body = "Sprite:\n  \
+                      m_Rect:\n    \
+                        serializedVersion: 2\n    \
+                        x: 0\n    y: 0\n    \
+                        width: 80\n    height: 80\n  \
+                      textureRect:\n    \
+                        serializedVersion: 2\n    \
+                        x: 5\n    y: 7\n    \
+                        width: 78.5\n    height: 79.25\n  \
+                      textureRectOffset: {x: 0, y: 0}\n";
+        std::fs::write(&path, body).unwrap();
+        let got = read_existing_texture_rect_size(&path).unwrap();
+        assert_eq!(got, (78.5, 79.25));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_existing_texture_rect_size_missing_file_returns_none() {
+        let p = std::env::temp_dir().join("uspa_does_not_exist_texrect.asset");
+        let _ = std::fs::remove_file(&p);
+        assert!(read_existing_texture_rect_size(&p).is_none());
+    }
+
+    #[test]
+    fn read_existing_texture_rect_size_no_block_returns_none() {
+        let dir = std::env::temp_dir().join("uspa_test_no_texrect_block");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Bar.asset");
+        std::fs::write(&path, "Sprite:\n  m_Rect:\n    width: 1\n").unwrap();
+        assert!(read_existing_texture_rect_size(&path).is_none());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn resolve_missing_mints_fresh() {
         let path = std::env::temp_dir().join("uspa_does_not_exist.asset.meta");
         let _ = std::fs::remove_file(&path); // ensure absent
