@@ -1,7 +1,6 @@
 pub mod combine;
 pub mod emit;
 pub mod fab;
-pub mod ffi;
 pub mod triangulator;
 pub mod meta;
 pub mod pipeline;

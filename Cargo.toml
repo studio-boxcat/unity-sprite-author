@@ -6,7 +6,7 @@ publish = false
 
 [lib]
 name = "unity_sprite_author"
-crate-type = ["cdylib", "rlib"]
+crate-type = ["rlib"]
 
 # Runtime deps held to serde for the .tps.fab.json manifest (see docs/fab.md).
 # Everything else is hand-rolled: custom YAML emitter, custom hex, std-only
