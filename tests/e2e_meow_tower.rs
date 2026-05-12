@@ -125,6 +125,19 @@ fn e2e_meow_tower_byte_exact() {
     find_tpsheets(&assets_root, &mut tpsheets);
     tpsheets.sort();
 
+    // Post-rlib-pivot, meow-tower checkouts can carry .tps files without
+    // matching .tpsheet siblings (TexturePacker hasn't run since the
+    // BoxcatBridge integration). Skip cleanly in that case — only panic if
+    // we found tpsheets but compared none of them, which would be a real
+    // wiring bug rather than a fixture-state quirk.
+    if tpsheets.is_empty() {
+        eprintln!(
+            "e2e: no .tpsheet files under {}; skipping (run TexturePacker via Unity first).",
+            assets_root.display()
+        );
+        return;
+    }
+
     let mut stats = Stats::default();
     let mut first_mismatches: Vec<(PathBuf, String, &'static str, usize)> = Vec::new();
 
