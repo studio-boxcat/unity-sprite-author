@@ -113,8 +113,10 @@ fn check_method_constraints(
         method,
         reason,
     };
-    // Other methods (ID, MX/MY/MXY, TX, TY) have no source-rect constraints
-    // in v1; slice grids (phase 6) will add their own clauses.
+    // ID, MX/MY/MXY, TX, TY have no source-rect constraints. The clauses
+    // below cover TX_MC3 (an asymmetric tiler) and the slice-grid family
+    // (R1C3 / MX_R1C4 / MX_R3C2 / … MXY_R3C3_NF) — each method asserts
+    // the border layout it expects.
     if matches!(method, Method::TxMc3) {
         if entry.border.left != 0 {
             return Err(err("left border must be 0 (TX_MC3 expects mirrored edges)"));
@@ -1818,7 +1820,7 @@ mod tests {
         ]);
     }
 
-    // --- mirror methods (phase 4) ---
+    // --- mirror methods (MX / MY / MXY) ---
 
     #[test]
     fn mx_doubles_verts_and_indices() {
