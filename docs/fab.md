@@ -128,16 +128,26 @@ The full transform composed onto each part's local-frame vert is the f32
 op sequence Unity uses, in this exact order:
 
 ```
-v_world = ((R(rotDeg) · S(sx, sy) · v) × uiScale) × canvasScale
-        + offset × canvasScale
+v_world = ((R(rotDeg) · S(sx, sy) · v) × uiScale) × canvasScale + m13
         + (tx, ty)
+
+where m13 = fma(canvasScale, rootAnchored + offset, −canvasScale × rootAnchored)
 ```
 
-Matching Unity's `Matrix4x4.MultiplyPoint` (which precomputes the translation
-row as `offset × canvasScale`) is required for byte-exact f32 rounding —
-the algebraically-equivalent `(v_canvas + offset) × canvasScale` rounds 1
-ULP differently. Defaults `uiScale = canvasScale = 1`, `offset = (0, 0)`
-collapse to the SpriteRenderer / Box prefab path `v' = T · R · S · v`.
+`m13` is precomputed once per part with FMA-fused rounding (the f64-
+promotion form in `combine::compute_m13_axis`) to reproduce the residual
+Unity's `Mesh.CombineMeshes` carries on each per-`CombineInstance`
+matrix. The per-vert chain itself uses regular two-step f32 (no FMA at
+that step) — matches Unity's `Matrix4x4.MultiplyPoint`.
+
+For `rootAnchored = (0, 0)` the FMA chain collapses to
+`canvasScale × offset` exactly, so SpriteRenderer / Box prefab callers
+plus any Canvas hierarchy whose root sits at origin are bit-stable.
+For non-origin roots (e.g. Silloutte3 at `(141.8, 370.875)`) the FMA
+residual is what makes the byte-exact match work.
+
+Defaults `uiScale = canvasScale = 1`, `offset = (0, 0)`, `rootAnchored = (0, 0)`
+collapse the full chain to the affine-only path `v' = T · R · S · v`.
 
 For a plain geometric flip set `sx` or `sy` to `-1` — `FX`/`FY`/`FXY`
 methods are rejected at parse time in favor of negative scale.
