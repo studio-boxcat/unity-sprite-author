@@ -1,10 +1,15 @@
-// Byte-exact test against CanvasSpriteAuthor-published Silloutte1.asset.
+// Byte-exact tests against CanvasSpriteAuthor-published `Silloutte{1,2,3}.asset`.
 //
-// The fixture (tests/golden/fab/silloutte/) holds the source atlas + the
-// hand-authored .tps.fab.json. This test stages the fixture into a temp dir,
-// runs pipeline::generate, and diffs the emitted Silloutte1.asset against
-// the committed golden. First divergence is reported with offset + a hex
-// window so the manifest can be iterated on.
+// The fixture (`tests/golden/fab/silloutte/`) holds the shared source atlas
+// (`PremiumCat_Vampire_Popup.{tps, tpsheet, png.meta}`) + the hand-authored
+// `PremiumCat_Vampire_Popup.tps.fab.json` declaring all three combined
+// sprites + the three committed goldens (`Silloutte{1,2,3}.asset(.meta)`).
+//
+// Each `silloutteN_byte_exact` test stages the fixture into a temp dir, runs
+// `pipeline::generate`, and diffs the emitted `SilloutteN.asset` against the
+// committed golden. First divergence is reported with offset + a hex window
+// so the manifest can be iterated on. All three currently pass; runs in
+// default `cargo test` (no `--include-ignored` needed).
 
 use std::fs;
 use std::path::{Path, PathBuf};
