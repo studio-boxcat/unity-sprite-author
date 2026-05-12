@@ -216,10 +216,12 @@ Slots into the existing two-phase commit (see the "Public Rust API" /
   emission loop. Their on-disk `.asset` predecessors (if any) are pruned as
   orphans in phase 2 — no special-case code needed.
 
-## Phasing
+## Phasing — shipped
 
-Each phase ends with cargo test green and a unit fixture covering the new
-path.
+All seven phases landed; this section is kept as a record of which methods
+arrived in which order (useful when bisecting against the meow-tower
+corpus). Each phase landed with `cargo test` green and a unit fixture
+covering the new path.
 
 1. `src/fab.rs` + serde model + schema validation. ✓
 2. Triangulator + polygon-only combine path. ✓
