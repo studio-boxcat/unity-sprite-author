@@ -172,9 +172,11 @@ buffers, so the resulting `m_IndexBuffer` runs back-to-front):
 
 1. **Atlas-sprite part**: source verts/UVs/tris from the tpsheet entry; the
    `method` produces local-frame output (slice / tile / mirror).
-2. **Polygon part**: triangulate `vertices` via ear-clipping; UVs all sample
-   the polygon sprite's atlas-rect center.
-3. Apply `T · R · S` to verts.
+2. **Polygon part**: triangulate `vertices` via ear-clipping (or use the
+   `triangles` override); UVs all sample the polygon sprite's atlas-rect center.
+3. Apply `combine::apply_transform` to each vert — the full canvas chain
+   from "Per-part transform" above (per-part affine → uiScale → canvasScale + m13),
+   not just `T · R · S`.
 4. Append verts/uvs/tris into the combined buffer with index offset.
 
 Sprite field mapping follows the existing tpsheet → Sprite `.asset` field-map
@@ -200,8 +202,8 @@ table in [[CLAUDE.md]] with these deltas:
 
 ## Pipeline integration
 
-Slots into the existing two-phase commit (see the C# ↔ Rust contract section
-of [[CLAUDE.md]]) — landed. Phase-1 deltas:
+Slots into the existing two-phase commit (see the "Public Rust API" /
+"Invariants" sections of [[CLAUDE.md]]) — landed. Phase-1 deltas:
 
 - `pipeline::generate` looks for `<tps_path>.fab.json` next to the `.tps`.
   Present → `fab::parse` (`FabError` propagates as `pipeline::Error::Fab`);
