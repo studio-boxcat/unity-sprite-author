@@ -39,6 +39,10 @@ impl fmt::Display for MetaError {
 
 impl std::error::Error for MetaError {}
 
+/// Pull the 16-byte GUID out of a Unity `.meta` payload. Works on any
+/// `.meta` (`.png.meta`, `.asset.meta`, etc.) since the `guid:` line
+/// shape is shared. Returns [`MetaError::NoGuidField`] if missing,
+/// [`MetaError::InvalidGuid`] if the hex is malformed.
 pub fn parse_guid(meta_text: &str) -> Result<[u8; 16], MetaError> {
     for line in meta_text.lines() {
         if let Some(rest) = line.strip_prefix("guid: ") {
@@ -60,6 +64,8 @@ fn parse_guid_hex(hex: &str) -> Result<[u8; 16], MetaError> {
     Ok(out)
 }
 
+/// Read a Unity `.meta` file from disk and extract the GUID via
+/// [`parse_guid`].
 pub fn read_guid<P: AsRef<Path>>(meta_path: P) -> Result<[u8; 16], MetaError> {
     let text = fs::read_to_string(meta_path).map_err(MetaError::Io)?;
     parse_guid(&text)
@@ -99,6 +105,10 @@ impl MetaShape {
     };
 }
 
+/// Detect the [`MetaFormat`] (trailing-space style) of an existing
+/// `.asset.meta` payload by sniffing the `userData:` line. For
+/// preserve-branch rewrites; fresh mints unconditionally use
+/// [`MetaFormat::Modern186`].
 pub fn detect_format(meta_text: &str) -> MetaFormat {
     if meta_text.contains("  userData: \n") {
         MetaFormat::Legacy189
@@ -107,6 +117,9 @@ pub fn detect_format(meta_text: &str) -> MetaFormat {
     }
 }
 
+/// Detect the full [`MetaShape`] (format + `mainObjectFileID`) of an
+/// existing `.asset.meta`. Defaults `mainObjectFileID` to `21300000`
+/// (the Sprite class fileID) when the line is missing or unparseable.
 pub fn detect_shape(meta_text: &str) -> MetaShape {
     let mut id = 21300000_i64;
     for line in meta_text.lines() {
@@ -123,6 +136,10 @@ pub fn detect_shape(meta_text: &str) -> MetaShape {
     }
 }
 
+/// Render a sprite `.asset.meta` for `guid` in the exact `shape`. The
+/// canonical entry point used by the preserve branch (which threads the
+/// detected shape through) — the simpler [`render_asset_meta`] wraps
+/// this with [`MetaShape::FRESH`] for the mint path.
 pub fn render_asset_meta_with_shape(guid: &[u8; 16], shape: MetaShape) -> String {
     let trail = match shape.format {
         MetaFormat::Modern186 => "",

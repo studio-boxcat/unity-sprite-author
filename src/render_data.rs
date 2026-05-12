@@ -69,6 +69,11 @@ pub fn pixel_to_local(v: Vertex, rect: Rect, pivot: Pivot, vertex_scale: f32) ->
     }
 }
 
+/// Normalize an atlas-pixel vertex to UV coordinates against the
+/// texture's `(atlas_w, atlas_h)` size. Used by [`build`] for the
+/// tpsheet path; the fab path uses pre-computed UVs from
+/// [`crate::combine::atlas_sprite_mesh`] / `polygon_mesh_with_tris` so
+/// the per-sprite multiply-by-reciprocal trick can be applied.
 pub fn pixel_to_uv(v: Vertex, rect: Rect, atlas_w: u32, atlas_h: u32) -> Uv {
     Uv {
         u: (rect.x as f32 + v.x) / atlas_w as f32,
@@ -76,10 +81,17 @@ pub fn pixel_to_uv(v: Vertex, rect: Rect, atlas_w: u32, atlas_h: u32) -> Uv {
     }
 }
 
+/// Round `bytes` up to the next 16-byte boundary. Used to size the
+/// position-stream padding before the UV stream in `_typelessdata`
+/// (Unity's typelessdata layout has stream 0 padded up to 16 bytes).
 pub fn align_to_16(bytes: usize) -> usize {
     bytes.div_ceil(16) * 16
 }
 
+/// Encode position + UV streams into the Unity Sprite `_typelessdata`
+/// hex string. Layout: stream 0 = positions (`vec3 f32` LE, packed),
+/// padded up to a 16-byte boundary; stream 1 = UVs (`vec2 f32` LE).
+/// Returns `(hex_string, total_bytes)` — the latter feeds `m_DataSize`.
 pub fn encode_typelessdata(positions: &[Position3], uvs: &[Uv]) -> (String, usize) {
     debug_assert_eq!(positions.len(), uvs.len());
     let vertex_count = positions.len();
@@ -165,6 +177,8 @@ pub fn build_fabricated(
     }
 }
 
+/// Encode a `u16` triangle-index slice into the Unity Sprite
+/// `m_IndexBuffer` hex string (`u16` LE per index).
 pub fn encode_index_buffer(indices: &[u16]) -> String {
     let mut buf = Vec::with_capacity(indices.len() * 2);
     for &i in indices {
@@ -179,6 +193,11 @@ pub struct AtlasSize {
     pub height: u32,
 }
 
+/// Build [`RenderData`] for a tpsheet (atlas-sprite) path sprite. The
+/// caller has the sprite's `rect` / `pivot` / `vertices` / `indices`
+/// from [`tpsheet::parse`] and the atlas PPU + per-sprite `spriteScale`
+/// from the `.png.meta` / `.tps` siblings. For combined-mesh sprites use
+/// [`build_fabricated`] instead, which takes pre-computed verts / UVs.
 pub fn build(
     rect: Rect,
     pivot: Pivot,
