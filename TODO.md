@@ -59,3 +59,21 @@ Old m_Offset analysis (kept for history; ignore the "unsolved" framing):
 
 - Plugin reload requires Editor restart on dylib commit. Document; consider a build-stamp the wrapper logs at startup.
 - macOS Gatekeeper / quarantine xattr handling on first checkout.
+
+## `.tps.fab.json` follow-ups
+
+> See [[fab.md]] for the v1 contract.
+
+Deferred from v1:
+
+- **Color-PNG synthesis**: when a polygon part's `polygonSprite` is missing from the atlas and the name matches `Color_RRGGBBFF`, synthesize the pixel PNG into the source `Sprites_Export~/` so the next TexturePacker pack picks it up. Mirrors `CanvasSpriteAuthor.ReplaceColorTextures` / `ColorTextureUtils.CreateTexture`. Probably a separate CLI step rather than inside `generate()`, since `generate` runs *after* TP and shouldn't trigger a re-pack from the C# postprocessor path.
+- **Standalone exporter** from meow-tower `BoxAuthor` / `SpriteMeshAuthor` tree to bootstrap manifests for the 39 existing box prefabs.
+- **`keepStandalone` allowlist** if a part ever needs both standalone and combined emission. Otherwise rename in TexturePacker.
+- **Bilinear UV sampling for polygon parts** (UV maps 0..1 onto `polygonSprite`'s full atlas rect). Defer until a non-solid polygon part appears.
+- **`FX`/`FY`/`FXY` method aliases** that desugar to negative `sx`/`sy`. Skipped in v1 to keep one obvious way.
+
+Open contract questions:
+
+- **Explicit FFI input for manifest path?** v1 uses implicit discovery (`<tps_path>.fab.json`). Alternative: add `const char* fab_path` to `GenerateInputs` and bump `abi_version`. Implicit matches how `.png.meta` / `.tps.meta` siblings are already discovered, so no reason to flip unless C# needs to override.
+- **Skip-write-if-equal cost on fabricated sprites**: combined sprites have larger byte payloads (multi-part mesh) so the read cost is proportionally larger but still cheap. Re-measure after Phase 3 lands; only revisit if a fixture pushes total emission time noticeably.
+- **`textureRect.{w,h}` on first emit vs re-emit for fabricated sprites**: v1 sets `textureRect == m_Rect` on first emit (no Unity tightness pass to reproduce, since Unity never created the asset) and preserves on-disk on re-emit. Confirm with a real fixture that subsequent re-emits don't churn `textureRect` bytes; if they do, drop the preserve branch for fabricated sprites entirely and always re-emit.
