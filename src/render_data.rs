@@ -1,7 +1,11 @@
-// Mesh encoding for the Sprite m_RD block. Ported from
-// prefab-saloon/src/lib/sprite/generator.ts. Verified byte-exact for
-// m_IndexBuffer (4 fixtures); typelessdata is byte-exact for IEEE-754
-// inputs that round-trip.
+// Mesh encoding for the Sprite m_RD block. Seeded from
+// prefab-saloon/src/lib/sprite/generator.ts; has since diverged to add
+// `build_fabricated` (for combined-mesh sprites) and the
+// multiply-by-precomputed-reciprocal `pixel_to_local` that matches Unity's
+// f32 rounding bit-for-bit. Byte-exact on every committed fixture —
+// Cake__DecoLeft (atlas-sprite path via `build`), Silloutte1/2/3
+// (fabricated path via `build_fabricated`), and the full Orgel
+// golden_parity corpus.
 
 use crate::tpsheet::{Pivot, Rect, Vertex};
 use crate::yaml::hex_encode;
