@@ -75,25 +75,50 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+/// Inputs to [`generate`]. All paths must be absolute (or resolvable from
+/// the process's working directory); the pipeline does no path-walking
+/// beyond what's spelled out here.
 pub struct GenerateInputs<'a> {
+    /// The TexturePacker-emitted `.tpsheet` to consume. Deleted on success.
     pub tpsheet_path: &'a Path,
+    /// Sibling `.tps`. Used to read per-sprite `spriteScale`; not modified.
     pub tps_path: &'a Path,
+    /// Sibling atlas `.png`. The pipeline reads `<atlas>.png.meta` next to
+    /// it for the texture's GUID; the `.png` itself is not opened.
     pub atlas_png_path: &'a Path,
+    /// Output directory for per-sprite `.asset` + `.asset.meta` files.
+    /// Existing files are preserved via the skip-write-if-equal path;
+    /// orphans (no longer referenced by `tpsheet`) are pruned.
     pub sprite_dir: &'a Path,
+    /// Filename prefix prepended to every output sprite (empty string OK).
+    /// Read from `TPSImporter._prefix` on the sibling `.tps.meta` by the
+    /// C# postprocessor, then passed through here.
     pub prefix: &'a str,
+    /// Pixels-per-unit from the atlas's `TextureImporter.spritePixelsPerUnit`.
     pub ppu: f32,
 }
 
+/// Result of a successful [`generate`] call. The caller routes each path
+/// through `AssetDatabase.ImportAsset` / `AssetDatabase.DeleteAsset` to
+/// notify Unity of the filesystem changes.
 #[derive(Debug, Default)]
 pub struct GenerateOutput {
-    // Sprite .asset paths newly written or updated. C# calls
-    // AssetDatabase.ImportAsset(p, ForceUpdate) on each.
+    /// Sprite `.asset` paths newly written or updated. Call
+    /// `AssetDatabase.ImportAsset(p, ForceUpdate)` on each in C#.
     pub written_paths: Vec<PathBuf>,
-    // Pruned .asset paths + the consumed .tpsheet + .tpsheet.meta. C# calls
-    // AssetDatabase.DeleteAsset on each.
+    /// Pruned `.asset` paths plus the consumed `.tpsheet` + `.tpsheet.meta`.
+    /// Call `AssetDatabase.DeleteAsset` on each in C#.
     pub deleted_paths: Vec<PathBuf>,
 }
 
+/// Author Unity Sprite `.asset` files byte-exactly from a TexturePacker
+/// `.tpsheet` + `.tps` + atlas `.png`. Sole entry point of the crate; the
+/// BoxcatBridge cdylib in meow-tower wraps this for C#.
+///
+/// All-or-nothing: any error in phase 1 (parse / build) leaves the
+/// filesystem untouched; phase-2 failures clean up `.tmp` siblings and
+/// leave the original files. See CLAUDE.md "Public Rust API" /
+/// "Invariants" for the two-phase commit semantics.
 pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
     // ---- Phase 1: pure compute ------------------------------------------
 
