@@ -142,15 +142,45 @@ sprite — that list becomes the spec for the new emit branch.
 y-coordinate in `Silloutte3.asset` is shifted by ~1 ULP (at scale 1.0, = 2⁻²³)
 relative to a pure `v_canvas × canvasScale + offset × canvasScale` Rust chain.
 Silloutte1 + Silloutte2 (root at origin) pass byte-exactly; only Silloutte3 drifts.
-60/184 position-stream f32s differ; UVs are all byte-exact. The shift is uniform
-(not per-part), so it's almost certainly an artifact of Unity's matrix chain.
+60/184 position-stream f32s differ; UVs are all byte-exact. X is byte-exact even
+though root anchored x is also non-zero (141.8) — only the **y** column diverges,
+and it does so uniformly across every part. This rules out a per-mesh-gen-method
+artifact; the bug lives in the per-`CombineInstance` matrix.
 
-**Hypothesis.** Each child's mesh transform is computed as
-`parent_world_matrix * child_local_matrix`. With root anchored ≠ 0, the parent
-matrix's translation row carries `root.anchored × canvasScale = 3.70875` of
-precision-eating noise. When the Sprite emit re-localizes into the sprite's
-own frame, the round-trip `(v_world + root_world_offset) − root_world_offset`
-shifts every vert by ~1 ULP at scale 1.0.
+**Source-walk findings** (via the UnityCsReference + meow-tower decompiler stack):
+
+- `meow-tower/Packages/com.boxcat.libs/Core/Runtime/SpriteMeshAuthoring/CanvasSpriteAuthor.cs:74-89`
+  builds each `CombineInstance.transform` as `baseMatrix * g.transform.localToWorldMatrix`,
+  where `baseMatrix = Matrix4x4.Scale(scaleFactor) * t.worldToLocalMatrix`.
+- `UnityCsReference/Runtime/Export/Math/Matrix4x4.cs:190-214` defines `operator *`
+  with left-to-right f32 sums. Walking the algebra for Silloutte3's `Image` part
+  (anchored 0 from root, root at world `(141.8, 370.875)`) yields the y-translation
+  row `cis.m13 = 0.01 * 370.875 + (-3.70875) * 1 = 3.70875 + −3.70875 = 0` exactly
+  in f32 (both operands are exactly representable; cancellation is bit-exact). The
+  scale row `cis.m11 = 0.01` is also unchanged.
+- `Matrix4x4.MultiplyPoint` at line 296 then computes `res.y = 0.01 * −66.875 + 0`
+  which rounds to `0xbf2b3333` — exactly what this crate emits, and **not** what
+  the golden has.
+- `Mesh.CombineMeshes` (Mesh.cs:1753) routes through `CombineMeshesImpl`, a native
+  binding. **Source not available.**
+
+**Hypothesis.** The 1-ULP drift originates inside Unity's native `CombineMeshes`,
+which almost certainly uses SIMD horizontal sums and/or FMA when transforming
+vertices. An FMA chain along `fma(m11, rhs.m13, m13_partial)` with `m11 = f32(0.01)
+≈ 0.009999999776...` (not exactly 0.01) leaves a residual `m13 ≈ −9.24e-8` instead
+of zero. That makes top verts match the golden (`0x3f2b3331`) but bottom verts
+still drift another ULP, so even the FMA-only theory doesn't fully close the gap.
+A precise reproduction needs the actual matrix Unity feeds into CombineMeshesImpl
+plus whatever SIMD shuffle that fn uses.
+
+X is byte-exact because for Silloutte3 the **y**-row of the matrix is the only
+one whose translation column carries non-trivial cancellation. The x-row's
+translation is also `0.01 * 141.8 + −1.418 ≈ 0`, but `141.8` is **not** exactly
+representable in f32 (`0x43018ccd`), so the f32 cancellation of
+`0.01 * f32(141.8) + −f32(0.01 * 141.8)` ends up giving exactly zero in a way the
+y-row's exactly-representable `370.875` doesn't. (Counter-intuitive: the
+non-exact f32 input cancels cleanly because the same rounded value is on both
+sides; the exactly-representable one exposes the multiply-then-cancel noise.)
 
 **Procedure.**
 
