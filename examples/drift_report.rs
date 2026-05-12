@@ -62,7 +62,7 @@ fn is_legacy(meta_text: &str) -> bool {
     tt == Some(8) && sm == Some(2)
 }
 
-// Return the first 3 lines that differ (left = golden, right = ours).
+// Return the first `max` lines that differ (left = golden, right = ours).
 fn line_diff(golden: &str, ours: &str, max: usize) -> Vec<(usize, String, String)> {
     let g: Vec<&str> = golden.lines().collect();
     let o: Vec<&str> = ours.lines().collect();
