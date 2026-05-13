@@ -1,9 +1,6 @@
 var sb = new System.Text.StringBuilder();
-string[] paths = {
-    "Assets/21_Collections/PremiumCatEvents/33_Vampire/Elements/Ornaments/Silloutte1.prefab",
-    "Assets/21_Collections/PremiumCatEvents/33_Vampire/Elements/Ornaments/Silloutte2.prefab",
-    "Assets/21_Collections/PremiumCatEvents/33_Vampire/Elements/Ornaments/Silloutte3.prefab",
-};
+var paths = System.IO.File.ReadAllLines("/tmp/csa-prefabs-only.txt")
+    .Where(s => s.Trim().Length > 0).ToArray();
 
 string BitsHex(float v) => System.BitConverter.SingleToInt32Bits(v).ToString("X8");
 string AssetGuid(UnityEngine.Object o) {
@@ -82,6 +79,13 @@ foreach (var pp in paths) {
         sb.AppendLine("    local_scale=" + ls.x.ToString("R") + "," + ls.y.ToString("R") + "," + ls.z.ToString("R"));
         sb.AppendLine("    rel_m03=" + rel.m03.ToString("R") + " bits=0x" + BitsHex(rel.m03));
         sb.AppendLine("    rel_m13=" + rel.m13.ToString("R") + " bits=0x" + BitsHex(rel.m13));
+        // Native sprite size in pixels (from tpsheet rect). For UISlice
+        // size-fitted parts, fab.md requires us to encode sx/sy = sizeDelta /
+        // (nativeSize × uiScale / 100) — or migrate to native-scale ID with
+        // computed stretch — depending on whether method ∈ {ID, MX, MY, MXY}
+        // (native-scale) or the slice methods (size-fitted).
+        var nativeRect = sprite ? sprite.rect.size : Vector2.zero;
+        sb.AppendLine("    native_size=" + nativeRect.x.ToString("R") + "," + nativeRect.y.ToString("R"));
     }
 
     UnityEngine.Object.DestroyImmediate(canvasGO);

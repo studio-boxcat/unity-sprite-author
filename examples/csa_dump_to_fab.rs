@@ -63,6 +63,7 @@ struct Leaf {
     pivot: [f32; 2],
     rel_m03: f32,
     rel_m13: f32,
+    native_size: [f32; 2],
 }
 
 fn parse_floats<const N: usize>(s: &str) -> [f32; N] {
@@ -139,6 +140,7 @@ fn parse_dump(text: &str) -> Vec<PrefabDump> {
                     let v = val.split_whitespace().next().unwrap_or("0");
                     l.rel_m13 = v.parse().unwrap_or(0.0);
                 }
+                "native_size" => l.native_size = parse_floats(val),
                 k if k.starts_with("method_name") => {
                     // line is "method_name=NAME method_val=NUM"
                     let mut parts = val.split_whitespace();
@@ -212,7 +214,7 @@ fn emit_part_polygon(l: &Leaf) -> String {
         s.push_str(&format!("[{}, {}]", fmt_f(v[0]), fmt_f(v[1])));
     }
     s.push_str("],\n          \"triangles\": [0, 2, 3, 3, 1, 0]");
-    let off = [l.anchored[0], l.anchored[1]];
+    let off = [l.rel_m03, l.rel_m13];
     if off != [0.0, 0.0] {
         s.push_str(&format!(",\n          \"offset\": [{}, {}]", fmt_f(off[0]), fmt_f(off[1])));
     }
@@ -280,18 +282,44 @@ fn emit_part_atlas_native(l: &Leaf) -> String {
         s.push_str(&format!(", \"sy\": {}", fmt_f(sy)));
     }
     s.push_str(&format!(",\n          \"uiScale\": {}", fmt_f(l.scale_factor)));
-    s.push_str(&format!(", \"offset\": [{}, {}] }}", fmt_f(l.anchored[0]), fmt_f(l.anchored[1])));
+    s.push_str(&format!(", \"offset\": [{}, {}] }}", fmt_f(l.rel_m03), fmt_f(l.rel_m13)));
     s
 }
 
 fn emit_part_atlas_slice(l: &Leaf) -> String {
+    // UISlice.Identity (UISliceMethod=9) doesn't slice — it stretches a single
+    // quad to sizeDelta. The fab schema rejects `ID + width/height`, so we
+    // migrate to native-scale with explicit sx/sy = sizeDelta / native_size
+    // (PPU and uiScale cancel: UISlice has no _scaleFactor and CSA's
+    // SpriteFactory.CreateFromMesh uses ppu=100, so the native-scale UIIcon
+    // path at uiScale=100 maps native pixels 1:1 to canvas pixels).
+    if l.method_val == 9 {
+        let bare_sprite = strip_prefix_guess(&l.sprite_name);
+        let (sx, sy) = if l.native_size[0] > 0.0 && l.native_size[1] > 0.0 {
+            (l.size_delta[0] / l.native_size[0], l.size_delta[1] / l.native_size[1])
+        } else {
+            (1.0, 1.0)
+        };
+        let mut s = String::new();
+        s.push_str(&format!("        {{ \"sprite\": \"{}\", \"method\": \"ID\"", bare_sprite));
+        if (sx - 1.0).abs() > 1e-9 {
+            s.push_str(&format!(", \"sx\": {}", fmt_f(sx)));
+        }
+        if (sy - 1.0).abs() > 1e-9 {
+            s.push_str(&format!(", \"sy\": {}", fmt_f(sy)));
+        }
+        s.push_str(&format!(",\n          \"uiScale\": 100"));
+        s.push_str(&format!(", \"offset\": [{}, {}] }}", fmt_f(l.rel_m03), fmt_f(l.rel_m13)));
+        return s;
+    }
+
     let method = ui_slice_method_name(l.method_val);
     let bare_sprite = strip_prefix_guess(&l.sprite_name);
     let mut s = String::new();
     s.push_str(&format!("        {{ \"sprite\": \"{}\", \"method\": \"{}\"", bare_sprite, method));
     s.push_str(&format!(",\n          \"width\": {}, \"height\": {}", fmt_f(l.size_delta[0]), fmt_f(l.size_delta[1])));
     s.push_str(&format!(",\n          \"uiScale\": {}", fmt_f(l.scale_factor)));
-    s.push_str(&format!(", \"offset\": [{}, {}]", fmt_f(l.anchored[0]), fmt_f(l.anchored[1])));
+    s.push_str(&format!(", \"offset\": [{}, {}]", fmt_f(l.rel_m03), fmt_f(l.rel_m13)));
     if (l.border_mult - 1.0).abs() > 1e-6 {
         s.push_str(&format!(", \"borderMult\": {}", fmt_f(l.border_mult)));
     }
