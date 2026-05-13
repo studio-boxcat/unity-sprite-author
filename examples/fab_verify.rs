@@ -13,6 +13,22 @@
 //      golden, reports first divergence with hex window.
 //
 // Doesn't touch meow-tower. Caller copies / regen `.tpsheet` separately.
+//
+// Canonical reproductions:
+//
+//   Silloutte (byte-exact, no divergence):
+//     cargo run --example fab_verify -- \
+//       --atlas-tps tests/golden/fab/silloutte/PremiumCat_Vampire_Popup.tps \
+//       --fab-json  tests/golden/fab/silloutte/PremiumCat_Vampire_Popup.tps.fab.json \
+//       --combined Silloutte1:tests/golden/fab/silloutte/Silloutte1.asset \
+//       --combined Silloutte2:tests/golden/fab/silloutte/Silloutte2.asset \
+//       --combined Silloutte3:tests/golden/fab/silloutte/Silloutte3.asset
+//
+//   PA_InfinitePencil_Clock (5-ULP m_Rect.height divergence — Phase 1b gap):
+//     cargo run --example fab_verify -- \
+//       --atlas-tps tests/golden/fab/pa_clock/PencilAdPopup_InfinitePencil.tps \
+//       --fab-json  tests/golden/fab/pa_clock/PencilAdPopup_InfinitePencil.tps.fab.json \
+//       --combined PA_InfinitePencil_Clock:tests/golden/fab/pa_clock/PA_InfinitePencil_Clock.asset
 
 use std::fs;
 use std::path::{Path, PathBuf};

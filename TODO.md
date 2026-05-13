@@ -4,6 +4,25 @@
 
 Deferred items surfaced during planning.
 
+## CSA migration — Phase 1b residual
+
+- **5-ULP Y-axis divergence on non-Silloutte combined sprites.** Pinned
+  fixture `tests/golden/fab/pa_clock/` (PA_InfinitePencil_Clock —
+  6 UIIcon parts including FX/MXY methods + 1 UISolid color polygon).
+  `cargo run --example fab_verify -- --atlas-tps … --fab-json … --combined …`
+  reproduces the divergence at offset 321: `m_Rect.height` 540.66345 →
+  540.66296, cascading into `m_Offset.y` and `m_Pivot.y`. X-axis fields
+  (`m_Rect.width: 529.075`) match byte-exact. Likely root cause: f32
+  rounding noise in one of the Y-axis vertex transforms that isn't
+  exercised by the Silloutte 1/2/3 oracles (Silloutte parts use MX
+  exclusively; PA mixes ID, FX-desugared, and MXY). Same magnitude/shape
+  as the legacy `m_Offset` Y residue tracked elsewhere in this file.
+  Closing this is the gate to claiming 100% byte-exactness for the 58
+  CSA prefabs and starting Phase 3 (authoring code deletion). Migration
+  tooling itself (`examples/csa_dumper.cs` + `examples/csa_dump_to_fab.rs`)
+  produces 20/20 structurally valid manifests; the gap is in the
+  pipeline's emit path for this prefab shape, not in the migration.
+
 ## Byte-exactness gaps to validate
 
 - ~~**`textureRect` sub-pixel shrink for some polygon-trimmed sprites.**~~ **SOLVED** (commit `285f264`), then **SUPERSEDED** (commit `17659b1`): preserve replaced with a hard `Error::TextureRectDivergence`. The 3 FriendInvite emoji sprites that had defended the preserve branch have been regenerated under `spriteMode: 1` (textureRect == m_Rect). Corpus is 100% byte-exact with one less code path.
