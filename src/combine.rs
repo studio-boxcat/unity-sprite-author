@@ -2935,6 +2935,41 @@ mod tests {
     }
 
     #[test]
+    fn compute_m13_axis_depth2_uses_leaf_world_y_offset() {
+        // AlbumSticker_Ghost1's SP is a grandchild of root via Body. Body has
+        // `pivot.y = 0.4515571`, sizeDelta.y = 181, anchored y = 0 — its local
+        // origin sits 0.0484429 × 181 = 8.768 units above its rect's center,
+        // which propagates to SP's world position. SP's `anchoredPosition.y`
+        // is `-36.7`, but its *world* y (in root frame) is `-27.93184` once
+        // Body's pivot offset is folded in.
+        //
+        // Probed in Unity (Canvas-parented `AlbumSticker_Ghost1 (Author).prefab`):
+        //   g.localToWorldMatrix.m13 = -27.93184 (0xC1DF7466)
+        //   cis.m13                  = -0.2793183 (0xBE8F02D0)
+        //
+        // The migration tool's contract: for every leaf graphic, query Unity
+        // for `localToWorldMatrix.m13` (Canvas-parented) and pass it as
+        // `leaf.world − root.world` into `compute_m13_axis`. The existing
+        // single-FMA helper handles any nesting depth via that path — no
+        // multi-level matrix product needed in rust.
+        let cs = 0.01_f32;
+        // The decimal literal `-27.93184_f32` rounds to 0xC1DF7469 in Rust;
+        // Unity computes the same logical value through its RectTransform
+        // pivot chain and lands on 0xC1DF7466 (3 ULPs lower). Use the exact
+        // bits Unity reports — the migration tool will read them straight
+        // out of `g.localToWorldMatrix.m13` rather than parsing decimals.
+        let leaf_world_y = f32::from_bits(0xC1DF7466);
+        // Root at world origin → no FMA residual; collapses to cs × leaf_world_y.
+        let got = compute_m13_axis(cs, 0.0, leaf_world_y);
+        assert_eq!(
+            got.to_bits(),
+            0xBE8F02D0,
+            "AlbumSticker_Ghost1 SP grandchild: got 0x{:08x}, want 0xBE8F02D0",
+            got.to_bits()
+        );
+    }
+
+    #[test]
     fn apply_transform_affine_scale_runs_before_canvas_chain() {
         // sx=-1 (the only non-1 affine scale Silloutte1 uses) flips the
         // input before the × ui_scale step. v=0.5 → ×-1 → -0.5 → ×100 → -50.
