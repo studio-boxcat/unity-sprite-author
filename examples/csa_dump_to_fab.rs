@@ -42,6 +42,7 @@ struct PrefabDump {
     prefab_path: String,
     output_sprite_path: String,
     atlas_png_guid: String,
+    atlas_prefix: String,
     scale_factor: f32,
     root_anchored: [f32; 2],
     leaves: Vec<Leaf>,
@@ -116,6 +117,7 @@ fn parse_dump(text: &str) -> Vec<PrefabDump> {
             match key {
                 "output_sprite_path" => p.output_sprite_path = val.to_string(),
                 "atlas_png_guid" => p.atlas_png_guid = val.to_string(),
+                "atlas_prefix" => p.atlas_prefix = val.to_string(),
                 "scale_factor" => p.scale_factor = val.parse().unwrap_or(0.0),
                 "root_anchored" => p.root_anchored = parse_floats(val),
                 _ => {}
@@ -173,21 +175,11 @@ fn polygon_vertices(size: [f32; 2], pivot: [f32; 2]) -> [[f32; 2]; 4] {
     [[xmin, ymin], [xmax, ymin], [xmin, ymax], [xmax, ymax]]
 }
 
-fn strip_prefix_guess<'a>(sprite_name: &'a str) -> &'a str {
-    // Sprite names dump-side carry the atlas `_prefix` (e.g. "PE_33_Mansion_…").
-    // fab.json wants the bare tpsheet entry name. We don't have the atlas's
-    // `.tps.meta` here, so strip the longest leading `[A-Z0-9]+_` run that
-    // matches a known prefix shape. Caller can override per-atlas if needed.
-    // For Silloutte / meow-tower convention: prefix is uppercase + digits + '_'.
-    let mut last_us = 0usize;
-    for (i, &b) in sprite_name.as_bytes().iter().enumerate() {
-        if b == b'_' {
-            last_us = i + 1;
-        } else if !(b.is_ascii_uppercase() || b.is_ascii_digit()) {
-            break;
-        }
-    }
-    &sprite_name[last_us..]
+fn strip_prefix<'a>(sprite_name: &'a str, prefix: &str) -> &'a str {
+    // Dumper writes Unity's on-disk asset name; fab.json wants the tpsheet
+    // entry name. The atlas's `_prefix` (from TPSImporter on .tps.meta)
+    // is the literal string to strip. Empty prefix → keep full name.
+    sprite_name.strip_prefix(prefix).unwrap_or(sprite_name)
 }
 
 fn fmt_f(v: f32) -> String {
@@ -201,11 +193,11 @@ fn fmt_f(v: f32) -> String {
     }
 }
 
-fn emit_part_polygon(l: &Leaf) -> String {
+fn emit_part_polygon(l: &Leaf, prefix: &str) -> String {
     let verts = polygon_vertices(l.size_delta, l.pivot);
     let mut s = String::new();
     s.push_str("        { \"polygonSprite\": \"");
-    s.push_str(strip_prefix_guess(&l.sprite_name));
+    s.push_str(strip_prefix(&l.sprite_name, prefix));
     s.push_str("\",\n          \"vertices\": [");
     for (i, v) in verts.iter().enumerate() {
         if i > 0 {
@@ -270,9 +262,9 @@ fn ui_slice_method_name(val: i32) -> &'static str {
     }
 }
 
-fn emit_part_atlas_native(l: &Leaf) -> String {
+fn emit_part_atlas_native(l: &Leaf, prefix: &str) -> String {
     let (method, sx, sy) = ui_mesh_mode_name(l.method_val);
-    let bare_sprite = strip_prefix_guess(&l.sprite_name);
+    let bare_sprite = strip_prefix(&l.sprite_name, prefix);
     let mut s = String::new();
     s.push_str(&format!("        {{ \"sprite\": \"{}\", \"method\": \"{}\"", bare_sprite, method));
     if sx != 1.0 {
@@ -286,7 +278,7 @@ fn emit_part_atlas_native(l: &Leaf) -> String {
     s
 }
 
-fn emit_part_atlas_slice(l: &Leaf) -> String {
+fn emit_part_atlas_slice(l: &Leaf, prefix: &str) -> String {
     // UISlice.Identity (UISliceMethod=9) doesn't slice — it stretches a single
     // quad to sizeDelta. The fab schema rejects `ID + width/height`, so we
     // migrate to native-scale with explicit sx/sy = sizeDelta / native_size
@@ -294,7 +286,7 @@ fn emit_part_atlas_slice(l: &Leaf) -> String {
     // SpriteFactory.CreateFromMesh uses ppu=100, so the native-scale UIIcon
     // path at uiScale=100 maps native pixels 1:1 to canvas pixels).
     if l.method_val == 9 {
-        let bare_sprite = strip_prefix_guess(&l.sprite_name);
+        let bare_sprite = strip_prefix(&l.sprite_name, prefix);
         let (sx, sy) = if l.native_size[0] > 0.0 && l.native_size[1] > 0.0 {
             (l.size_delta[0] / l.native_size[0], l.size_delta[1] / l.native_size[1])
         } else {
@@ -314,7 +306,7 @@ fn emit_part_atlas_slice(l: &Leaf) -> String {
     }
 
     let method = ui_slice_method_name(l.method_val);
-    let bare_sprite = strip_prefix_guess(&l.sprite_name);
+    let bare_sprite = strip_prefix(&l.sprite_name, prefix);
     let mut s = String::new();
     s.push_str(&format!("        {{ \"sprite\": \"{}\", \"method\": \"{}\"", bare_sprite, method));
     s.push_str(&format!(",\n          \"width\": {}, \"height\": {}", fmt_f(l.size_delta[0]), fmt_f(l.size_delta[1])));
@@ -327,11 +319,11 @@ fn emit_part_atlas_slice(l: &Leaf) -> String {
     s
 }
 
-fn emit_part(l: &Leaf) -> Option<String> {
+fn emit_part(l: &Leaf, prefix: &str) -> Option<String> {
     match l.script_guid.as_str() {
-        UISOLID_GUID => Some(emit_part_polygon(l)),
-        UIICON_GUID => Some(emit_part_atlas_native(l)),
-        UISLICE_GUID => Some(emit_part_atlas_slice(l)),
+        UISOLID_GUID => Some(emit_part_polygon(l, prefix)),
+        UIICON_GUID => Some(emit_part_atlas_native(l, prefix)),
+        UISLICE_GUID => Some(emit_part_atlas_slice(l, prefix)),
         _ => None,
     }
 }
@@ -358,7 +350,7 @@ fn emit_combined(p: &PrefabDump) -> String {
         ));
     }
     s.push_str("      \"parts\": [\n");
-    let parts: Vec<String> = p.leaves.iter().filter_map(emit_part).collect();
+    let parts: Vec<String> = p.leaves.iter().filter_map(|l| emit_part(l, &p.atlas_prefix)).collect();
     s.push_str(&parts.join(",\n"));
     s.push_str("\n      ]\n    }");
     s

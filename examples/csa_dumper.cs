@@ -32,7 +32,19 @@ foreach (var pp in paths) {
     sb.AppendLine("PREFAB " + pp);
     sb.AppendLine("  output_sprite_guid=" + AssetGuid(csaSprite));
     sb.AppendLine("  output_sprite_path=" + (csaSprite ? AssetDatabase.GetAssetPath(csaSprite) : ""));
+    string atlasPngPath = csaSprite && csaSprite.texture ? AssetDatabase.GetAssetPath(csaSprite.texture) : "";
     sb.AppendLine("  atlas_png_guid=" + (csaSprite && csaSprite.texture ? AssetGuid(csaSprite.texture) : ""));
+    sb.AppendLine("  atlas_png_path=" + atlasPngPath);
+    // Atlas tpsheet/.tps prefix lives on TPSImporter (.tps.meta) — needed
+    // to strip from dumped sprite.name so fab.json references the bare
+    // tpsheet entry. Empty prefix → keep full sprite.name.
+    string atlasPrefix = "";
+    if (atlasPngPath.Length > 0) {
+        var tpsPath = atlasPngPath.Substring(0, atlasPngPath.Length - 4) + ".tps";
+        var tpsImporter = AssetImporter.GetAtPath(tpsPath) as TexturePacker.TPSImporter;
+        if (tpsImporter != null) atlasPrefix = tpsImporter.Prefix;
+    }
+    sb.AppendLine("  atlas_prefix=" + atlasPrefix);
     sb.AppendLine("  scale_factor=" + csaScale.ToString("R"));
     sb.AppendLine("  root_anchored=" + rootRT.anchoredPosition.x.ToString("R") + "," + rootRT.anchoredPosition.y.ToString("R"));
 
