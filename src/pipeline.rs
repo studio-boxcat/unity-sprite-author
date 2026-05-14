@@ -17,6 +17,8 @@ use std::path::{Path, PathBuf};
 use crate::combine::{self, AtlasSize as CombineAtlas};
 use crate::emit::{self, EmitError, SpriteAsset};
 use crate::fab;
+use crate::mesh_emit::{self, BuildMeshError, MeshAsset};
+use crate::mesh_manifest::{self, MeshManifest};
 use crate::meta;
 use crate::render_data::{self, AtlasSize};
 use crate::tps;
@@ -39,6 +41,8 @@ pub enum Error {
     DuplicateSpriteName(String),
     Fab(fab::FabError),
     Combine(combine::CombineError),
+    MeshManifest(mesh_manifest::MeshManifestError),
+    BuildMesh(BuildMeshError),
     /// On-disk `.asset`'s `textureRect.{w, h}` doesn't match the rect
     /// the pipeline would emit. Only seen on Unity sprites authored
     /// under `SpriteMeshType.Tight` + `spriteMode: Multiple`, which ran
@@ -69,6 +73,8 @@ impl fmt::Display for Error {
             ),
             Self::Fab(e) => write!(f, "fab.json: {e}"),
             Self::Combine(e) => write!(f, "fab combine: {e}"),
+            Self::MeshManifest(e) => write!(f, "mesh.json: {e}"),
+            Self::BuildMesh(e) => write!(f, "mesh build: {e}"),
             Self::TextureRectDivergence { sprite, on_disk, emitted } => write!(
                 f,
                 "textureRect drift on {sprite:?}: on-disk ({}, {}) vs emitted ({}, {}). \
@@ -251,6 +257,21 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
             atlas_size,
             &atlas_guid,
             &mut current_asset_names_ci,
+            &mut writes,
+            &mut written_asset_paths,
+        )?;
+    }
+
+    // SMA Mesh assets declared in the `.tps.mesh.json` sibling (see
+    // `mesh_manifest`). Mesh assets live outside `sprite_dir`; the manifest
+    // declares each entry's `output_path` relative to the manifest's
+    // directory. Multiple entries can group into one multi-mesh asset.
+    if let Some(mesh_manifest) = load_mesh_manifest(input.tps_path)? {
+        emit_combined_meshes(
+            &mesh_manifest,
+            &sheet,
+            input,
+            atlas_size,
             &mut writes,
             &mut written_asset_paths,
         )?;
@@ -503,6 +524,70 @@ fn emit_combined_sprites(
             meta::render_asset_meta_with_shape(&own_guid, meta_shape).into_bytes(),
         ));
         written_asset_paths.push(asset_path);
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// `.tps.mesh.json` integration.
+
+fn mesh_manifest_path(tps_path: &Path) -> PathBuf {
+    let mut p = tps_path.to_path_buf();
+    p.as_mut_os_string().push(".mesh.json");
+    p
+}
+
+fn load_mesh_manifest(tps_path: &Path) -> Result<Option<MeshManifest>, Error> {
+    let path = mesh_manifest_path(tps_path);
+    match fs::read_to_string(&path) {
+        Ok(text) => mesh_manifest::parse(&text)
+            .map(Some)
+            .map_err(Error::MeshManifest),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(Error::Io { path, source }),
+    }
+}
+
+fn emit_combined_meshes(
+    manifest: &MeshManifest,
+    sheet: &tpsheet::Sheet,
+    input: &GenerateInputs,
+    atlas_size: AtlasSize,
+    writes: &mut Vec<(PathBuf, Vec<u8>)>,
+    written_asset_paths: &mut Vec<PathBuf>,
+) -> Result<(), Error> {
+    let sprite_by_name: std::collections::HashMap<&str, &tpsheet::SpriteEntry> =
+        sheet.sprites.iter().map(|s| (s.name.as_str(), s)).collect();
+
+    // Manifest dir is the `.tps`'s dir — `output_path` resolves relative to it.
+    let manifest_dir = input
+        .tps_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    // Build all MeshAssets first, then group by output_path so each multi-mesh
+    // asset gets emitted in declared order.
+    let mut grouped: Vec<(String, Vec<MeshAsset>)> = Vec::new();
+    for combined in &manifest.meshes {
+        let mesh = mesh_emit::build_mesh(
+            combined,
+            input.ppu,
+            (atlas_size.width, atlas_size.height),
+            |name| sprite_by_name.get(name).map(|s| (*s).clone()),
+        )
+        .map_err(Error::BuildMesh)?;
+        match grouped.iter_mut().find(|(p, _)| p == &combined.output_path) {
+            Some((_, v)) => v.push(mesh),
+            None => grouped.push((combined.output_path.clone(), vec![mesh])),
+        }
+    }
+
+    for (rel_path, meshes) in grouped {
+        let abs_path = manifest_dir.join(&rel_path);
+        let bytes = mesh_emit::emit_mesh_asset(&meshes);
+        writes.push((abs_path.clone(), bytes));
+        written_asset_paths.push(abs_path);
     }
     Ok(())
 }

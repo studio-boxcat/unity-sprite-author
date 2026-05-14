@@ -11,7 +11,7 @@
 //       {
 //         "fileId": -8704840387945618417,
 //         "name": "frame_top",
-//         "usedInCanvas": true,
+//         "usedInCanvas": true, "outputPath": "out.asset",
 //         "keepVertices": true,
 //         "keepIndices": true,
 //         "renderers": [
@@ -51,6 +51,11 @@ pub struct MeshManifest {
 pub struct MeshCombined {
     pub file_id: i64,
     pub name: String,
+    /// Output `.asset` path, relative to the `.tps.mesh.json`'s directory.
+    /// Multiple combined entries pointing at the same path are grouped into
+    /// one multi-mesh asset (e.g. all Box_29_Ghost meshes land in
+    /// `!Output/Box_29_Ghost.asset`). Required field.
+    pub output_path: String,
     pub used_in_canvas: bool,
     pub keep_vertices: bool,
     pub keep_indices: bool,
@@ -87,6 +92,7 @@ pub enum MeshManifestError {
     UnknownDrawMode(String),
     MissingSize(String),
     UnexpectedSize(String),
+    EmptyOutputPath(String),
 }
 
 impl std::fmt::Display for MeshManifestError {
@@ -101,6 +107,7 @@ impl std::fmt::Display for MeshManifestError {
             Self::UnknownDrawMode(m) => write!(f, "unknown drawMode: {m}"),
             Self::MissingSize(n) => write!(f, "mesh '{n}' tiled renderer missing size"),
             Self::UnexpectedSize(n) => write!(f, "mesh '{n}' simple renderer should not declare size"),
+            Self::EmptyOutputPath(n) => write!(f, "mesh '{n}' has empty outputPath"),
         }
     }
 }
@@ -153,9 +160,13 @@ pub fn parse(json: &str) -> Result<MeshManifest, MeshManifestError> {
                 local_to_root: r.local_to_root,
             });
         }
+        if m.output_path.is_empty() {
+            return Err(MeshManifestError::EmptyOutputPath(m.name));
+        }
         out.push(MeshCombined {
             file_id: m.file_id,
             name: m.name,
+            output_path: m.output_path,
             used_in_canvas: m.used_in_canvas,
             keep_vertices: m.keep_vertices.unwrap_or(true),
             keep_indices: m.keep_indices.unwrap_or(true),
@@ -181,6 +192,7 @@ mod raw {
     pub struct MeshCombined {
         pub file_id: i64,
         pub name: String,
+        pub output_path: String,
         pub used_in_canvas: bool,
         pub keep_vertices: Option<bool>,
         pub keep_indices: Option<bool>,
@@ -219,7 +231,7 @@ mod tests {
               "meshes": [{
                 "fileId": 12345,
                 "name": "frame_top",
-                "usedInCanvas": true,
+                "usedInCanvas": true, "outputPath": "out.asset",
                 "renderers": [{
                   "sprite": "frame_top_strip",
                   "drawMode": "simple",
@@ -250,7 +262,7 @@ mod tests {
               "meshes": [{
                 "fileId": -9000,
                 "name": "wall_line",
-                "usedInCanvas": false,
+                "usedInCanvas": false, "outputPath": "out.asset",
                 "keepVertices": false,
                 "keepIndices": false,
                 "renderers": [{
@@ -286,10 +298,10 @@ mod tests {
             r#"{
               "version": 1,
               "meshes": [
-                {"fileId": 1, "name": "x", "usedInCanvas": true,
+                {"fileId": 1, "name": "x", "usedInCanvas": true, "outputPath": "out.asset",
                  "renderers": [{"sprite": "a", "drawMode": "simple",
                                 "localToRoot": [1,0,0,0,0,1,0,0]}]},
-                {"fileId": 2, "name": "x", "usedInCanvas": true,
+                {"fileId": 2, "name": "x", "usedInCanvas": true, "outputPath": "out.asset",
                  "renderers": [{"sprite": "b", "drawMode": "simple",
                                 "localToRoot": [1,0,0,0,0,1,0,0]}]}
               ]
@@ -304,10 +316,10 @@ mod tests {
             r#"{
               "version": 1,
               "meshes": [
-                {"fileId": 1, "name": "a", "usedInCanvas": true,
+                {"fileId": 1, "name": "a", "usedInCanvas": true, "outputPath": "out.asset",
                  "renderers": [{"sprite": "a", "drawMode": "simple",
                                 "localToRoot": [1,0,0,0,0,1,0,0]}]},
-                {"fileId": 1, "name": "b", "usedInCanvas": true,
+                {"fileId": 1, "name": "b", "usedInCanvas": true, "outputPath": "out.asset",
                  "renderers": [{"sprite": "b", "drawMode": "simple",
                                 "localToRoot": [1,0,0,0,0,1,0,0]}]}
               ]
@@ -320,7 +332,7 @@ mod tests {
     fn parse_rejects_tiled_without_size() {
         let m = parse(
             r#"{ "version": 1, "meshes": [{
-              "fileId": 1, "name": "x", "usedInCanvas": true,
+              "fileId": 1, "name": "x", "usedInCanvas": true, "outputPath": "out.asset",
               "renderers": [{"sprite": "a", "drawMode": "tiled",
                              "localToRoot": [1,0,0,0,0,1,0,0]}]
             }]}"#,
@@ -332,7 +344,7 @@ mod tests {
     fn parse_rejects_simple_with_size() {
         let m = parse(
             r#"{ "version": 1, "meshes": [{
-              "fileId": 1, "name": "x", "usedInCanvas": true,
+              "fileId": 1, "name": "x", "usedInCanvas": true, "outputPath": "out.asset",
               "renderers": [{"sprite": "a", "drawMode": "simple", "size": [1, 1],
                              "localToRoot": [1,0,0,0,0,1,0,0]}]
             }]}"#,
@@ -344,7 +356,7 @@ mod tests {
     fn parse_rejects_unknown_draw_mode() {
         let m = parse(
             r#"{ "version": 1, "meshes": [{
-              "fileId": 1, "name": "x", "usedInCanvas": true,
+              "fileId": 1, "name": "x", "usedInCanvas": true, "outputPath": "out.asset",
               "renderers": [{"sprite": "a", "drawMode": "stretched",
                              "localToRoot": [1,0,0,0,0,1,0,0]}]
             }]}"#,
@@ -356,7 +368,7 @@ mod tests {
     fn parse_rejects_empty_renderers() {
         let m = parse(
             r#"{ "version": 1, "meshes": [{
-              "fileId": 1, "name": "x", "usedInCanvas": true,
+              "fileId": 1, "name": "x", "usedInCanvas": true, "outputPath": "out.asset",
               "renderers": []
             }]}"#,
         );

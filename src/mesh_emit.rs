@@ -970,6 +970,7 @@ mod tests {
         let mc = MeshCombined {
             file_id: 1,
             name: "test".into(),
+            output_path: "out.asset".into(),
             used_in_canvas: true,
             keep_vertices: true,
             keep_indices: true,
@@ -1001,6 +1002,7 @@ mod tests {
         let mc = MeshCombined {
             file_id: 1,
             name: "t".into(),
+            output_path: "out.asset".into(),
             used_in_canvas: false,
             keep_vertices: false,
             keep_indices: false,
@@ -1023,6 +1025,7 @@ mod tests {
         let mc = MeshCombined {
             file_id: 1,
             name: "flip".into(),
+            output_path: "out.asset".into(),
             used_in_canvas: true,
             keep_vertices: true,
             keep_indices: true,
@@ -1042,6 +1045,7 @@ mod tests {
         let mc = MeshCombined {
             file_id: 1,
             name: "x".into(),
+            output_path: "out.asset".into(),
             used_in_canvas: true,
             keep_vertices: true,
             keep_indices: true,
