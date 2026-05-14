@@ -601,6 +601,182 @@ fn walk_node<'a>(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Bridge: v3 Tree → existing flat `fab::Combined` / `mesh_emit::MeshCombined`
+// so the byte-exact emit pipeline keeps consuming a single typed AST.
+
+#[derive(Debug)]
+pub enum BridgeError {
+    /// Tree's `output` doesn't match the requested adapter (e.g. SMA tree
+    /// fed into `to_fab_combined`).
+    OutputMismatch { tree: String, expected: &'static str },
+    /// Tree contains a graphic incompatible with the output (e.g. polygon
+    /// under SMA, or sprite-renderer under CSA).
+    GraphicMismatch { tree: String, reason: &'static str },
+    /// Method requires `size` (R*/MX_R*/MY_R*/MXY_R*/TX*/TY*) but the
+    /// node's `size_delta` is zero. v3 manifests must declare size_delta
+    /// on size-fitted UISlice leaves.
+    ZeroSizeForSliceMethod { tree: String, sprite: String },
+}
+
+impl fmt::Display for BridgeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OutputMismatch { tree, expected } => write!(
+                f,
+                "tree {tree:?} output mismatch: expected {expected}"
+            ),
+            Self::GraphicMismatch { tree, reason } => {
+                write!(f, "tree {tree:?} graphic: {reason}")
+            }
+            Self::ZeroSizeForSliceMethod { tree, sprite } => write!(
+                f,
+                "tree {tree:?} sprite {sprite:?}: size-fitted method requires non-zero size_delta"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for BridgeError {}
+
+/// Convert a `Tree` with `output: "csa"` into a `fab::Combined`, the
+/// flat-shape struct the existing `combine::build_combined` consumes.
+pub fn to_fab_combined(tree: &Tree) -> Result<crate::fab::Combined, BridgeError> {
+    use crate::fab;
+
+    if tree.output != Output::Csa {
+        return Err(BridgeError::OutputMismatch {
+            tree: tree.name.clone(),
+            expected: "csa",
+        });
+    }
+
+    let leaves = walk(tree);
+    let mut parts: Vec<fab::Part> = Vec::with_capacity(leaves.len());
+    for leaf in leaves {
+        match leaf.graphic {
+            Graphic::Sprite {
+                sprite,
+                method,
+                ui_scale,
+                border_mult,
+                ..
+            } => {
+                let fab_method = map_method(*method);
+                let size = if fab_method.requires_size_v3() {
+                    let sd = leaf.size_delta;
+                    if sd[0] == 0.0 || sd[1] == 0.0 {
+                        return Err(BridgeError::ZeroSizeForSliceMethod {
+                            tree: tree.name.clone(),
+                            sprite: sprite.clone(),
+                        });
+                    }
+                    Some((sd[0], sd[1]))
+                } else {
+                    None
+                };
+                parts.push(fab::Part::AtlasSprite {
+                    sprite: sprite.clone(),
+                    method: fab_method,
+                    size,
+                    part_pivot: leaf.pivot,
+                    border_mult: *border_mult,
+                    affine: fab::Affine {
+                        tx: 0.0,
+                        ty: 0.0,
+                        sx: leaf.world_scale[0],
+                        sy: leaf.world_scale[1],
+                        rot_deg: leaf.world_rot_deg,
+                    },
+                    ui_scale: *ui_scale,
+                    offset: leaf.world_pos,
+                });
+            }
+            Graphic::Polygon {
+                polygon_sprite,
+                vertices,
+                triangles,
+            } => {
+                parts.push(fab::Part::Polygon {
+                    polygon_sprite: polygon_sprite.clone(),
+                    vertices: vertices.clone(),
+                    triangles: triangles.clone(),
+                    affine: fab::Affine {
+                        tx: 0.0,
+                        ty: 0.0,
+                        sx: leaf.world_scale[0],
+                        sy: leaf.world_scale[1],
+                        rot_deg: leaf.world_rot_deg,
+                    },
+                    // UISolid under CanvasSpriteAuthor takes no per-part
+                    // scale-factor, but the canvas-chain still uses
+                    // ui_scale = 1.0 (identity) so the matrix-style op order
+                    // preserves the FMA residue. Mirrors the v1 schema's
+                    // polygon emit.
+                    ui_scale: 1.0,
+                    offset: leaf.world_pos,
+                });
+            }
+            Graphic::SpriteRenderer { .. } => {
+                return Err(BridgeError::GraphicMismatch {
+                    tree: tree.name.clone(),
+                    reason: "sprite-renderer graphic incompatible with CSA output",
+                });
+            }
+        }
+    }
+
+    Ok(fab::Combined {
+        name: tree.name.clone(),
+        pivot: [0.5, 0.5],
+        border: [0.0; 4],
+        canvas_scale: tree.scale,
+        root_anchored: tree.root_anchored,
+        parts,
+    })
+}
+
+fn map_method(m: SpriteMethod) -> crate::fab::Method {
+    use crate::fab::Method as F;
+    match m {
+        SpriteMethod::Id => F::Id,
+        SpriteMethod::Mx => F::Mx,
+        SpriteMethod::My => F::My,
+        SpriteMethod::Mxy => F::Mxy,
+        SpriteMethod::Tx => F::Tx,
+        SpriteMethod::Ty => F::Ty,
+        SpriteMethod::TxMc3 => F::TxMc3,
+        SpriteMethod::R1c3 => F::R1c3,
+        SpriteMethod::R3c3 => F::R3c3,
+        SpriteMethod::R3c3Nf => F::R3c3Nf,
+        SpriteMethod::MxR1c3 => F::MxR1c3,
+        SpriteMethod::MxR1c4 => F::MxR1c4,
+        SpriteMethod::MxR3c2 => F::MxR3c2,
+        SpriteMethod::MxR3c3 => F::MxR3c3,
+        SpriteMethod::MxR3c4 => F::MxR3c4,
+        SpriteMethod::MxR3c6 => F::MxR3c6,
+        SpriteMethod::MyR2c2 => F::MyR2c2,
+        SpriteMethod::MyR2c3 => F::MyR2c3,
+        SpriteMethod::MyR3c1 => F::MyR3c1,
+        SpriteMethod::MyR3c2 => F::MyR3c2,
+        SpriteMethod::MyR3c3 => F::MyR3c3,
+        SpriteMethod::MxyR3c3 => F::MxyR3c3,
+        SpriteMethod::MxyR3c3Nf => F::MxyR3c3Nf,
+    }
+}
+
+// Mirror of `fab::Method::requires_size` so the bridge can decide
+// whether to thread size_delta through. Kept private to manifest.rs.
+trait MethodCapV3 {
+    fn requires_size_v3(self) -> bool;
+}
+impl MethodCapV3 for crate::fab::Method {
+    fn requires_size_v3(self) -> bool {
+        use crate::fab::Method as M;
+        !matches!(self, M::Id | M::Mx | M::My | M::Mxy)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -902,6 +1078,155 @@ mod tests {
         let leaves = walk(&m.trees[0]);
         assert_eq!(leaves.len(), 1);
         assert_eq!(leaves[0].world_pos, [6.0, 12.0]);
+    }
+
+    #[test]
+    fn bridge_to_fab_csa_minimal() {
+        let m = parse_single(
+            r#"{ "version":1, "trees":[{
+              "name":"X","output":"csa",
+              "root":{"children":[
+                {"graphic":{"type":"sprite","sprite":"foo"}}
+              ]}
+            }]}"#,
+        );
+        let c = to_fab_combined(&m.trees[0]).unwrap();
+        assert_eq!(c.name, "X");
+        assert_eq!(c.canvas_scale, 1.0);
+        assert_eq!(c.parts.len(), 1);
+        match &c.parts[0] {
+            crate::fab::Part::AtlasSprite { sprite, method, ui_scale, size, offset, .. } => {
+                assert_eq!(sprite, "foo");
+                assert_eq!(*method, crate::fab::Method::Id);
+                assert_eq!(*ui_scale, 100.0);
+                assert!(size.is_none());
+                assert_eq!(*offset, [0.0, 0.0]);
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn bridge_to_fab_polygon_with_offset() {
+        let m = parse_single(
+            r#"{ "version":1, "trees":[{
+              "name":"X","output":"csa","scale":0.01,
+              "root":{"children":[{
+                "pos":[10, 20],
+                "graphic":{"type":"polygon","color":"32264D","vertices":[[0,0],[1,0],[1,1]]}
+              }]}
+            }]}"#,
+        );
+        let c = to_fab_combined(&m.trees[0]).unwrap();
+        assert_eq!(c.canvas_scale, 0.01);
+        match &c.parts[0] {
+            crate::fab::Part::Polygon { polygon_sprite, offset, .. } => {
+                assert_eq!(polygon_sprite, "Color_32264DFF");
+                assert_eq!(*offset, [10.0, 20.0]);
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn bridge_propagates_scale_as_sx_sy() {
+        // scale: [-1, 1] should flow into Affine.sx/sy.
+        let m = parse_single(
+            r#"{ "version":1, "trees":[{
+              "name":"X","output":"csa",
+              "root":{"children":[
+                {"scale":[-1,1],"graphic":{"type":"sprite","sprite":"a"}}
+              ]}
+            }]}"#,
+        );
+        let c = to_fab_combined(&m.trees[0]).unwrap();
+        match &c.parts[0] {
+            crate::fab::Part::AtlasSprite { affine, .. } => {
+                assert_eq!(affine.sx, -1.0);
+                assert_eq!(affine.sy, 1.0);
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn bridge_size_fitted_method_takes_size_delta() {
+        let m = parse_single(
+            r#"{ "version":1, "trees":[{
+              "name":"X","output":"csa",
+              "root":{"children":[{
+                "sizeDelta":[200, 150],
+                "graphic":{"type":"sprite","sprite":"a","method":"R3C3"}
+              }]}
+            }]}"#,
+        );
+        let c = to_fab_combined(&m.trees[0]).unwrap();
+        match &c.parts[0] {
+            crate::fab::Part::AtlasSprite { method, size, .. } => {
+                assert_eq!(*method, crate::fab::Method::R3c3);
+                assert_eq!(*size, Some((200.0, 150.0)));
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn bridge_rejects_size_fitted_with_zero_size() {
+        let m = parse_single(
+            r#"{ "version":1, "trees":[{
+              "name":"X","output":"csa",
+              "root":{"children":[
+                {"graphic":{"type":"sprite","sprite":"a","method":"R3C3"}}
+              ]}
+            }]}"#,
+        );
+        let err = to_fab_combined(&m.trees[0]).unwrap_err();
+        assert!(matches!(err, BridgeError::ZeroSizeForSliceMethod { .. }));
+    }
+
+    #[test]
+    fn bridge_rejects_sprite_renderer_in_csa() {
+        let m = parse_single(
+            r#"{ "version":1, "trees":[{
+              "name":"X","output":"csa",
+              "root":{"children":[
+                {"graphic":{"type":"sprite-renderer","sprite":"a"}}
+              ]}
+            }]}"#,
+        );
+        let err = to_fab_combined(&m.trees[0]).unwrap_err();
+        assert!(matches!(err, BridgeError::GraphicMismatch { .. }));
+    }
+
+    #[test]
+    fn bridge_rejects_sma_tree_into_fab_adapter() {
+        let m = parse_single(
+            r#"{ "version":1, "trees":[{
+              "name":"X",
+              "output":{"type":"sma","fileId":1,"outputPath":"o.asset","usedInCanvas":true},
+              "root":{"children":[{"graphic":{"type":"sprite-renderer","sprite":"a"}}]}
+            }]}"#,
+        );
+        let err = to_fab_combined(&m.trees[0]).unwrap_err();
+        assert!(matches!(err, BridgeError::OutputMismatch { .. }));
+    }
+
+    #[test]
+    fn bridge_silloutte3_root_anchored_threads_through() {
+        // The Silloutte3 case: root has non-origin anchored position, threads
+        // into Combined.root_anchored so compute_m13_axis fires the FMA-fused
+        // residual computation downstream.
+        let m = parse_single(
+            r#"{ "version":1, "trees":[{
+              "name":"Silloutte3","output":"csa","scale":0.01,
+              "rootAnchored":[141.8, 370.875],
+              "root":{"children":[
+                {"graphic":{"type":"sprite","sprite":"a","method":"MX"}}
+              ]}
+            }]}"#,
+        );
+        let c = to_fab_combined(&m.trees[0]).unwrap();
+        assert_eq!(c.root_anchored, [141.8, 370.875]);
     }
 
     #[test]
