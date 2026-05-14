@@ -30,7 +30,10 @@ fail=0
 fail_list=()
 
 # Skip non-Assets paths and Library/Temp.
-mapfile -t tps_files < <(find Assets -name "*.tps" -type f -print | sort)
+tps_files=()
+while IFS= read -r line; do
+    tps_files+=("$line")
+done < <(find Assets -name "*.tps" -type f -print | sort)
 
 echo "Found ${#tps_files[@]} .tps files. Processing…"
 for tps in "${tps_files[@]}"; do

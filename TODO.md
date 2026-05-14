@@ -50,7 +50,7 @@ prefabs.
 
 ## Byte-exactness gaps to validate
 
-- ~~**`textureRect` sub-pixel shrink for some polygon-trimmed sprites.**~~ **SOLVED** (commit `285f264`), then **SUPERSEDED** (commit `17659b1`): preserve replaced with a hard `Error::TextureRectDivergence`. The 3 FriendInvite emoji sprites that had defended the preserve branch have been regenerated under `spriteMode: 1` (textureRect == m_Rect). Corpus is 100% byte-exact with one less code path.
+- ~~**`textureRect` sub-pixel shrink for some polygon-trimmed sprites.**~~ **SOLVED** (commit `285f264`), then **SUPERSEDED** (commit `17659b1`): preserve replaced with a hard `Error::TextureRectDivergence`. Later **DEMOTED to warning + overwrite** when a 7.0.3 corpus repack surfaced legacy `Tight + spriteMode:Multiple` outputs on dozens of atlases beyond the original 3 FriendInvite emoji — fail-loud became disproportionate to risk. Behavior now: `GenerateOutput.warnings` carries one entry per divergent sprite (and stderr echoes), pipeline overwrites with current-tpsheet rect.
 
 - ~~**`m_Offset` formula — X solved, Y unsolved.**~~ **SOLVED** in iteration 3: `m_Offset = (rect.pos + pivot * rect.size) - (rect.pos + rect.size * 0.5)`. The `rect.x`/`rect.y` mathematically cancel but introduce f32 rounding noise that exactly matches Unity. Verified across all 6 stuck fixtures; e2e byte-exact rate jumped 64% → 81% across the meow-tower corpus.
 
@@ -80,6 +80,20 @@ Old m_Offset analysis (kept for history; ignore the "unsolved" framing):
 - **`settingsRaw` bit layout**: every sampled `.asset` has `settingsRaw: 192`. Until a varied fixture proves otherwise, hardcoded 192 (no surface guard — see CLAUDE.md emit note). Probe procedure in [[unity-probes.md#b-settingsraw-bit-layout]].
 - **`m_AtlasRD` vs `m_RD` divergence**: identical for non-SpriteAtlas sprites (verified). The planned `m_SpriteAtlas != {fileID:0}` guard waits on a SpriteAtlas-managed fixture; probe procedure in [[unity-probes.md#c-m_atlasrd-vs-m_rd-divergence-under-spriteatlas]].
 - ~~**Float format unit-test table**~~ — landed in `yaml::tests::float_corpus_full_roundtrip` (commit `3b0b8ec`). Scans every `.asset` under `tests/golden/`, extracts every distinct fractional float literal (93 currently), and asserts `yaml::float()` round-trips each one bit-exactly. Future Rust Display divergence from C# `ToString("R")` will surface here as a unit-test failure rather than a golden-byte mismatch.
+
+## SMA Phase 2b blockers (post first-run)
+
+After Phase 2b's first-pass corpus run (`examples/migrate_corpus`, `.tps.mesh.json` siblings in place), the migrator lands **234/244 atlases**. The remaining 10:
+
+- **9 Box atlases** — `Boxes/{03_Unicorn,05_Dino,09_Wizard,28_Boardgame,29_Ghost,30_Sleepy,31_Raincoat,32_Pilot,33_Vampire}` fail with `mesh 'Back'/'Wall' references unknown sprite 'mBzYY2st'`. Root cause: these prefabs have child SpriteRenderers named `Polygon` whose `.sprite` is a **runtime-created Color texture** (no asset GUID, hashed name like `mBzYY2st`). The SMA C# pipeline accepts these because it walks geometry, not atlas entries. Our Rust port (`mesh_emit::build_mesh`) requires every renderer's sprite to resolve in the sibling tpsheet — there's no polygon/color-fill emit path on the mesh side. To unblock:
+  - **Dumper extension** (`examples/sma_dumper.cs`): detect `sprite_guid == ""` + hashed name, recover `(color RGBA, mesh.vertices, mesh.triangles)` from the SpriteRenderer's MeshFilter or directly from `sprite.vertices`.
+  - **Manifest schema** (`src/mesh_manifest.rs`): add `MeshRendererKind::Polygon { color, vertices, triangles }` alongside the current sprite-backed renderer.
+  - **Emit extension** (`src/mesh_emit::build_mesh`): for `Polygon` renderers, synthesize verts directly from the captured polygon and sample UVs from a `Color_RRGGBB` entry in the same tpsheet (mirrors the CSA polygon path in `combine::polygon_mesh_with_tris`). Color_RRGGBB sprites already exist in every Box atlas.
+  - **Golden coverage**: add a Box_29_Ghost-style fixture exercising the polygon branch.
+
+- **1 Tower.tps** — atlas outputs to `Tower_SpriteAtlas.tpsheet` (non-matching stem). `examples/migrate_corpus` assumes `<stem>.tpsheet`. Either special-case in the runner or rename the .tps to match the .tpsheet stem.
+
+Phase 3 (atomic C# + prefab deletion) cannot proceed until the polygon-path work above lands — deleting `SpriteMeshAuthoring/*.cs` without a Rust replacement leaves the 9 Box prefabs without a Mesh emit path.
 
 ## C# integration & Unity-side ergonomics
 
@@ -122,4 +136,4 @@ Decided:
 
 - **Manifest discovery is implicit** (`<tps_path>.fab.json`). No new `pipeline::generate` parameter. Matches how `.png.meta` / `.tps.meta` siblings are already discovered. Revisit only if a real need to override appears.
 - **Skip-write-if-equal kept**, including for fabricated sprites. Combined `.asset`s are only ~25% larger than per-tpsheet sprites (~7-8 KB vs ~6 KB avg); per-file read stays sub-20 µs, ~5-20× cheaper than the write it avoids, and dwarfed by the avoided Unity reimport of dependents. One code path, no special case.
-- **Drop the on-disk `textureRect` preserve branch; fail loud instead.** Corpus survey: 7,257 atlas-fed `.asset` files across 128 atlases, **3 divergent**, all FriendInvite emoji (`Emoji-Emoji_Frog/Heart/Unicorn`) — legacy artifacts from a `spriteMode: 2 → 1` migration on 2026-05-05. Zero golden fixtures exercise preserve. Replace with an error from `generate()` naming the sprite + `m_Rect.{w,h}` + on-disk `textureRect.{w,h}`. Applies uniformly to per-tpsheet and fabricated sprites (no per-type branch needed). One-time cleanup: delete those 3 `.asset`s next time `FriendInvite.tps` is reimported; Unity re-emits them with `textureRect == m_Rect`. Sub-pixel — visually invisible.
+- **Drop the on-disk `textureRect` preserve branch; warn + overwrite instead.** Corpus survey originally found **3 divergent** sprites (all FriendInvite emoji); the 2026-05-05 fail-loud version covered that. A later 7.0.3 corpus repack surfaced the same drift on legacy Orgel/PiggyBank atlases (Tight + spriteMode:Multiple), making fail-loud disproportionate. Current behavior: warn via `GenerateOutput.warnings` + stderr, overwrite with the current rect. Sub-pixel — visually invisible.

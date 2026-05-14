@@ -1,6 +1,6 @@
 # unity-sprite-author
 
-> **Related:** [[TODO.md]], [[BENCHMARKS.md]], [[fab.md]], [[unity-probes.md]]
+> **Related:** [[TODO.md]], [[BENCHMARKS.md]], [[fab.md]], [[sma-migration.md]], [[unity-probes.md]]
 
 Rust `rlib` consumed by meow-tower via the shared **BoxcatBridge** cdylib (see `Packages/com.boxcat.libs/Native~/bridge/` in `meow-tower`). Authors Unity Sprite `.asset` files byte-exactly from a TexturePacker `.tpsheet` + `.tps` + atlas `.png`.
 
@@ -121,7 +121,7 @@ tpsheet line format (semicolon-separated):
 | Sprite `.asset` field          | Source                                                              |
 | ------------------------------ | ------------------------------------------------------------------- |
 | `m_Rect`                       | tpsheet rect                                                        |
-| `textureRect`                  | always tpsheet rect. If an existing `.asset` carries a divergent `textureRect.{w,h}` (only seen on legacy Tight + `spriteMode: Multiple` outputs), `generate()` returns `Error::TextureRectDivergence` rather than overwriting — delete the stale `.asset` and let Unity re-emit. |
+| `textureRect`                  | always tpsheet rect. If an existing `.asset` carries a divergent `textureRect.{w,h}` (only seen on legacy Tight + `spriteMode: Multiple` outputs), `generate()` emits a non-fatal warning via `GenerateOutput.warnings` (also echoed to stderr) and overwrites with the current tpsheet's rect. Current tpsheet is authoritative. |
 | `m_Pivot`                      | tpsheet pivot                                                       |
 | `m_Border`                     | tpsheet borders (LRTB)                                              |
 | `m_PixelsToUnits`              | `ppu / spriteScale` (PPU from importer; spriteScale from `.tps`)    |
@@ -194,20 +194,34 @@ unity-sprite-author/
 │   ├── yaml.rs             # Unity-flavor YAML + yaml::float (C# ToString("R"))
 │   ├── triangulator.rs     # ear-clipping triangulator for fab polygon parts
 │   ├── combine.rs          # fab combined-sprite mesh stitching
-│   └── fab.rs              # .tps.fab.json sidecar parser
+│   ├── fab.rs              # .tps.fab.json v1 sidecar parser
+│   ├── manifest.rs         # .tps.fab.json v3 unified tree (CSA + SMA) → fab/mesh bridge
+│   ├── mesh_emit.rs        # Mesh .asset emit (SpriteRenderer half2 UVs + CanvasRenderer f32 UVs)
+│   └── mesh_manifest.rs    # legacy flat .tps.mesh.json parser (SMA-only)
 ├── tests/
-│   ├── golden_parity.rs        # byte-equality on the Orgel corpus
-│   ├── golden_fab_silloutte.rs # byte-equality on the 3 Silloutte fab fixtures
-│   ├── e2e_meow_tower.rs       # opt-in walk of the meow-tower checkout
-│   └── golden/                 # committed .tpsheet + .tps + .png.meta + expected .asset
+│   ├── golden_parity.rs              # byte-equality on the Orgel corpus
+│   ├── golden_fab_silloutte.rs       # byte-equality on the 3 Silloutte fab fixtures
+│   ├── golden_manifest_v3_silloutte.rs  # v3 manifest ⇄ v1 bridge + v3 byte-exact emit
+│   ├── golden_sma_mesh.rs            # Mesh .asset byte-exact (Box_29_Ghost, 32 meshes)
+│   ├── e2e_meow_tower.rs             # opt-in walk of the meow-tower checkout
+│   └── golden/                       # committed .tpsheet + .tps + .png.meta + expected .asset
 ├── docs/
 │   ├── fab.md              # .tps.fab.json schema + per-part transform math
+│   ├── sma-migration.md    # SpriteMeshAuthor → mesh_emit migration map
 │   └── unity-probes.md     # in-Editor procedures for the four blocked TODOs
 ├── examples/
-│   └── drift_report.rs     # diagnostic — runs across meow-tower, prints first diff per atlas
+│   ├── drift_report.rs              # diagnostic — runs across meow-tower, prints first diff per atlas
+│   ├── fab_verify.rs                # offline byte-diff harness for fab combined emit
+│   ├── migrate_corpus.rs            # offline corpus migration runner (no Unity Editor)
+│   ├── csa_dumper.cs                # Unity scratch — dump CSA prefab tree to JSON
+│   ├── csa_dump_to_fab.rs           # CSA dump → .tps.fab.json
+│   ├── sma_dumper.cs                # Unity scratch — dump SMA SpriteRenderer tree
+│   └── sma_dump_to_mesh_manifest.rs # SMA dump → .tps.mesh.json
 ├── benches/
 │   └── pipeline.rs         # criterion harness — full pipeline + per-stage hot paths
 ├── scripts/
-│   └── migrate-tpsheet-meta.sh  # --dry-run; .tpsheet.meta → .tps.meta
+│   ├── migrate-tpsheet-meta.sh  # --dry-run; .tpsheet.meta → .tps.meta
+│   ├── regen-corpus.sh          # TexturePackerCLI sweep over $MEOW_CLIENT/Assets
+│   └── delete-authoring.sh      # Phase 3 atomic deletion of authoring C# + prefabs
 └── CLAUDE.md
 ```

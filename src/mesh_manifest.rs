@@ -86,7 +86,6 @@ pub enum MeshManifestError {
     Json(serde_json::Error),
     UnsupportedVersion(u32),
     EmptyName,
-    DuplicateName(String),
     DuplicateFileId(i64),
     EmptyRenderers(String),
     UnknownDrawMode(String),
@@ -101,7 +100,6 @@ impl std::fmt::Display for MeshManifestError {
             Self::Json(e) => write!(f, "json: {e}"),
             Self::UnsupportedVersion(v) => write!(f, "unsupported version: {v}"),
             Self::EmptyName => write!(f, "empty mesh name"),
-            Self::DuplicateName(n) => write!(f, "duplicate mesh name: {n}"),
             Self::DuplicateFileId(id) => write!(f, "duplicate fileId: {id}"),
             Self::EmptyRenderers(n) => write!(f, "mesh '{n}' has empty renderers"),
             Self::UnknownDrawMode(m) => write!(f, "unknown drawMode: {m}"),
@@ -119,15 +117,13 @@ pub fn parse(json: &str) -> Result<MeshManifest, MeshManifestError> {
     if raw.version != 1 {
         return Err(MeshManifestError::UnsupportedVersion(raw.version));
     }
-    let mut names: HashSet<String> = HashSet::with_capacity(raw.meshes.len());
+    // Identity is `fileId`. `name` is diagnostic-only and may repeat across
+    // sub-meshes (Unity sub-assets emit empty `m_Name`).
     let mut ids: HashSet<i64> = HashSet::with_capacity(raw.meshes.len());
     let mut out: Vec<MeshCombined> = Vec::with_capacity(raw.meshes.len());
     for m in raw.meshes {
         if m.name.is_empty() {
             return Err(MeshManifestError::EmptyName);
-        }
-        if !names.insert(m.name.clone()) {
-            return Err(MeshManifestError::DuplicateName(m.name));
         }
         if !ids.insert(m.file_id) {
             return Err(MeshManifestError::DuplicateFileId(m.file_id));
@@ -293,21 +289,28 @@ mod tests {
     }
 
     #[test]
-    fn parse_rejects_duplicate_name() {
+    fn parse_accepts_duplicate_names_across_sub_meshes() {
+        // Sub-mesh identity is `fileId`, not `name`. Unity sub-assets emit
+        // empty `m_Name` anyway; the manifest's `name` is diagnostic only.
+        // Real corpora hit this — e.g. Box prefabs have many "Back" leaves
+        // sharing one output `.asset`.
         let m = parse(
             r#"{
               "version": 1,
               "meshes": [
-                {"fileId": 1, "name": "x", "usedInCanvas": true, "outputPath": "out.asset",
+                {"fileId": 1, "name": "Back", "usedInCanvas": true, "outputPath": "out.asset",
                  "renderers": [{"sprite": "a", "drawMode": "simple",
                                 "localToRoot": [1,0,0,0,0,1,0,0]}]},
-                {"fileId": 2, "name": "x", "usedInCanvas": true, "outputPath": "out.asset",
+                {"fileId": 2, "name": "Back", "usedInCanvas": true, "outputPath": "out.asset",
                  "renderers": [{"sprite": "b", "drawMode": "simple",
                                 "localToRoot": [1,0,0,0,0,1,0,0]}]}
               ]
             }"#,
-        );
-        assert!(matches!(m, Err(MeshManifestError::DuplicateName(n)) if n == "x"));
+        )
+        .expect("duplicate names ok");
+        assert_eq!(m.meshes.len(), 2);
+        assert_eq!(m.meshes[0].file_id, 1);
+        assert_eq!(m.meshes[1].file_id, 2);
     }
 
     #[test]
