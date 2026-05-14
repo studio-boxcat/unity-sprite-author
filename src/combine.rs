@@ -101,11 +101,19 @@ pub fn calc_rect_and_pivot(verts: &[[f32; 2]], ppu: f32) -> ((f32, f32), (f32, f
     }
     let w = x1 - x0;
     let h = y1 - y0;
-    // pivot.x = x0 / (x0 - x1) = -x0 / w (algebraically). Port the literal
-    // C# form because f32 rounding order matters for byte-exact comparison
-    // against SpriteFactory.CreateFromMesh.
-    let pivot_x = x0 / (x0 - x1);
-    let pivot_y = y0 / (y0 - y1);
+    // pivot = (x0 / (x0 - x1), y0 / (y0 - y1)) — but Mono/IL2CPP on ARM64
+    // macOS evaluates each f32 arithmetic op through f64 intermediates and
+    // rounds at the end (verified against CSA emit on PA_InfinitePencil_Clock:
+    // pure-f32 gives 0x3EF82CFC, CSA gives 0x3EF82CFD which matches the
+    // f64-throughout-then-cast path). Both the subtraction *and* the
+    // division have to widen to f64 — folding the f32 subtraction first
+    // and only widening the result for the divide reproduces the f32 bug.
+    let x0d = x0 as f64;
+    let x1d = x1 as f64;
+    let y0d = y0 as f64;
+    let y1d = y1 as f64;
+    let pivot_x = (x0d / (x0d - x1d)) as f32;
+    let pivot_y = (y0d / (y0d - y1d)) as f32;
     ((w * ppu, h * ppu), (pivot_x, pivot_y))
 }
 
