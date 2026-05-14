@@ -53,7 +53,6 @@
 
 #![allow(dead_code)]
 
-use serde::Deserialize;
 use std::collections::HashSet;
 use std::fmt;
 
