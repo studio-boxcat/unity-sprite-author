@@ -479,6 +479,120 @@ fn encode_vbo_sprite(verts: &[[f32; 3]], uvs: &[[f32; 2]], s: &mut String) {
     }
 }
 
+/// Tiled mesh generator — direct port of `SpriteMeshBuilder.GetMesh_Tiled`
+/// (Continuous tileMode only). Inputs:
+/// - `sprite_quad`: the source sprite's four pivot-relative world-unit
+///   vertices in `(BL, BR, TL, TR)` order (Unity's `sprite.vertices` for
+///   an axis-aligned quad).
+/// - `sprite_uv`: the source sprite's outer-rect UV corners in
+///   `(BL_min, TR_max)` order.
+/// - `sprite_size_world`: `sprite.rect.size / sprite.pixelsPerUnit`.
+/// - `sprite_pivot_norm`: normalized pivot `sprite.pivot / sprite.rect.size`.
+/// - `draw_size`: the SpriteRenderer's `size` field (target rect, world units).
+///
+/// Returns interleaved (positions, uvs, triangles) in pivot-relative
+/// world coords, ready for transform via the per-renderer matrix chain.
+///
+/// Asserts (mirroring the C# `Assert.IsTrue`s):
+/// - `tileQuotientX < 0.999` and `tileQuotientY < 0.999`.
+/// - `tileRepeatX * tileRepeatY < 200`.
+pub fn tiled_mesh(
+    sprite_quad: [[f32; 2]; 4],
+    sprite_uv: [[f32; 2]; 2],
+    sprite_size_world: [f32; 2],
+    sprite_pivot_norm: [f32; 2],
+    draw_size: [f32; 2],
+) -> (Vec<[f32; 2]>, Vec<[f32; 2]>, Vec<u16>) {
+    let pos_min = sprite_quad[0];
+    let pos_max = sprite_quad[3];
+    let pos_size = [pos_max[0] - pos_min[0], pos_max[1] - pos_min[1]];
+    let uv_min = sprite_uv[0];
+    let uv_max = sprite_uv[1];
+    let uv_size = [uv_max[0] - uv_min[0], uv_max[1] - uv_min[1]];
+
+    let tile_div = [
+        draw_size[0] / sprite_size_world[0],
+        draw_size[1] / sprite_size_world[1],
+    ];
+    let tile_repeat_x = tile_div[0].ceil() as i32;
+    let tile_repeat_y = tile_div[1].ceil() as i32;
+    let tile_quotient_x = if (tile_repeat_x as f32 - tile_div[0]) > 0.0001 {
+        tile_div[0] - (tile_repeat_x - 1) as f32
+    } else {
+        0.0
+    };
+    let tile_quotient_y = if (tile_repeat_y as f32 - tile_div[1]) > 0.0001 {
+        tile_div[1] - (tile_repeat_y - 1) as f32
+    } else {
+        0.0
+    };
+    assert!(tile_quotient_x < 0.999, "tile quotient X too large: {tile_quotient_x}");
+    assert!(tile_quotient_y < 0.999, "tile quotient Y too large: {tile_quotient_y}");
+    assert!(
+        (tile_repeat_x * tile_repeat_y) < 200,
+        "too many tiles: {tile_repeat_x} x {tile_repeat_y}"
+    );
+
+    let draw_pivot = sprite_pivot_norm;
+    let tile_origin = [draw_size[0] * draw_pivot[0], draw_size[1] * draw_pivot[1]];
+    let sprite_pivot_point = [
+        draw_pivot[0] * sprite_size_world[0],
+        draw_pivot[1] * sprite_size_world[1],
+    ];
+    let tile_offset = [
+        -tile_origin[0] + sprite_pivot_point[0],
+        -tile_origin[1] + sprite_pivot_point[1],
+    ];
+
+    let mut ps: Vec<[f32; 2]> = Vec::new();
+    let mut uvs: Vec<[f32; 2]> = Vec::new();
+    let mut tris: Vec<u16> = Vec::new();
+    let mut index_offset: u16 = 0;
+
+    for y in 0..tile_repeat_y {
+        for x in 0..tile_repeat_x {
+            let mut p0 = pos_min;
+            let mut p3 = pos_max;
+            let uv0 = uv_min;
+            let mut uv3 = uv_max;
+            if x == tile_repeat_x - 1 && tile_quotient_x != 0.0 {
+                p3[0] = pos_min[0] + pos_size[0] * tile_quotient_x;
+                uv3[0] = uv_min[0] + uv_size[0] * tile_quotient_x;
+            }
+            if y == tile_repeat_y - 1 && tile_quotient_y != 0.0 {
+                p3[1] = pos_min[1] + pos_size[1] * tile_quotient_y;
+                uv3[1] = uv_min[1] + uv_size[1] * tile_quotient_y;
+            }
+            let tile_start = [
+                tile_offset[0] + (x as f32) * sprite_size_world[0],
+                tile_offset[1] + (y as f32) * sprite_size_world[1],
+            ];
+            p0[0] += tile_start[0];
+            p0[1] += tile_start[1];
+            p3[0] += tile_start[0];
+            p3[1] += tile_start[1];
+
+            ps.push([p0[0], p0[1]]);
+            ps.push([p3[0], p0[1]]);
+            ps.push([p0[0], p3[1]]);
+            ps.push([p3[0], p3[1]]);
+
+            uvs.push(uv0);
+            uvs.push([uv3[0], uv0[1]]);
+            uvs.push([uv0[0], uv3[1]]);
+            uvs.push(uv3);
+
+            // sprite.triangles for a quad is [0,1,2, 2,1,3] (Unity convention).
+            for &t in &[0u16, 1, 2, 2, 1, 3] {
+                tris.push(t + index_offset);
+            }
+            index_offset += 4;
+        }
+    }
+
+    (ps, uvs, tris)
+}
+
 /// Emit a full multi-mesh `.asset` file. Header is the standard two-line
 /// Unity YAML preamble; each `MeshAsset` becomes a `--- !u!43 &<file_id>`
 /// section whose body is dispatched on `used_in_canvas`.
@@ -568,5 +682,63 @@ mod tests {
     fn float_to_half_underflow_to_zero() {
         // Half of the smallest subnormal rounds to zero via round-to-even.
         assert_eq!(h(2.0f32.powi(-25)), 0x0000);
+    }
+
+    #[test]
+    fn tiled_mesh_single_tile_unit_quad() {
+        // 1×1 sprite tiled to 1×1 draw size: a single tile, no slicing.
+        // Pivot at center → tile origin at (0.5, 0.5).
+        let quad = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]];
+        let uv = [[0.0, 0.0], [1.0, 1.0]];
+        let (ps, uvs, tris) = tiled_mesh(quad, uv, [1.0, 1.0], [0.5, 0.5], [1.0, 1.0]);
+        assert_eq!(ps.len(), 4);
+        assert_eq!(uvs.len(), 4);
+        assert_eq!(tris, vec![0, 1, 2, 2, 1, 3]);
+        // Pivot-centered: tile_offset = (-0.5, -0.5) + (0.5, 0.5) = (0, 0).
+        // tile_start = (0, 0). p0..p3 = source quad.
+        assert_eq!(ps[0], [0.0, 0.0]);
+        assert_eq!(ps[3], [1.0, 1.0]);
+    }
+
+    #[test]
+    fn tiled_mesh_repeat_2x1_integer() {
+        // 1×1 sprite, 2×1 draw. Two full tiles laid horizontally.
+        let quad = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]];
+        let uv = [[0.0, 0.0], [1.0, 1.0]];
+        let (ps, uvs, tris) = tiled_mesh(quad, uv, [1.0, 1.0], [0.0, 0.0], [2.0, 1.0]);
+        assert_eq!(ps.len(), 8);
+        assert_eq!(uvs.len(), 8);
+        assert_eq!(tris, vec![0, 1, 2, 2, 1, 3, 4, 5, 6, 6, 5, 7]);
+        // Both tiles cover full UV [0,1].
+        assert_eq!(uvs[0], [0.0, 0.0]);
+        assert_eq!(uvs[3], [1.0, 1.0]);
+        assert_eq!(uvs[4], [0.0, 0.0]);
+        assert_eq!(uvs[7], [1.0, 1.0]);
+    }
+
+    #[test]
+    fn tiled_mesh_partial_last_tile_x() {
+        // 1×1 sprite, 1.5×1 draw. Two tiles in X, the last one half-sized.
+        let quad = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]];
+        let uv = [[0.0, 0.0], [1.0, 1.0]];
+        let (ps, uvs, _tris) = tiled_mesh(quad, uv, [1.0, 1.0], [0.0, 0.0], [1.5, 1.0]);
+        assert_eq!(ps.len(), 8);
+        // First tile is full-size.
+        assert_eq!(ps[0], [0.0, 0.0]);
+        assert_eq!(ps[3], [1.0, 1.0]);
+        // Second tile is half-width starting at x=1.
+        assert_eq!(ps[4], [1.0, 0.0]);
+        assert_eq!(ps[7], [1.5, 1.0]);
+        // UV on the second tile is sliced to half on x.
+        assert_eq!(uvs[7], [0.5, 1.0]);
+    }
+
+    #[test]
+    #[should_panic(expected = "too many tiles")]
+    fn tiled_mesh_too_many_tiles_panics() {
+        let quad = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]];
+        let uv = [[0.0, 0.0], [1.0, 1.0]];
+        // 20×20 tiles = 400 > 200 limit.
+        tiled_mesh(quad, uv, [1.0, 1.0], [0.0, 0.0], [20.0, 20.0]);
     }
 }
