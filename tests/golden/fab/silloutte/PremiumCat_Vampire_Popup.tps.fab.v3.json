@@ -4,6 +4,7 @@
     {
       "name": "Silloutte1",
       "mode": "ui",
+      "scale": 0.01,
       "children": [
         { "pos": [0, -22.25],
           "type": "polygon", "color": "32264DBD",
@@ -22,6 +23,7 @@
     {
       "name": "Silloutte2",
       "mode": "ui",
+      "scale": 0.01,
       "children": [
         { "pos": [10.175001, -11.612498],
           "type": "polygon", "color": "32264DBD",

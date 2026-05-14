@@ -173,14 +173,20 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
     let mut current_asset_names_ci: HashSet<String> = HashSet::with_capacity(sheet.sprites.len());
 
     for sprite in &sheet.sprites {
-        // Parts referenced by the fab manifest don't get their own .asset —
-        // they survive only inside the combined sprite. Existing on-disk
-        // .assets for them are caught as orphans below.
+        // Parts referenced by the fab manifest don't get their own
+        // emitted .asset — they live inside the combined sprite. But
+        // existing on-disk .asset files for them might still be
+        // referenced by external prefabs (the part can serve double
+        // duty as a standalone sprite AND a component of a combined).
+        // Register the part name in the current-set so the orphan-prune
+        // below doesn't auto-delete it; the on-disk bytes remain
+        // unchanged.
+        let asset_name = format!("{}{}", input.prefix, sprite.name);
         if part_names.contains(&sprite.name) {
+            current_asset_names_ci.insert(asset_name.to_ascii_lowercase());
             continue;
         }
 
-        let asset_name = format!("{}{}", input.prefix, sprite.name);
         if !current_asset_names_ci.insert(asset_name.to_ascii_lowercase()) {
             return Err(Error::DuplicateSpriteName(asset_name));
         }
@@ -978,15 +984,22 @@ mod tests {
         assert!(out.written_paths.iter().any(|p| p == &combined));
 
         // Part-sprite .asset is NOT in the written set (Cake__DecoLeft is
-        // a part of the combined). It WILL be in deleted_paths because the
-        // staged fixture had it on disk; orphan prune catches it.
+        // a part of the combined) but its on-disk bytes are PRESERVED —
+        // external prefabs may reference the part GUID directly, so the
+        // pipeline now keeps the part's on-disk .asset rather than
+        // pruning it as an orphan.
         assert!(
             !out.written_paths.iter().any(|p| p.ends_with("Cake__DecoLeft.asset")),
             "part sprite should not be in written set",
         );
         assert!(
-            out.deleted_paths.iter().any(|p| p.ends_with("Cake__DecoLeft.asset")),
-            "part sprite should be pruned as orphan",
+            !out.deleted_paths.iter().any(|p| p.ends_with("Cake__DecoLeft.asset")),
+            "part sprite must be preserved (external refs possible)",
+        );
+        let part_asset = dir.join("sprites/Cake__DecoLeft.asset");
+        assert!(
+            part_asset.exists(),
+            "part sprite .asset must still exist on disk"
         );
 
         // Sanity: emitted bytes start with the Sprite YAML header.

@@ -813,8 +813,9 @@ fn write_tree(
         p.output_sprite_alias
     ));
     out.push_str("      \"mode\": \"ui\",\n");
-    // mode=ui's default scale is CSA canvasScale = 0.01; emit only if different.
-    if p.csa_scale != 0.01 {
+    // Default scale = 1.0; emit explicitly when it differs (CSA canvas
+    // prefabs declare `scale: 0.01`).
+    if p.csa_scale != 1.0 {
         out.push_str(&format!("      \"scale\": {},\n", fmt_f(p.csa_scale)));
     }
     if p.root_anchored != [0.0, 0.0] {
@@ -847,7 +848,17 @@ fn write_leaf(
         out.push_str(&format!("{sep}\"pos\": {}", fmt_xy(leaf.pos)));
         sep = ", ";
     }
-    if leaf.size_delta != [0.0, 0.0] {
+    // sizeDelta is only meaningful for size-fitted (stretchable) methods
+    // — mirror/tile/slice. Native-scale methods (ID + UISolid polygon,
+    // which absorbs sizeDelta into its vertices) get it dropped.
+    let emit_size_delta = match &leaf.graphic {
+        Some(LeafGraphic::UIIcon { method, .. }) | Some(LeafGraphic::UISlice { method, .. }) => {
+            method != "ID"
+        }
+        Some(LeafGraphic::UISolid { .. }) => false,
+        None => false,
+    };
+    if emit_size_delta && leaf.size_delta != [0.0, 0.0] {
         out.push_str(&format!("{sep}\"sizeDelta\": {}", fmt_xy(leaf.size_delta)));
         sep = ", ";
     }

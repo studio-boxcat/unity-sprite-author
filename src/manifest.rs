@@ -225,10 +225,13 @@ pub fn parse(json: &str) -> Result<Manifest, ManifestError> {
             graphic: None,
             children,
         };
-        let default_scale = if matches!(output, Output::Csa) { 0.01 } else { 1.0 };
+        // Default tree-level scale is 1.0 across modes. CSA prefabs that
+        // need the historical 0.01 canvas factor declare `scale: 0.01`
+        // explicitly. (Earlier mode-dependent default was confusing —
+        // unify to a single neutral default.)
         trees.push(Tree {
             name: t.name,
-            scale: t.scale.unwrap_or(default_scale),
+            scale: t.scale.unwrap_or(1.0),
             root_anchored: t.root_anchored.unwrap_or([0.0, 0.0]),
             output,
             root,
@@ -883,8 +886,9 @@ mod tests {
         assert_eq!(m.trees.len(), 1);
         let t = &m.trees[0];
         assert_eq!(t.output, Output::Csa);
-        // mode=ui defaults scale to CSA canvasScale (0.01).
-        assert_eq!(t.scale, 0.01);
+        // Tree-level scale defaults to 1.0 across modes; CSA prefabs that
+        // need the historical canvasScale declare `scale: 0.01` explicitly.
+        assert_eq!(t.scale, 1.0);
         assert_eq!(t.root.children.len(), 1);
         match &t.root.children[0].graphic.as_ref().unwrap() {
             Graphic::Sprite { method, ui_scale, .. } => {
@@ -1175,8 +1179,8 @@ mod tests {
         );
         let c = to_fab_combined(&m.trees[0]).unwrap();
         assert_eq!(c.name, "X");
-        // mode=ui defaults canvas_scale to 0.01 (CSA convention).
-        assert_eq!(c.canvas_scale, 0.01);
+        // Default canvas_scale is 1.0 — CSA prefabs set 0.01 explicitly.
+        assert_eq!(c.canvas_scale, 1.0);
         assert_eq!(c.parts.len(), 1);
         match &c.parts[0] {
             crate::fab::Part::AtlasSprite { sprite, method, ui_scale, size, offset, .. } => {
