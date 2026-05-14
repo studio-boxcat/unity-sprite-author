@@ -30,6 +30,12 @@ pub struct MeshAsset {
     pub colors: Vec<[u8; 4]>,
     pub indices: Vec<u16>,
     pub used_in_canvas: bool,
+    /// Mirrors Unity's per-mesh `m_KeepVertices` / `m_KeepIndices`. SMA's
+    /// SetMesh leaves them at 1 for most meshes but at 0 when Unity drops
+    /// CPU-side copies (empirically: large or non-canvas meshes). Stored
+    /// per-mesh so round-trip mirrors the asset bit-for-bit.
+    pub keep_vertices: bool,
+    pub keep_indices: bool,
     pub aabb_center: [f32; 3],
     pub aabb_extent: [f32; 3],
 }
@@ -107,8 +113,8 @@ pub fn emit_mesh_body_canvas(m: &MeshAsset) -> String {
     s.push_str("    m_Data: \n");
     s.push_str("  m_MeshCompression: 0\n");
     s.push_str("  m_IsReadable: 1\n");
-    s.push_str("  m_KeepVertices: 1\n");
-    s.push_str("  m_KeepIndices: 1\n");
+    let _ = write!(s, "  m_KeepVertices: {}\n", m.keep_vertices as u8);
+    let _ = write!(s, "  m_KeepIndices: {}\n", m.keep_indices as u8);
     s.push_str("  m_IndexFormat: 0\n");
     s.push_str("  m_IndexBuffer: ");
     encode_index_buffer(&m.indices, &mut s);
@@ -274,7 +280,17 @@ const STREAM_AND_LOD_TAIL: &str = "  m_StreamData:
         m_IndexCount: 0
 ";
 
-/// Stub — multi-mesh asset assembly. Implementation incoming.
-pub fn emit_mesh_asset(_meshes: &[MeshAsset]) -> Vec<u8> {
-    unimplemented!("mesh_emit::emit_mesh_asset (multi-mesh assembly) is Phase 2b TODO")
+/// Emit a full multi-mesh `.asset` file. Header is the standard two-line
+/// Unity YAML preamble; each `MeshAsset` becomes a `--- !u!43 &<file_id>`
+/// section whose body is `emit_mesh_body_canvas` (CanvasRenderer layout
+/// only — SpriteRenderer pending).
+pub fn emit_mesh_asset(meshes: &[MeshAsset]) -> Vec<u8> {
+    let mut s = String::with_capacity(128 + meshes.len() * 6000);
+    s.push_str("%YAML 1.1\n");
+    s.push_str("%TAG !u! tag:unity3d.com,2011:\n");
+    for m in meshes {
+        let _ = write!(s, "--- !u!43 &{}\n", m.file_id);
+        s.push_str(&emit_mesh_body_canvas(m));
+    }
+    s.into_bytes()
 }

@@ -130,6 +130,8 @@ fn decode_mesh_asset_from_golden(yaml: &str) -> MeshAsset {
     let (cx, cy, cz) = parse_xyz(yaml, "  m_LocalAABB:", "    m_Center:");
     let (ex, ey, ez) = parse_xyz(yaml, "  m_LocalAABB:", "    m_Extent:");
 
+    let keep_vertices = parse_int_field(yaml, "  m_KeepVertices:") != 0;
+    let keep_indices = parse_int_field(yaml, "  m_KeepIndices:") != 0;
     MeshAsset {
         file_id: 0,
         name: String::new(),
@@ -138,9 +140,33 @@ fn decode_mesh_asset_from_golden(yaml: &str) -> MeshAsset {
         colors,
         indices,
         used_in_canvas: true,
+        keep_vertices,
+        keep_indices,
         aabb_center: [cx, cy, cz],
         aabb_extent: [ex, ey, ez],
     }
+}
+
+/// Drop every sub-asset block that isn't a Mesh (`!u!43`). Keeps the
+/// leading two-line YAML preamble.
+fn strip_non_mesh_sub_assets(yaml: &str) -> String {
+    let mut out = String::with_capacity(yaml.len());
+    let mut keep = true; // preamble is kept
+    for line in yaml.lines() {
+        if let Some(after) = line.strip_prefix("--- !u!") {
+            keep = after.starts_with("43 ");
+        }
+        if keep {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+fn parse_int_field(yaml: &str, key: &str) -> i32 {
+    let line = yaml.lines().find(|l| l.starts_with(key)).expect("key missing");
+    line.split_once(':').unwrap().1.trim().parse().unwrap()
 }
 
 fn find_value(yaml: &str, key: &str) -> String {
@@ -163,9 +189,62 @@ fn parse_xyz(yaml: &str, section: &str, key: &str) -> (f32, f32, f32) {
 }
 
 #[test]
-#[ignore = "multi-mesh assembly + SpriteRenderer layout pending"]
+#[ignore = "SpriteRenderer layout (Mathf.FloatToHalf, half2 UV) pending — mesh subset round-trip is exercised by box_29_ghost_first_mesh_byte_exact"]
 fn box_29_ghost_roundtrip() {
-    // Future expansion: parse all 32 sub-assets, re-emit via emit_mesh_asset,
-    // byte-compare to the full fixture.
-    let _ = mesh_emit::emit_mesh_asset(&[] as &[MeshAsset]);
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/golden/sma/box_29_ghost/Box_29_Ghost.asset");
+    let golden = fs::read_to_string(&path).expect("read fixture");
+
+    // The committed fixture mixes 32 Mesh sub-assets (`!u!43`) with 3 Odin
+    // metadata MonoBehaviours (`!u!114`) — the latter are out of scope for
+    // SMA mesh emit. Strip them from the golden before comparing and skip
+    // them while collecting MeshAssets.
+    let golden = strip_non_mesh_sub_assets(&golden);
+    let lines: Vec<&str> = golden.lines().collect();
+    let header_indices: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(i, l)| l.starts_with("--- !u!43 &").then_some(i))
+        .collect();
+    assert!(!header_indices.is_empty(), "no sub-asset headers");
+    let mut meshes = Vec::with_capacity(header_indices.len());
+    for w in 0..header_indices.len() {
+        let start = header_indices[w];
+        let end = header_indices.get(w + 1).copied().unwrap_or(lines.len());
+        let file_id: i64 = lines[start]
+            .trim_start_matches("--- !u!43 &")
+            .parse()
+            .expect("parse file_id");
+        let body_yaml = lines[start + 1..end].join("\n") + "\n";
+        let mut m = decode_mesh_asset_from_golden(&body_yaml);
+        m.file_id = file_id;
+        meshes.push(m);
+    }
+
+    let got = mesh_emit::emit_mesh_asset(&meshes);
+    let got_str = String::from_utf8(got).expect("utf8");
+    if got_str == golden {
+        return;
+    }
+
+    let off = got_str
+        .bytes()
+        .zip(golden.bytes())
+        .position(|(a, b)| a != b)
+        .unwrap_or_else(|| got_str.len().min(golden.len()));
+    let lo = off.saturating_sub(40);
+    let hi_g = (off + 80).min(got_str.len());
+    let hi_e = (off + 80).min(golden.len());
+    let _ = fs::create_dir_all("target/diff");
+    let _ = fs::write("target/diff/box_29_ghost_roundtrip.actual", &got_str);
+    let _ = fs::write("target/diff/box_29_ghost_roundtrip.expected", &golden);
+    panic!(
+        "byte mismatch at offset {off} (got len={}, golden len={})\n\
+         got     [{lo}..{hi_g}]: {:?}\n\
+         golden  [{lo}..{hi_e}]: {:?}",
+        got_str.len(),
+        golden.len(),
+        &got_str[lo..hi_g],
+        &golden[lo..hi_e],
+    );
 }
