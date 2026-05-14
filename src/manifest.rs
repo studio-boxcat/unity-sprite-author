@@ -776,6 +776,93 @@ impl MethodCapV3 for crate::fab::Method {
     }
 }
 
+/// Convert a `Tree` with `Output::Sma { … }` into the mesh-emit-ready shape:
+/// extract the SMA output config + every `Graphic::SpriteRenderer` leaf with
+/// its composed 2D affine (`localToRoot`). Returns the per-tree atomic unit
+/// the existing `mesh_emit::build_mesh` consumes — except `build_mesh`
+/// currently keys off the flat `MeshCombined { fileId, name, output_path,
+/// usedInCanvas, keep*, renderers: [...] }` shape, so we hand-build that
+/// from the walker output.
+pub fn to_mesh_combined(
+    tree: &Tree,
+) -> Result<crate::mesh_manifest::MeshCombined, BridgeError> {
+    use crate::mesh_manifest as mm;
+
+    let (file_id, output_path, used_in_canvas, keep_vertices, keep_indices) = match &tree.output {
+        Output::Sma {
+            file_id,
+            output_path,
+            used_in_canvas,
+            keep_vertices,
+            keep_indices,
+        } => (*file_id, output_path.clone(), *used_in_canvas, *keep_vertices, *keep_indices),
+        _ => {
+            return Err(BridgeError::OutputMismatch {
+                tree: tree.name.clone(),
+                expected: "sma",
+            })
+        }
+    };
+
+    let leaves = walk(tree);
+    let mut renderers: Vec<mm::MeshRenderer> = Vec::with_capacity(leaves.len());
+    for leaf in leaves {
+        let g = match leaf.graphic {
+            Graphic::SpriteRenderer {
+                sprite,
+                draw_mode,
+                size,
+            } => (sprite, draw_mode, size),
+            _ => {
+                return Err(BridgeError::GraphicMismatch {
+                    tree: tree.name.clone(),
+                    reason: "sma output only accepts sprite-renderer graphics",
+                })
+            }
+        };
+        let (sprite, draw_mode, size) = g;
+        let dm = match draw_mode {
+            DrawMode::Simple => mm::DrawMode::Simple,
+            DrawMode::Tiled => mm::DrawMode::Tiled,
+        };
+        // localToRoot = composed 2D affine row-major [m00, m01, m02, m03, m10, m11, m12, m13].
+        // The walker gives us world_scale (composed across ancestors), world_pos
+        // (composed translation), and world_rot_deg (composed rotation). Build
+        // the matrix accordingly. Flip is folded into world_scale's sign.
+        let (sin_t, cos_t) = leaf.world_rot_deg.to_radians().sin_cos();
+        let m00 = cos_t * leaf.world_scale[0];
+        let m01 = -sin_t * leaf.world_scale[1];
+        let m10 = sin_t * leaf.world_scale[0];
+        let m11 = cos_t * leaf.world_scale[1];
+        let l2r = [m00, m01, 0.0, leaf.world_pos[0], m10, m11, 0.0, leaf.world_pos[1]];
+
+        renderers.push(mm::MeshRenderer {
+            sprite: sprite.clone(),
+            // flipX/Y is folded into world_scale's sign by the walker, so the
+            // mesh_manifest level keeps these false. mesh_emit's `build_mesh`
+            // applies flip BEFORE the matrix, but if the matrix already
+            // carries the sign in m00/m11, that's a double-flip. We undo
+            // here: extract sign from world_scale, but pass false for flip
+            // and absorb sign into l2r.
+            flip_x: false,
+            flip_y: false,
+            draw_mode: dm,
+            size: *size,
+            local_to_root: l2r,
+        });
+    }
+
+    Ok(mm::MeshCombined {
+        file_id,
+        name: tree.name.clone(),
+        output_path,
+        used_in_canvas,
+        keep_vertices,
+        keep_indices,
+        renderers,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1226,6 +1313,113 @@ mod tests {
         );
         let c = to_fab_combined(&m.trees[0]).unwrap();
         assert_eq!(c.root_anchored, [141.8, 370.875]);
+    }
+
+    #[test]
+    fn bridge_to_mesh_minimal_simple() {
+        let m = parse_single(
+            r#"{ "version":1, "trees":[{
+              "name":"X",
+              "output":{"type":"sma","fileId":-1234,"outputPath":"o.asset","usedInCanvas":true},
+              "root":{"children":[
+                {"graphic":{"type":"sprite-renderer","sprite":"foo"}}
+              ]}
+            }]}"#,
+        );
+        let mc = to_mesh_combined(&m.trees[0]).unwrap();
+        assert_eq!(mc.file_id, -1234);
+        assert_eq!(mc.name, "X");
+        assert_eq!(mc.output_path, "o.asset");
+        assert!(mc.used_in_canvas);
+        assert!(mc.keep_vertices); // default
+        assert_eq!(mc.renderers.len(), 1);
+        let r = &mc.renderers[0];
+        assert_eq!(r.sprite, "foo");
+        assert_eq!(r.draw_mode, crate::mesh_manifest::DrawMode::Simple);
+        assert_eq!(r.local_to_root, [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn bridge_to_mesh_translation_into_l2r() {
+        let m = parse_single(
+            r#"{ "version":1, "trees":[{
+              "name":"X",
+              "output":{"type":"sma","fileId":1,"outputPath":"o.asset","usedInCanvas":false},
+              "root":{"children":[
+                {"pos":[10,20],"graphic":{"type":"sprite-renderer","sprite":"a"}}
+              ]}
+            }]}"#,
+        );
+        let mc = to_mesh_combined(&m.trees[0]).unwrap();
+        let l = mc.renderers[0].local_to_root;
+        assert_eq!(l[3], 10.0); // m03
+        assert_eq!(l[7], 20.0); // m13
+    }
+
+    #[test]
+    fn bridge_to_mesh_flip_folds_into_l2r_diagonal() {
+        // scale: [-1, 1] is the walker-composed equivalent of flipX=true.
+        // The bridge folds it into matrix m00 = -1, m11 = 1, and clears the
+        // separate flip_x/flip_y bits so mesh_emit doesn't double-apply.
+        let m = parse_single(
+            r#"{ "version":1, "trees":[{
+              "name":"X",
+              "output":{"type":"sma","fileId":1,"outputPath":"o.asset","usedInCanvas":false},
+              "root":{"children":[
+                {"scale":[-1,1],"graphic":{"type":"sprite-renderer","sprite":"a"}}
+              ]}
+            }]}"#,
+        );
+        let mc = to_mesh_combined(&m.trees[0]).unwrap();
+        let r = &mc.renderers[0];
+        assert!(!r.flip_x);
+        assert!(!r.flip_y);
+        assert_eq!(r.local_to_root[0], -1.0); // m00
+        assert_eq!(r.local_to_root[5], 1.0); // m11
+    }
+
+    #[test]
+    fn bridge_to_mesh_tiled_threads_size() {
+        let m = parse_single(
+            r#"{ "version":1, "trees":[{
+              "name":"X",
+              "output":{"type":"sma","fileId":1,"outputPath":"o.asset","usedInCanvas":false},
+              "root":{"children":[
+                {"graphic":{"type":"sprite-renderer","sprite":"brick","drawMode":"tiled","size":[4.05,1.0]}}
+              ]}
+            }]}"#,
+        );
+        let mc = to_mesh_combined(&m.trees[0]).unwrap();
+        let r = &mc.renderers[0];
+        assert_eq!(r.draw_mode, crate::mesh_manifest::DrawMode::Tiled);
+        assert_eq!(r.size, Some([4.05, 1.0]));
+    }
+
+    #[test]
+    fn bridge_to_mesh_rejects_csa_tree() {
+        let m = parse_single(
+            r#"{ "version":1, "trees":[{
+              "name":"X","output":"csa",
+              "root":{"children":[{"graphic":{"type":"sprite","sprite":"a"}}]}
+            }]}"#,
+        );
+        let err = to_mesh_combined(&m.trees[0]).unwrap_err();
+        assert!(matches!(err, BridgeError::OutputMismatch { .. }));
+    }
+
+    #[test]
+    fn bridge_to_mesh_rejects_polygon_in_sma() {
+        let m = parse_single(
+            r#"{ "version":1, "trees":[{
+              "name":"X",
+              "output":{"type":"sma","fileId":1,"outputPath":"o.asset","usedInCanvas":true},
+              "root":{"children":[
+                {"graphic":{"type":"polygon","color":"112233","vertices":[[0,0],[1,0],[1,1]]}}
+              ]}
+            }]}"#,
+        );
+        let err = to_mesh_combined(&m.trees[0]).unwrap_err();
+        assert!(matches!(err, BridgeError::GraphicMismatch { .. }));
     }
 
     #[test]
