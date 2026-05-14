@@ -178,7 +178,7 @@ fn run(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     let project_root = find_project_root(&tps_dir).ok_or_else(|| {
         format!(
-            "no Unity project root above {} (needs Assets/ + ProjectSettings/)",
+            "no Unity project root above {} (needs ProjectSettings/)",
             tps_dir.display()
         )
     })?;
@@ -316,14 +316,14 @@ fn read_png_ppu(png: &Path) -> Option<f32> {
     None
 }
 
-/// Walk up `start` until a directory containing both `Assets/` and
-/// `ProjectSettings/` is found. `unity_assetdb::walk::resolve_project_root`
-/// with `Some(p)` requires `p` to already be the project root — it doesn't
-/// walk up — so we do the climb ourselves.
+/// Walk up `start` until a directory containing `ProjectSettings/` is
+/// found. `Assets/` is implied — we're walking up from a `.tps` already
+/// inside it. `unity_assetdb::walk::resolve_project_root` with `Some(p)`
+/// requires `p` to already be the project root, so we do the climb here.
 fn find_project_root(start: &Path) -> Option<PathBuf> {
     let mut cur = Some(start);
     while let Some(p) = cur {
-        if p.join("Assets").is_dir() && p.join("ProjectSettings").is_dir() {
+        if p.join("ProjectSettings").is_dir() {
             return Some(p.to_path_buf());
         }
         cur = p.parent();
