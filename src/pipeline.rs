@@ -560,6 +560,26 @@ fn mesh_manifest_path(tps_path: &Path) -> PathBuf {
 }
 
 fn load_mesh_manifest(tps_path: &Path) -> Result<Option<MeshManifest>, Error> {
+    // Two-schema dispatch: v3 trees (`.tps.fab.json`-shaped, when its
+    // `output: { "type":"sma", … }`) lives on the SAME path as the fab
+    // manifest. The legacy v1 mesh manifest at `<tps>.mesh.json` keeps
+    // working for in-flight migrations. Resolution order: v3 from
+    // `.tps.fab.json` if it contains `"trees"`, else v1 `.tps.mesh.json`.
+    let fab_path = fab_manifest_path(tps_path);
+    if let Ok(text) = fs::read_to_string(&fab_path) {
+        if text.contains("\"trees\"") {
+            let v3 = manifest::parse(&text).map_err(Error::Manifest)?;
+            let mut sma: Vec<mesh_manifest::MeshCombined> = Vec::new();
+            for tree in &v3.trees {
+                if matches!(tree.output, manifest::Output::Sma { .. }) {
+                    sma.push(manifest::to_mesh_combined(tree).map_err(Error::Bridge)?);
+                }
+            }
+            if !sma.is_empty() {
+                return Ok(Some(MeshManifest { meshes: sma }));
+            }
+        }
+    }
     let path = mesh_manifest_path(tps_path);
     match fs::read_to_string(&path) {
         Ok(text) => mesh_manifest::parse(&text)
