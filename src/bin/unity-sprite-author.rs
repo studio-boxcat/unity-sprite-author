@@ -13,7 +13,6 @@ use std::time::Duration;
 
 use unity_assetdb::bake::with_meta_suffix;
 use unity_assetdb::register::{self, ImporterKind, RegisterOptions};
-use unity_assetdb::walk;
 use unity_sprite_author::pipeline::{self, GenerateInputs};
 
 const USAGE: &str = "\
@@ -177,8 +176,12 @@ fn run(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         .into());
     }
 
-    let project_root = walk::resolve_project_root(Some(&tps_path))
-        .map_err(|e| format!("resolve project root for {}: {e}", tps_path.display()))?;
+    let project_root = find_project_root(&tps_dir).ok_or_else(|| {
+        format!(
+            "no Unity project root above {} (needs Assets/ + ProjectSettings/)",
+            tps_dir.display()
+        )
+    })?;
     let out_dir = project_root.join("Library").join("unity-assetdb");
 
     ensure_meta(&tps_path, &project_root, &out_dir, None)?;
@@ -309,6 +312,21 @@ fn read_png_ppu(png: &Path) -> Option<f32> {
         if let Some(rest) = line.trim_start().strip_prefix("spritePixelsToUnits:") {
             return rest.trim().parse().ok();
         }
+    }
+    None
+}
+
+/// Walk up `start` until a directory containing both `Assets/` and
+/// `ProjectSettings/` is found. `unity_assetdb::walk::resolve_project_root`
+/// with `Some(p)` requires `p` to already be the project root — it doesn't
+/// walk up — so we do the climb ourselves.
+fn find_project_root(start: &Path) -> Option<PathBuf> {
+    let mut cur = Some(start);
+    while let Some(p) = cur {
+        if p.join("Assets").is_dir() && p.join("ProjectSettings").is_dir() {
+            return Some(p.to_path_buf());
+        }
+        cur = p.parent();
     }
     None
 }
