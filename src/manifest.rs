@@ -510,6 +510,97 @@ mod raw {
     }
 }
 
+/// One graphic leaf with its world-frame transform after the tree walk.
+/// Equivalent to what the Unity-side dumper used to capture pre-flattened
+/// (`rel_m03/m13` etc.); now computed in Rust from the tree shape.
+#[derive(Debug, PartialEq)]
+pub struct ResolvedLeaf<'a> {
+    /// Composed position in the tree's root-local frame (world units for
+    /// SpriteRenderer / SMA, canvas-pixel units for CSA pre-`scale`).
+    pub world_pos: [f32; 2],
+    /// Composed per-axis scale (sign carries flip).
+    pub world_scale: [f32; 2],
+    /// Composed rotation in degrees (sum of node `rot_deg` along the path).
+    pub world_rot_deg: f32,
+    /// The leaf node's `size_delta` (untransformed). Size-fitted methods
+    /// (`R*`, `MX_R*`, `MY_R*`, tilers) consume this directly.
+    pub size_delta: [f32; 2],
+    /// The leaf node's `pivot` (untransformed).
+    pub pivot: [f32; 2],
+    pub graphic: &'a Graphic,
+}
+
+/// Walk a tree, composing each node's transform with its ancestors' so the
+/// leaves end up with root-local coords. Mirrors Unity's RectTransform
+/// cascade for the common center-anchored case — each child's world pos is
+/// its parent's world pos plus a center-of-rect offset
+/// `(0.5 − parent.pivot) × parent.size_delta` (the "Body shift" seen on
+/// AlbumSticker_Ghost1), plus the child's own anchored `pos`. Returns
+/// leaves in DFS order — same order the previous flat `parts: [...]`
+/// schema declared.
+pub fn walk<'a>(tree: &'a Tree) -> Vec<ResolvedLeaf<'a>> {
+    let mut out = Vec::new();
+    walk_node(
+        &tree.root,
+        [0.0, 0.0],
+        [1.0, 1.0],
+        0.0,
+        [0.0, 0.0],
+        [0.5, 0.5],
+        &mut out,
+    );
+    out
+}
+
+fn walk_node<'a>(
+    node: &'a Node,
+    parent_world_pos: [f32; 2],
+    parent_world_scale: [f32; 2],
+    parent_world_rot: f32,
+    parent_size_delta: [f32; 2],
+    parent_pivot: [f32; 2],
+    out: &mut Vec<ResolvedLeaf<'a>>,
+) {
+    // Center offset: where parent's rect-center sits, relative to parent's
+    // local origin (which is the pivot point in Unity's RectTransform). Only
+    // applies when the node has a parent with a meaningful size_delta.
+    let parent_center_offset = [
+        (0.5 - parent_pivot[0]) * parent_size_delta[0],
+        (0.5 - parent_pivot[1]) * parent_size_delta[1],
+    ];
+    let world_pos = [
+        parent_world_pos[0] + parent_center_offset[0] + node.pos[0],
+        parent_world_pos[1] + parent_center_offset[1] + node.pos[1],
+    ];
+    let world_scale = [
+        parent_world_scale[0] * node.scale[0],
+        parent_world_scale[1] * node.scale[1],
+    ];
+    let world_rot = parent_world_rot + node.rot_deg;
+
+    if let Some(g) = &node.graphic {
+        out.push(ResolvedLeaf {
+            world_pos,
+            world_scale,
+            world_rot_deg: world_rot,
+            size_delta: node.size_delta,
+            pivot: node.pivot,
+            graphic: g,
+        });
+    }
+    for c in &node.children {
+        walk_node(
+            c,
+            world_pos,
+            world_scale,
+            world_rot,
+            node.size_delta,
+            node.pivot,
+            out,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -695,6 +786,122 @@ mod tests {
             }]}"#,
         );
         assert!(matches!(m, Err(ManifestError::OutputShape { .. })));
+    }
+
+    fn parse_single(s: &str) -> Manifest {
+        parse(s).unwrap()
+    }
+
+    #[test]
+    fn walk_single_root_child_at_origin() {
+        let m = parse_single(
+            r#"{ "version":1, "trees":[{
+              "name":"X", "output":"csa",
+              "root":{"children":[{"graphic":{"type":"sprite","sprite":"a"}}]}
+            }]}"#,
+        );
+        let leaves = walk(&m.trees[0]);
+        assert_eq!(leaves.len(), 1);
+        assert_eq!(leaves[0].world_pos, [0.0, 0.0]);
+        assert_eq!(leaves[0].world_scale, [1.0, 1.0]);
+    }
+
+    #[test]
+    fn walk_child_translated() {
+        let m = parse_single(
+            r#"{ "version":1, "trees":[{
+              "name":"X", "output":"csa",
+              "root":{"children":[
+                {"pos":[10,20],"graphic":{"type":"sprite","sprite":"a"}}
+              ]}
+            }]}"#,
+        );
+        let leaves = walk(&m.trees[0]);
+        assert_eq!(leaves[0].world_pos, [10.0, 20.0]);
+    }
+
+    #[test]
+    fn walk_nested_pivot_center_offset() {
+        // Mirrors AlbumSticker_Ghost1: Body has non-center pivot, so SP's
+        // world.y picks up the (0.5 - pivot.y) * sizeDelta.y offset.
+        //   Body: pos=(0,0), pivot=(0.5, 0.4515571), sizeDelta=(154, 181)
+        //   SP:   pos=(-69.8, -36.7), graphic
+        // Expected SP world.y = (0.5 - 0.4515571) * 181 + (-36.7)
+        //                     = 0.0484429 * 181 - 36.7
+        //                     = 8.768165 - 36.7
+        //                     ≈ -27.931835
+        let m = parse_single(
+            r#"{ "version":1, "trees":[{
+              "name":"X", "output":"csa",
+              "root":{"children":[{
+                "name":"Body",
+                "pivot":[0.5, 0.4515571],
+                "sizeDelta":[154, 181],
+                "graphic":{"type":"sprite","sprite":"body"},
+                "children":[{
+                  "name":"SP",
+                  "pos":[-69.8, -36.7],
+                  "graphic":{"type":"sprite","sprite":"sp"}
+                }]
+              }]}
+            }]}"#,
+        );
+        let leaves = walk(&m.trees[0]);
+        assert_eq!(leaves.len(), 2);
+        // Body itself is a leaf with graphic.
+        assert_eq!(leaves[0].world_pos, [0.0, 0.0]);
+        // SP picks up Body's center-offset shift.
+        let sp = &leaves[1];
+        // Body's center offset y = (0.5 - 0.4515571) * 181 ≈ 8.768165
+        let expected_y = (0.5 - 0.4515571_f32) * 181.0 + (-36.7);
+        assert!(
+            (sp.world_pos[1] - expected_y).abs() < 1e-4,
+            "world.y = {} vs expected {}",
+            sp.world_pos[1],
+            expected_y
+        );
+        assert!((sp.world_pos[0] - (-69.8)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn walk_composes_scale_through_descendants() {
+        let m = parse_single(
+            r#"{ "version":1, "trees":[{
+              "name":"X", "output":"csa",
+              "root":{"children":[{
+                "scale":[-1, 1],
+                "graphic":{"type":"sprite","sprite":"parent"},
+                "children":[{
+                  "scale":[2, 3],
+                  "graphic":{"type":"sprite","sprite":"child"}
+                }]
+              }]}
+            }]}"#,
+        );
+        let leaves = walk(&m.trees[0]);
+        assert_eq!(leaves[0].world_scale, [-1.0, 1.0]);
+        assert_eq!(leaves[1].world_scale, [-2.0, 3.0]);
+    }
+
+    #[test]
+    fn walk_skips_interior_nodes_with_no_graphic() {
+        // A pure-transform "group" node with no `graphic` doesn't produce
+        // a leaf; only its descendants with graphics do.
+        let m = parse_single(
+            r#"{ "version":1, "trees":[{
+              "name":"X", "output":"csa",
+              "root":{"children":[{
+                "pos":[5, 10],
+                "children":[{
+                  "pos":[1, 2],
+                  "graphic":{"type":"sprite","sprite":"a"}
+                }]
+              }]}
+            }]}"#,
+        );
+        let leaves = walk(&m.trees[0]);
+        assert_eq!(leaves.len(), 1);
+        assert_eq!(leaves[0].world_pos, [6.0, 12.0]);
     }
 
     #[test]
