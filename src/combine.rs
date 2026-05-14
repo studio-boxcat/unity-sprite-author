@@ -251,7 +251,7 @@ fn check_method_constraints(
 }
 
 /// Build the mesh for a single polygon part with default canvas-chain
-/// identity (`uiScale = 1`, `m13 = (0, 0)`, `canvasScale = 1`) — the
+/// identity (`uiScale = 1`, `offset_scaled = (0, 0)`, `canvasScale = 1`) — the
 /// SpriteRenderer / Box-prefab path. CanvasSpriteAuthor callers go through
 /// `build_combined`, which passes non-identity canvas-chain values through
 /// `polygon_mesh_with_tris` directly.
@@ -297,7 +297,7 @@ fn polygon_mesh_with_tris(
     polygon_sprite_rect: Rect,
     atlas: AtlasSize,
     ui_scale: f32,
-    m13: (f32, f32),
+    offset_scaled: (f32, f32),
     canvas_scale: f32,
 ) -> PartMesh {
     let tris = match tris_override {
@@ -312,7 +312,7 @@ fn polygon_mesh_with_tris(
         border_mult: 1.0,
         affine,
         ui_scale,
-        m13,
+        offset_scaled,
         canvas_scale,
     };
     let verts: Vec<[f32; 2]> = vertices.iter().map(|v| apply_transform(*v, &ctx)).collect();
@@ -342,8 +342,8 @@ fn polygon_mesh_with_tris(
 /// order for `Sprite.vertices` (see `local_src_verts`). The per-method
 /// slice/mirror/tile math then transforms into the target-rect frame, and
 /// `apply_transform` runs each vert through the canvas chain (affine →
-/// uiScale → canvasScale + m13). With identity canvas-chain values the
-/// final step collapses to the plain per-part affine.
+/// uiScale → canvasScale + offset_scaled). With identity canvas-chain
+/// values the final step collapses to the plain per-part affine.
 ///
 /// Every `Method` variant is wired (ID / MX / MY / MXY plus the slice-grid
 /// family and the TX/TY/TX_MC3 tilers). FX/FY/FXY are rejected at parse
@@ -360,7 +360,7 @@ pub fn atlas_sprite_mesh(
     ppu: f32,
     invert_scale: f32,
     ui_scale: f32,
-    m13: (f32, f32),
+    offset_scaled: (f32, f32),
     canvas_scale: f32,
 ) -> PartMesh {
     // The sprite's effective PPU = ppu / invert_scale = ppu * spriteScale.
@@ -381,7 +381,7 @@ pub fn atlas_sprite_mesh(
         border_mult,
         affine,
         ui_scale,
-        m13,
+        offset_scaled,
         canvas_scale,
     };
     match method {
@@ -438,39 +438,20 @@ struct SliceCtx {
     border_mult: f32,
     affine: Affine,
     // CanvasSpriteAuthor-style round-trip transform. For SpriteMeshAuthor /
-    // Box prefabs these collapse to identity (ui_scale=1, m13=(0,0),
+    // Box prefabs these collapse to identity (ui_scale=1, offset_scaled=(0,0),
     // canvas_scale=1) so the existing affine-only path is unchanged. For
     // UIIcon parts under CanvasSpriteAuthor, ui_scale = UIIcon._scaleFactor
     // (typically 100), canvas_scale = CanvasSpriteAuthor._scaleFactor
     // (typically 0.01). Reproduces Unity's f32 op sequence (× 100, × 0.01)
     // bit-for-bit.
     //
-    // `m13` is the per-CombineInstance matrix's y/x translation row,
-    // precomputed with FMA-fused rounding to capture the residual Unity's
-    // native `Mesh.CombineMeshes` carries when the CanvasSpriteAuthor root
-    // sits at a non-origin `anchoredPosition`:
-    //     m13_axis = fma(canvas_scale, root_axis + offset_axis,
-    //                    -canvas_scale * root_axis)
-    // For root = (0, 0) this collapses to `canvas_scale * offset_axis`
-    // exactly. The per-vert transform then adds m13 via a regular two-step
-    // f32 chain (no FMA) — matching the bit pattern observed in the
-    // Silloutte3 golden.
+    // `offset_scaled` is the per-part `offset × canvas_scale`, precomputed
+    // once per part so the per-vert chain is a single two-step f32 op:
+    // `v × canvas_scale + offset_scaled`. Matches Unity's matrix-style
+    // emit when the CanvasSpriteAuthor root sits at origin.
     ui_scale: f32,
-    m13: (f32, f32),
+    offset_scaled: (f32, f32),
     canvas_scale: f32,
-}
-
-// FMA-fused `cis.m13` axis: round_to_nearest_f32(canvas_scale × child_world
-// + base_m13), where `child_world = root + offset` and
-// `base_m13 = canvas_scale × −root` (single round at the outer step). f64
-// promotion provides correctly-rounded FMA on every platform since an
-// f32 × f32 product fits exactly in f64 and the add into an f32-magnitude
-// term stays within f64 precision.
-fn compute_m13_axis(canvas_scale: f32, root: f32, offset: f32) -> f32 {
-    let base = (canvas_scale as f64) * (-root as f64);
-    let base_f32 = base as f32;
-    let fused = (canvas_scale as f64) * ((root + offset) as f64) + (base_f32 as f64);
-    fused as f32
 }
 
 // (px, py) → pivot-relative world units (matches Unity's Sprite.vertices).
@@ -1620,21 +1601,15 @@ where
         let part_mesh = match part {
             Part::AtlasSprite { method, size, part_pivot, border_mult, affine, ui_scale, offset, .. } => {
                 check_method_constraints(*method, &entry, &combined.name, source_name)?;
-                let m13 = (
-                    compute_m13_axis(combined.canvas_scale, combined.root_anchored[0], offset[0]),
-                    compute_m13_axis(combined.canvas_scale, combined.root_anchored[1], offset[1]),
-                );
+                let offset_scaled = (offset[0] * combined.canvas_scale, offset[1] * combined.canvas_scale);
                 atlas_sprite_mesh(
                     &entry, *method, *size, *part_pivot, *border_mult, *affine,
                     atlas, ppu, invert_scale,
-                    *ui_scale, m13, combined.canvas_scale,
+                    *ui_scale, offset_scaled, combined.canvas_scale,
                 )
             }
             Part::Polygon { vertices, triangles, affine, ui_scale, offset, .. } => {
-                let m13 = (
-                    compute_m13_axis(combined.canvas_scale, combined.root_anchored[0], offset[0]),
-                    compute_m13_axis(combined.canvas_scale, combined.root_anchored[1], offset[1]),
-                );
+                let offset_scaled = (offset[0] * combined.canvas_scale, offset[1] * combined.canvas_scale);
                 polygon_mesh_with_tris(
                     vertices,
                     triangles.as_deref(),
@@ -1642,7 +1617,7 @@ where
                     entry.rect,
                     atlas,
                     *ui_scale,
-                    m13,
+                    offset_scaled,
                     combined.canvas_scale,
                 )
             }
@@ -1698,12 +1673,11 @@ fn apply_transform(v: [f32; 2], ctx: &SliceCtx) -> [f32; 2] {
     // 3. × ui_scale (to canvas-pixel units).
     x *= ctx.ui_scale;
     y *= ctx.ui_scale;
-    // 4. Multiply by canvas_scale, then add the precomputed m13 (Unity's
-    //    per-CombineInstance translation row). Two-step f32 — no FMA at this
-    //    step — matches Unity's vertex-transform op order even when m13
-    //    carries an FMA-fused residual from the matrix-multiplication step.
-    x = x * ctx.canvas_scale + ctx.m13.0;
-    y = y * ctx.canvas_scale + ctx.m13.1;
+    // 4. Multiply by canvas_scale, then add the precomputed `offset_scaled`
+    //    (= `offset × canvas_scale`, computed once per part). Two-step f32 —
+    //    matches Unity's matrix-style vertex-transform op order.
+    x = x * ctx.canvas_scale + ctx.offset_scaled.0;
+    y = y * ctx.canvas_scale + ctx.offset_scaled.1;
     // 5. + (tx, ty) (additional world-unit translate).
     [x + a.tx, y + a.ty]
 }
@@ -2706,7 +2680,7 @@ mod tests {
     fn make_combined(name: &str, parts: Vec<Part>) -> fab::Combined {
         fab::Combined {
             name: name.into(), pivot: [0.5, 0.5], border: [0.0; 4],
-            canvas_scale: 1.0, root_anchored: [0.0, 0.0], parts,
+            canvas_scale: 1.0, parts,
         }
     }
 
@@ -2811,9 +2785,8 @@ mod tests {
 
     // Builds a SliceCtx for apply_transform-only tests; the slice/mirror
     // fields are unread on that code path so they get filler values. The
-    // `offset` arg here mirrors the original "offset × canvas_scale" model;
-    // the helper precomputes `m13 = offset × canvas_scale` to keep the
-    // tests focused on the per-vert chain rather than the FMA fusion.
+    // helper precomputes `offset_scaled = offset × canvas_scale` to mirror
+    // how `build_combined` feeds the per-vert chain.
     fn ctx_for_transform(
         affine: Affine,
         ui_scale: f32,
@@ -2827,7 +2800,7 @@ mod tests {
             border_mult: 1.0,
             affine,
             ui_scale,
-            m13: (offset.0 * canvas_scale, offset.1 * canvas_scale),
+            offset_scaled: (offset.0 * canvas_scale, offset.1 * canvas_scale),
             canvas_scale,
         }
     }
@@ -2885,96 +2858,6 @@ mod tests {
         );
         let out = apply_transform([0.0, 0.0], &ctx);
         assert!((out[0] - 7.5).abs() < 1e-6, "{out:?}");
-    }
-
-    #[test]
-    fn compute_m13_axis_identity_root_collapses_to_offset_times_scale() {
-        // root = 0: the FMA fusion collapses to f32(canvas_scale × offset),
-        // which is exactly what the pre-FMA-era code computed. Spot-check a
-        // few magnitudes to pin the contract — Silloutte1 + Silloutte2 +
-        // every Box / SpriteRenderer caller relies on this collapse staying
-        // bit-stable.
-        for offset in [0.0_f32, 1.5, -22.25, 100.0, -294.75] {
-            let got = compute_m13_axis(0.01, 0.0, offset);
-            let expected = (0.01_f32 * offset).to_bits();
-            assert_eq!(
-                got.to_bits(),
-                expected,
-                "compute_m13_axis(0.01, 0, {offset}) = {got} (0x{:08x}); want canvas_scale × offset = 0x{:08x}",
-                got.to_bits(),
-                expected
-            );
-        }
-    }
-
-    #[test]
-    fn compute_m13_axis_silloutte3_root_fma_residual() {
-        // Silloutte3's root anchored (141.8, 370.875), canvas_scale = 0.01.
-        // The FMA fusion produces the residual that lets the per-vert chain
-        // reproduce Unity's `Mesh.CombineMeshes` output bit-for-bit:
-        //
-        //   m13_y = fma(0.01, 370.875 + offset.y, -3.70875)
-        //
-        // Image part (offset.y = 0): residual = -9.24e-8 (= 0xb3c68000).
-        // B part (offset.y = -66.875): m13.y = -0.6687500476837158 (= 0xbf2b3334).
-        // SR / SL part (offset.y = 8): m13.y = 0.07999990880... (= 0x3da3d6fe).
-        // T part (offset.y = 160.625): m13.y = 1.6062499... (= 0x3fcd9999).
-        //
-        // Each bit pattern is the f32 the Silloutte3 golden expects out of
-        // the matrix-multiplication step; any drift here surfaces before the
-        // byte-exact silloutte3 integration test runs.
-        let cs = 0.01_f32;
-        let root_y = 370.875_f32;
-        let cases = [
-            (0.0_f32, 0xb3c68000_u32, "Image"),
-            (-66.875, 0xbf2b3334, "B"),
-            (8.0, 0x3da3d6fe, "SR/SL"),
-            (160.625, 0x3fcd9999, "T"),
-        ];
-        for (offset, want, name) in cases {
-            let got = compute_m13_axis(cs, root_y, offset);
-            assert_eq!(
-                got.to_bits(),
-                want,
-                "{name}: compute_m13_axis(0.01, 370.875, {offset}) = 0x{:08x}, want 0x{want:08x}",
-                got.to_bits()
-            );
-        }
-    }
-
-    #[test]
-    fn compute_m13_axis_depth2_uses_leaf_world_y_offset() {
-        // AlbumSticker_Ghost1's SP is a grandchild of root via Body. Body has
-        // `pivot.y = 0.4515571`, sizeDelta.y = 181, anchored y = 0 — its local
-        // origin sits 0.0484429 × 181 = 8.768 units above its rect's center,
-        // which propagates to SP's world position. SP's `anchoredPosition.y`
-        // is `-36.7`, but its *world* y (in root frame) is `-27.93184` once
-        // Body's pivot offset is folded in.
-        //
-        // Probed in Unity (Canvas-parented `AlbumSticker_Ghost1 (Author).prefab`):
-        //   g.localToWorldMatrix.m13 = -27.93184 (0xC1DF7466)
-        //   cis.m13                  = -0.2793183 (0xBE8F02D0)
-        //
-        // The migration tool's contract: for every leaf graphic, query Unity
-        // for `localToWorldMatrix.m13` (Canvas-parented) and pass it as
-        // `leaf.world − root.world` into `compute_m13_axis`. The existing
-        // single-FMA helper handles any nesting depth via that path — no
-        // multi-level matrix product needed in rust.
-        let cs = 0.01_f32;
-        // The decimal literal `-27.93184_f32` rounds to 0xC1DF7469 in Rust;
-        // Unity computes the same logical value through its RectTransform
-        // pivot chain and lands on 0xC1DF7466 (3 ULPs lower). Use the exact
-        // bits Unity reports — the migration tool will read them straight
-        // out of `g.localToWorldMatrix.m13` rather than parsing decimals.
-        let leaf_world_y = f32::from_bits(0xC1DF7466);
-        // Root at world origin → no FMA residual; collapses to cs × leaf_world_y.
-        let got = compute_m13_axis(cs, 0.0, leaf_world_y);
-        assert_eq!(
-            got.to_bits(),
-            0xBE8F02D0,
-            "AlbumSticker_Ghost1 SP grandchild: got 0x{:08x}, want 0xBE8F02D0",
-            got.to_bits()
-        );
     }
 
     #[test]

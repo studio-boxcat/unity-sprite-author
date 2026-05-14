@@ -818,11 +818,16 @@ fn write_tree(
     if p.csa_scale != 1.0 {
         out.push_str(&format!("      \"scale\": {},\n", fmt_f(p.csa_scale)));
     }
+    // Non-origin CSA roots are intentionally rejected by the new manifest
+    // schema (the FMA residual path that captured Unity's `Mesh.CombineMeshes`
+    // 1-ULP shift was retired). Surface as an error so the author repins the
+    // root in the prefab.
     if p.root_anchored != [0.0, 0.0] {
-        out.push_str(&format!(
-            "      \"rootAnchored\": {},\n",
-            fmt_xy(p.root_anchored)
-        ));
+        return Err(Fail(format!(
+            "{}: CSA root at non-origin {:?} — pin the prefab's root \
+             RectTransform.anchoredPosition to (0, 0) before re-running",
+            p.output_sprite_alias, p.root_anchored
+        )));
     }
     out.push_str("      \"children\": [\n");
     for (i, leaf) in p.children.iter().enumerate() {

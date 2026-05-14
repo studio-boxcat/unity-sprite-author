@@ -15,7 +15,6 @@
 //       {
 //         "name": "Silloutte1",
 //         "scale": 0.01,                       // root's `scaleFactor` (CSA) or 1.0 (SMA)
-//         "rootAnchored": [141.8, 370.875],    // optional, only matters for FMA residue
 //         "mode": "ui",                      // or { "type":"sma", "fileId":…, "outputPath":…, "usedInCanvas":… }
 //         "children": [
 //           {
@@ -66,9 +65,6 @@ pub struct Tree {
     pub name: String,
     /// CSA `_scaleFactor` (0.01 typical) or SMA world-unit (1.0 typical).
     pub scale: f32,
-    /// CSA root's `RectTransform.anchoredPosition`. Defaults to (0, 0). Only
-    /// matters for FMA-residue reproduction when non-origin.
-    pub root_anchored: [f32; 2],
     pub output: Output,
     pub root: Node,
 }
@@ -232,7 +228,6 @@ pub fn parse(json: &str) -> Result<Manifest, ManifestError> {
         trees.push(Tree {
             name: t.name,
             scale: t.scale.unwrap_or(1.0),
-            root_anchored: t.root_anchored.unwrap_or([0.0, 0.0]),
             output,
             root,
         });
@@ -447,7 +442,6 @@ mod raw {
         pub name: String,
         pub mode: String, // "ui" | "sma-canvas" | "sma-renderer"
         pub scale: Option<f32>,
-        pub root_anchored: Option<[f32; 2]>,
         // SMA fields — required when mode starts with "sma-", rejected otherwise.
         pub file_id: Option<i64>,
         pub output_path: Option<String>,
@@ -731,7 +725,6 @@ pub fn to_fab_combined(tree: &Tree) -> Result<crate::fab::Combined, BridgeError>
         pivot: [0.5, 0.5],
         border: [0.0; 4],
         canvas_scale: tree.scale,
-        root_anchored: tree.root_anchored,
         parts,
     })
 }
@@ -1297,24 +1290,6 @@ mod tests {
         );
         let err = to_fab_combined(&m.trees[0]).unwrap_err();
         assert!(matches!(err, BridgeError::OutputMismatch { .. }));
-    }
-
-    #[test]
-    fn bridge_silloutte3_root_anchored_threads_through() {
-        // The Silloutte3 case: root has non-origin anchored position, threads
-        // into Combined.root_anchored so compute_m13_axis fires the FMA-fused
-        // residual computation downstream.
-        let m = parse_single(
-            r#"{ "version":1, "trees":[{
-              "name":"Silloutte3","mode": "ui","scale":0.01,
-              "rootAnchored":[141.8, 370.875],
-              "children":[
-                {"type":"sprite","sprite":"a","method":"MX"}
-              ]
-            }]}"#,
-        );
-        let c = to_fab_combined(&m.trees[0]).unwrap();
-        assert_eq!(c.root_anchored, [141.8, 370.875]);
     }
 
     #[test]

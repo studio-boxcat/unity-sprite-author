@@ -19,7 +19,7 @@ use crate::emit::{self, EmitError, SpriteAsset};
 use crate::fab;
 use crate::manifest;
 use crate::mesh_emit::{self, BuildMeshError, MeshAsset};
-use crate::mesh_manifest::{self, MeshManifest};
+use crate::mesh_manifest::{MeshCombined, MeshManifest};
 use crate::meta;
 use crate::render_data::{self, AtlasSize};
 use crate::tps;
@@ -40,9 +40,7 @@ pub enum Error {
     AtlasSizeUnknown,
     EmptySheet,
     DuplicateSpriteName(String),
-    Fab(fab::FabError),
     Combine(combine::CombineError),
-    MeshManifest(mesh_manifest::MeshManifestError),
     BuildMesh(BuildMeshError),
     Manifest(manifest::ManifestError),
     Bridge(manifest::BridgeError),
@@ -62,12 +60,10 @@ impl fmt::Display for Error {
                 f,
                 "duplicate sprite name after prefix application: {name:?}"
             ),
-            Self::Fab(e) => write!(f, "fab.json: {e}"),
             Self::Combine(e) => write!(f, "fab combine: {e}"),
-            Self::MeshManifest(e) => write!(f, "mesh.json: {e}"),
             Self::BuildMesh(e) => write!(f, "mesh build: {e}"),
-            Self::Manifest(e) => write!(f, "manifest v3: {e}"),
-            Self::Bridge(e) => write!(f, "manifest v3 bridge: {e}"),
+            Self::Manifest(e) => write!(f, "manifest: {e}"),
+            Self::Bridge(e) => write!(f, "manifest bridge: {e}"),
         }
     }
 }
@@ -436,23 +432,16 @@ fn load_fab_manifest(tps_path: &Path) -> Result<Option<fab::Manifest>, Error> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(source) => return Err(Error::Io { path, source }),
     };
-    // Discriminate v3 (tree-shaped) from v1 (flat parts) at the file level so
-    // both schemas live side-by-side during the migration window. Cheap text
-    // probe avoids a double serde pass.
-    if text.contains("\"trees\"") {
-        let v3 = manifest::parse(&text).map_err(Error::Manifest)?;
-        let mut combined: Vec<fab::Combined> = Vec::with_capacity(v3.trees.len());
-        for tree in &v3.trees {
-            // Only CSA trees flow into the sprite-emit path; SMA trees are
-            // routed by the mesh integration further down.
-            if matches!(tree.output, manifest::Output::Csa) {
-                combined.push(manifest::to_fab_combined(tree).map_err(Error::Bridge)?);
-            }
+    let m = manifest::parse(&text).map_err(Error::Manifest)?;
+    let mut combined: Vec<fab::Combined> = Vec::with_capacity(m.trees.len());
+    for tree in &m.trees {
+        // Only CSA trees flow into the sprite-emit path; SMA trees are
+        // routed by the mesh integration further down.
+        if matches!(tree.output, manifest::Output::Csa) {
+            combined.push(manifest::to_fab_combined(tree).map_err(Error::Bridge)?);
         }
-        Ok(Some(fab::Manifest { combined }))
-    } else {
-        fab::parse(&text).map(Some).map_err(Error::Fab)
     }
+    Ok(Some(fab::Manifest { combined }))
 }
 
 fn collect_part_names(m: &fab::Manifest) -> HashSet<String> {
@@ -556,42 +545,27 @@ fn emit_combined_sprites(
 }
 
 // ---------------------------------------------------------------------------
-// `.tps.mesh.json` integration.
-
-fn mesh_manifest_path(tps_path: &Path) -> PathBuf {
-    let mut p = tps_path.to_path_buf();
-    p.as_mut_os_string().push(".mesh.json");
-    p
-}
+// SMA mesh integration. SMA trees live in `.tps.fab.json` alongside CSA
+// trees — the `output.type` discriminator picks them out at bridge time.
 
 fn load_mesh_manifest(tps_path: &Path) -> Result<Option<MeshManifest>, Error> {
-    // Two-schema dispatch: v3 trees (`.tps.fab.json`-shaped, when its
-    // `output: { "type":"sma", … }`) lives on the SAME path as the fab
-    // manifest. The legacy v1 mesh manifest at `<tps>.mesh.json` keeps
-    // working for in-flight migrations. Resolution order: v3 from
-    // `.tps.fab.json` if it contains `"trees"`, else v1 `.tps.mesh.json`.
     let fab_path = fab_manifest_path(tps_path);
-    if let Ok(text) = fs::read_to_string(&fab_path) {
-        if text.contains("\"trees\"") {
-            let v3 = manifest::parse(&text).map_err(Error::Manifest)?;
-            let mut sma: Vec<mesh_manifest::MeshCombined> = Vec::new();
-            for tree in &v3.trees {
-                if matches!(tree.output, manifest::Output::Sma { .. }) {
-                    sma.push(manifest::to_mesh_combined(tree).map_err(Error::Bridge)?);
-                }
-            }
-            if !sma.is_empty() {
-                return Ok(Some(MeshManifest { meshes: sma }));
-            }
+    let text = match fs::read_to_string(&fab_path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => return Err(Error::Io { path: fab_path, source }),
+    };
+    let m = manifest::parse(&text).map_err(Error::Manifest)?;
+    let mut sma: Vec<MeshCombined> = Vec::new();
+    for tree in &m.trees {
+        if matches!(tree.output, manifest::Output::Sma { .. }) {
+            sma.push(manifest::to_mesh_combined(tree).map_err(Error::Bridge)?);
         }
     }
-    let path = mesh_manifest_path(tps_path);
-    match fs::read_to_string(&path) {
-        Ok(text) => mesh_manifest::parse(&text)
-            .map(Some)
-            .map_err(Error::MeshManifest),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(source) => Err(Error::Io { path, source }),
+    if sma.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(MeshManifest { meshes: sma }))
     }
 }
 
@@ -958,12 +932,12 @@ mod tests {
         // Cake__DecoLeft is a known fixture.
         let fab_text = r#"{
             "version": 1,
-            "combined": [{
+            "trees": [{
                 "name": "FAB_DecoCombined",
-                "parts": [{
-                    "polygonSprite": "Cake__DecoLeft",
-                    "vertices": [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]]
-                }]
+                "mode": "ui",
+                "children": [
+                    { "type": "sprite", "sprite": "Cake__DecoLeft", "method": "ID" }
+                ]
             }]
         }"#;
         fs::write(dir.join("Orgel.tps.fab.json"), fab_text).unwrap();
@@ -1023,7 +997,7 @@ mod tests {
             ppu: 80.0,
         };
         let e = generate(&inputs).unwrap_err();
-        assert!(matches!(e, Error::Fab(_)), "got {e:?}");
+        assert!(matches!(e, Error::Manifest(_)), "got {e:?}");
         let _ = fs::remove_dir_all(&dir);
     }
 

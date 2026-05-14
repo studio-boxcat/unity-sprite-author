@@ -192,4 +192,13 @@ commit message noting the byte-exact rate before/after.
 
 ## Archive
 
-- **Silloutte3 root-anchored y-shift** — SOLVED in `combine::compute_m13_axis`; `Combined.rootAnchored` schema field. Resolved by walking `CanvasSpriteAuthor.GenerateMesh` → `Matrix4x4.operator *` → `Mesh.CombineMeshes` in the UnityCsReference + meow-tower decompiler stack: the per-`CombineInstance` matrix's `m13` translation row is FMA-fused at matrix-multiply time, while the per-vertex transform itself uses two-step f32. For Silloutte3 (root anchored `(141.8, 370.875)`) the FMA residual is `~-9.24e-8`, shifting every y by 1 ULP. The same chain collapses to `canvas_scale × offset` exactly when `rootAnchored = (0, 0)`, so Silloutte1/2 + every Box/SpriteRenderer caller are unchanged.
+- **Silloutte3 root-anchored y-shift** — SOLVED, then RETIRED. The fix
+  threaded the prefab root's `RectTransform.anchoredPosition` through an
+  FMA-fused `compute_m13_axis` to reproduce the ~1-ULP-per-vertex shift
+  Unity's `Mesh.CombineMeshes` produces for non-origin CSA roots. The
+  schema field (`rootAnchored`) and the FMA helper were dropped when
+  Silloutte3 itself was retired from the fixture set, on the principle
+  that authoring fab fixtures with the CSA root pinned at origin
+  sidesteps the residual entirely. Any future fab whose CSA root sits
+  off-origin will drift ~1 ULP per vertex from Unity's emit; pin the
+  root, or re-introduce the FMA path.

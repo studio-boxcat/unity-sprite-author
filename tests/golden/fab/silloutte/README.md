@@ -1,36 +1,40 @@
 # Silloutte fab fixtures
 
-Three `CanvasSpriteAuthor`-published sprites from
-`meow-tower/Assets/21_Collections/PremiumCatEvents/33_Vampire/Elements/Ornaments/`.
-The .prefab is the source-of-truth; the .asset is what Unity emits when
+Two `CanvasSpriteAuthor`-published sprites originally captured from
+`meow-tower/Assets/21_Collections/PremiumCatEvents/33_Vampire/Elements/Ornaments/`
+(the source dir was rewritten upstream; the `.prefab` here is now the
+self-contained source-of-truth). The `.asset` is what Unity emits when
 `CanvasSpriteAuthor.Publish()` runs.
 
 | File | Source |
 | --- | --- |
-| `PremiumCat_Vampire_Popup.{tps, tpsheet, png.meta}` | The shared atlas + sidecar metadata. `.tpsheet` regenerated locally via the TexturePacker CLI before capture. |
-| `Silloutte{1,2,3}.prefab` | UI hierarchy under a `CanvasSpriteAuthor` root: `UIIcon` / `UISolid` children with per-RectTransform pivot and anchored position. |
-| `Silloutte{1,2,3}.asset(.meta)` | Sprite asset committed in meow-tower. Byte-exact target. |
+| `PremiumCat_Vampire_Popup.{tps, tpsheet, png.meta}` | Shared atlas + sidecar metadata. `.tpsheet` regenerated via TexturePacker CLI before capture. |
+| `PremiumCat_Vampire_Popup.tps.fab.json` | v3 unified manifest declaring both trees. |
+| `Silloutte{1,2}.prefab` | UI hierarchy under a `CanvasSpriteAuthor` root — `UIIcon` / `UISolid` children with per-RectTransform pivot and anchored position. Reference only. |
+| `Silloutte{1,2}.asset(.meta)` | Sprite asset committed from meow-tower. Byte-exact target. |
 
 ## Status
 
-**All three sprites byte-exact** under default `cargo test`
-(`tests/golden_fab_silloutte.rs`). Manifest at
-`PremiumCat_Vampire_Popup.tps.fab.json`.
+Both sprites byte-exact under default `cargo test`
+(`tests/golden_fab_silloutte.rs`).
 
-Manifest authoring recipe (for future fab fixtures):
+A third fixture, `Silloutte3`, was dropped along with `rootAnchored`
+(the field that captured Unity's `Mesh.CombineMeshes` FMA residual for
+non-origin CSA roots). With `rootAnchored` gone, any CSA tree whose root
+sits at non-`(0, 0)` drifts ~1 ULP per vertex from Unity's emit. Future
+fixtures should pin their root at origin in the prefab.
 
-- For each part, translate the prefab's
-  `RectTransform.{anchoredPosition, sizeDelta, m_Pivot}` and the
-  `CanvasSpriteAuthor._scaleFactor` (`0.01`) into the part's
-  `offset` / `partPivot` / `uiScale` (`100` for UIIcon, `1` for UISolid).
-- UIIcon `_method` 0/1/2/3 → `"ID"` / `"MX"` / `"MY"` / `"MXY"`.
-  `_method` 4/5/6 (FX / FY / FXY) → `"ID"` plus negative `sx` / `sy`.
-- UISolid parts map to `Part::Polygon` with the four corner verts in
-  canvas pixels (`±sizeDelta/2`) and an explicit `triangles: [0, 2, 3, 3, 1, 0]`
-  for the BL/BR/TL/TR vertex layout.
+## Manifest authoring recipe (v3)
+
+- One `trees[]` entry per published sprite. `mode: "ui"` for CSA.
+- Set `scale: 0.01` to mirror `CanvasSpriteAuthor._scaleFactor`. Default
+  is `1.0` (SpriteRenderer / Box prefab path).
+- Each `children[]` node carries `pos`, `sizeDelta`, `pivot`, optional
+  `scale` (per-axis flip via `[-1, 1]`), and a `type` discriminator.
+- UIIcon → `{ "type": "sprite", "sprite": "...", "method": "ID|MX|MY|MXY|..." }`.
+  Geometric flips: negative `scale` (per-axis), not `FX`/`FY`/`FXY` methods.
+- UISolid → `{ "type": "polygon", "color": "RRGGBB", "vertices": [...],
+  "triangles": [0, 2, 3, 3, 1, 0] }`. Color maps to the tpsheet entry
+  `Color_<UPPER>`.
 - Resolve sprite GUIDs in the prefab against the atlas's per-sprite
   `.asset.meta` files to recover tpsheet entry names.
-- Set the combined `canvasScale: 0.01` and `rootAnchored: [<root_ap_x>, <root_ap_y>]`
-  from the prefab root's `RectTransform.anchoredPosition`. The root anchored
-  matters for byte-exactness — see `combine::compute_m13_axis` for the
-  FMA-fused chain that captures Unity's `Mesh.CombineMeshes` residual.

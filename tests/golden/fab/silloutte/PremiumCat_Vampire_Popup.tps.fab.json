@@ -1,58 +1,42 @@
 {
   "version": 1,
-  "combined": [
+  "trees": [
     {
       "name": "Silloutte1",
-      "canvasScale": 0.01,
-      "parts": [
-        { "polygonSprite": "Color_32264DBD",
+      "mode": "ui",
+      "scale": 0.01,
+      "children": [
+        { "pos": [0, -22.25],
+          "type": "polygon", "color": "32264DBD",
           "vertices": [[-106.25, -272.5], [106.25, -272.5], [-106.25, 272.5], [106.25, 272.5]],
-          "triangles": [0, 2, 3, 3, 1, 0],
-          "offset": [0, -22.25] },
-        { "sprite": "Mansion_Silloutte__1__B", "method": "MX",
-          "uiScale": 100, "offset": [0, -294.75] },
-        { "sprite": "Mansion_Silloutte__1__S", "method": "ID",
-          "uiScale": 100, "offset": [106.25, -26.5] },
-        { "sprite": "Mansion_Silloutte__1__S", "method": "ID",
-          "sx": -1, "uiScale": 100, "offset": [-106.25, -26.5] },
-        { "sprite": "Mansion_Silloutte__1__T", "method": "MX",
-          "uiScale": 100, "offset": [0, 250.25] }
+          "triangles": [0, 2, 3, 3, 1, 0] },
+        { "pos": [0, -294.75],
+          "type": "sprite", "sprite": "Mansion_Silloutte__1__B", "method": "MX" },
+        { "pos": [106.25, -26.5],
+          "type": "sprite", "sprite": "Mansion_Silloutte__1__S" },
+        { "pos": [-106.25, -26.5], "scale": [-1, 1],
+          "type": "sprite", "sprite": "Mansion_Silloutte__1__S" },
+        { "pos": [0, 250.25],
+          "type": "sprite", "sprite": "Mansion_Silloutte__1__T", "method": "MX" }
       ]
     },
     {
       "name": "Silloutte2",
-      "canvasScale": 0.01,
-      "parts": [
-        { "polygonSprite": "Color_32264DBD",
+      "mode": "ui",
+      "scale": 0.01,
+      "children": [
+        { "pos": [10.175001, -11.612498],
+          "type": "polygon", "color": "32264DBD",
           "vertices": [[-50.625, -211.4125], [50.625, -211.4125], [-50.625, 211.4125], [50.625, 211.4125]],
-          "triangles": [0, 2, 3, 3, 1, 0],
-          "offset": [10.175001, -11.612498] },
-        { "sprite": "Mansion_Silloutte__2__T", "method": "ID",
-          "uiScale": 100, "offset": [-40.45, 199.79999] },
-        { "sprite": "Mansion_Silloutte__2__L", "method": "ID",
-          "uiScale": 100, "offset": [-40.45, 20.724998] },
-        { "sprite": "Mansion_Silloutte__2__B", "method": "ID",
-          "uiScale": 100, "offset": [4.5500007, -223.025] },
-        { "sprite": "Mansion_Silloutte__2__R", "method": "ID",
-          "uiScale": 100, "offset": [60.8, -10.274999] }
-      ]
-    },
-    {
-      "name": "Silloutte3",
-      "canvasScale": 0.01,
-      "rootAnchored": [141.8, 370.875],
-      "parts": [
-        { "polygonSprite": "Color_32264DBD",
-          "vertices": [[-58.75, -66.875], [58.75, -66.875], [-58.75, 66.875], [58.75, 66.875]],
           "triangles": [0, 2, 3, 3, 1, 0] },
-        { "sprite": "Mansion_Silloutte__3__B", "method": "ID",
-          "uiScale": 100, "offset": [0, -66.875] },
-        { "sprite": "Mansion_Silloutte__3__S", "method": "ID",
-          "uiScale": 100, "offset": [58.75, 8] },
-        { "sprite": "Mansion_Silloutte__3__S", "method": "ID",
-          "sx": -1, "uiScale": 100, "offset": [-58.75, 8] },
-        { "sprite": "Mansion_Silloutte__3__T", "method": "MX",
-          "uiScale": 100, "offset": [0, 160.625] }
+        { "pos": [-40.45, 199.79999],
+          "type": "sprite", "sprite": "Mansion_Silloutte__2__T" },
+        { "pos": [-40.45, 20.724998],
+          "type": "sprite", "sprite": "Mansion_Silloutte__2__L" },
+        { "pos": [4.5500007, -223.025],
+          "type": "sprite", "sprite": "Mansion_Silloutte__2__B" },
+        { "pos": [60.8, -10.274999],
+          "type": "sprite", "sprite": "Mansion_Silloutte__2__R" }
       ]
     }
   ]

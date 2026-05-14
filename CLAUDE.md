@@ -212,11 +212,10 @@ unity-sprite-author/
 │   ├── fab.rs              # .tps.fab.json v1 sidecar parser
 │   ├── manifest.rs         # .tps.fab.json v3 unified tree (CSA + SMA) → fab/mesh bridge
 │   ├── mesh_emit.rs        # Mesh .asset emit (SpriteRenderer half2 UVs + CanvasRenderer f32 UVs)
-│   └── mesh_manifest.rs    # legacy flat .tps.mesh.json parser (SMA-only)
+│   └── mesh_manifest.rs    # Mesh IR consumed by `mesh_emit`; v3 manifest bridges into it
 ├── tests/
 │   ├── golden_parity.rs              # byte-equality on the Orgel corpus
-│   ├── golden_fab_silloutte.rs       # byte-equality on the 3 Silloutte fab fixtures
-│   ├── golden_manifest_v3_silloutte.rs  # v3 manifest ⇄ v1 bridge + v3 byte-exact emit
+│   ├── golden_fab_silloutte.rs       # fab manifest → byte-exact Silloutte{1,2}.asset
 │   ├── golden_sma_mesh.rs            # Mesh .asset byte-exact (Box_29_Ghost, 32 meshes)
 │   ├── e2e_meow_tower.rs             # opt-in walk of the meow-tower checkout
 │   └── golden/                       # committed .tpsheet + .tps + .png.meta + expected .asset
@@ -226,12 +225,10 @@ unity-sprite-author/
 │   └── unity-probes.md     # in-Editor procedures for the four blocked TODOs
 ├── examples/
 │   ├── drift_report.rs              # diagnostic — runs across meow-tower, prints first diff per atlas
-│   ├── fab_verify.rs                # offline byte-diff harness for fab combined emit
-│   ├── migrate_corpus.rs            # offline corpus migration runner (no Unity Editor)
+│   ├── csa_to_fab.rs                # Unity-free CSA prefab → v3 .tps.fab.json converter
 │   ├── csa_dumper.cs                # Unity scratch — dump CSA prefab tree to JSON
-│   ├── csa_dump_to_fab.rs           # CSA dump → .tps.fab.json
 │   ├── sma_dumper.cs                # Unity scratch — dump SMA SpriteRenderer tree
-│   └── sma_dump_to_mesh_manifest.rs # SMA dump → .tps.mesh.json
+│   └── migrate_corpus.rs            # offline corpus migration runner (no Unity Editor)
 ├── benches/
 │   └── pipeline.rs         # criterion harness — full pipeline + per-stage hot paths
 ├── scripts/
