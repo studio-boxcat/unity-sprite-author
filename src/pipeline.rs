@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use crate::combine::{self, AtlasSize as CombineAtlas};
 use crate::emit::{self, EmitError, SpriteAsset};
 use crate::fab;
+use crate::manifest;
 use crate::mesh_emit::{self, BuildMeshError, MeshAsset};
 use crate::mesh_manifest::{self, MeshManifest};
 use crate::meta;
@@ -43,6 +44,8 @@ pub enum Error {
     Combine(combine::CombineError),
     MeshManifest(mesh_manifest::MeshManifestError),
     BuildMesh(BuildMeshError),
+    Manifest(manifest::ManifestError),
+    Bridge(manifest::BridgeError),
     /// On-disk `.asset`'s `textureRect.{w, h}` doesn't match the rect
     /// the pipeline would emit. Only seen on Unity sprites authored
     /// under `SpriteMeshType.Tight` + `spriteMode: Multiple`, which ran
@@ -75,6 +78,8 @@ impl fmt::Display for Error {
             Self::Combine(e) => write!(f, "fab combine: {e}"),
             Self::MeshManifest(e) => write!(f, "mesh.json: {e}"),
             Self::BuildMesh(e) => write!(f, "mesh build: {e}"),
+            Self::Manifest(e) => write!(f, "manifest v3: {e}"),
+            Self::Bridge(e) => write!(f, "manifest v3 bridge: {e}"),
             Self::TextureRectDivergence { sprite, on_disk, emitted } => write!(
                 f,
                 "textureRect drift on {sprite:?}: on-disk ({}, {}) vs emitted ({}, {}). \
@@ -424,10 +429,27 @@ fn fab_manifest_path(tps_path: &Path) -> PathBuf {
 
 fn load_fab_manifest(tps_path: &Path) -> Result<Option<fab::Manifest>, Error> {
     let path = fab_manifest_path(tps_path);
-    match fs::read_to_string(&path) {
-        Ok(text) => fab::parse(&text).map(Some).map_err(Error::Fab),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(source) => Err(Error::Io { path, source }),
+    let text = match fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => return Err(Error::Io { path, source }),
+    };
+    // Discriminate v3 (tree-shaped) from v1 (flat parts) at the file level so
+    // both schemas live side-by-side during the migration window. Cheap text
+    // probe avoids a double serde pass.
+    if text.contains("\"trees\"") {
+        let v3 = manifest::parse(&text).map_err(Error::Manifest)?;
+        let mut combined: Vec<fab::Combined> = Vec::with_capacity(v3.trees.len());
+        for tree in &v3.trees {
+            // Only CSA trees flow into the sprite-emit path; SMA trees are
+            // routed by the mesh integration further down.
+            if matches!(tree.output, manifest::Output::Csa) {
+                combined.push(manifest::to_fab_combined(tree).map_err(Error::Bridge)?);
+            }
+        }
+        Ok(Some(fab::Manifest { combined }))
+    } else {
+        fab::parse(&text).map(Some).map_err(Error::Fab)
     }
 }
 
