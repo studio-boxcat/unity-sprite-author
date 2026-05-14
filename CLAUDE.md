@@ -22,7 +22,7 @@ The bar is **byte-exactness**: output must equal what Unity's `EditorUtility.Cop
 
 - Other Unity asset types (`.controller`, `.spriteatlasv2`, etc.). Sprite-only by design.
 - Reimplementing Unity's tight-mesh tracer / alpha outline algorithms. Tpsheet always carries verts + tris.
-- Standalone CLI, watcher, or scratch-path workflow.
+- Watcher / scratch-path workflow. (A thin `unity-sprite-author` CLI exists — see [[#cli]] — but it's a one-shot orchestrator, not a daemon.)
 - Cross-Unity-version compat. Target one version at a time; bump explicitly.
 
 ## Pipeline
@@ -70,6 +70,19 @@ let result = pipeline::generate(&pipeline::GenerateInputs {
 - **Skip-write-if-equal**: before writing, read existing bytes; if identical, skip. Avoids mtime churn that would re-import dependents in Unity.
 - **No global state**: no `OnceCell`, `lazy_static`, thread-locals, or caches outliving a `generate` call. Mono does not unload native plugins on domain reload — global state would leak across script recompiles.
 - `.tpsheet` + `.tpsheet.meta` deletion happens inside this crate on success only. Both paths are reported in `deleted_paths` so the caller can route them through `AssetDatabase.DeleteAsset`.
+
+### CLI
+
+`unity-sprite-author <atlas.tps>` packs the `.tps` with TexturePackerCLI (shells out to `texturepacker`), mints any missing `.tps.meta` / `.png.meta` via the `unity-assetdb` `register` API, then runs `pipeline::generate`. Intended for one-shot regens outside the Unity Editor — Unity must NOT be running, same caveat as `scripts/regen-corpus.sh`.
+
+```sh
+just install                                  # builds release, symlinks to ~/.local/bin/
+unity-sprite-author Atlas.tps                 # pack + author; prefix/ppu read from existing metas
+unity-sprite-author Atlas.tps --prefix AC_ --ppu 100 --sprite-dir Atlas
+unity-sprite-author Atlas.tps --skip-pack     # reuse existing .tpsheet/.png
+```
+
+`--prefix` / `--ppu` override the meta-derived defaults. PPU is required (CLI flag or `spritePixelsToUnits` in `.png.meta`); prefix defaults to `""` when neither source supplies one. Default `--sprite-dir` is `<tps-parent>/<tps-stem>/` (matches the meow-tower convention). `.tps.fab.json` / `.tps.mesh.json` sidecars are picked up automatically since the bin just forwards `tps_path` to `pipeline::generate` — no extra flags.
 
 ### Caller-side notes (Unity / C#)
 
@@ -169,7 +182,7 @@ Do **not** port: `prefab-saloon/src/lib/prefab/{parser,serializer,templates}.ts`
 
 ## Tech
 
-- Rust stable. `rlib` only (no binary, no cdylib). The cdylib path was retired when sprite-author was folded into the BoxcatBridge cdylib at `meow-tower/Packages/com.boxcat.libs/Native~/bridge/`.
+- Rust stable. Primary artifact is the `rlib` consumed by BoxcatBridge (`meow-tower/Packages/com.boxcat.libs/Native~/bridge/`); a thin `unity-sprite-author` bin (see [[#cli]]) shares the same rlib for offline packs. No cdylib lives here — that path was retired when sprite-author was folded into the BoxcatBridge cdylib.
 - `[profile.release] panic = "unwind"` — required by the bridge's outer `catch_unwind`. Inner code returns `Result`; `unwrap`/`expect` reserved for genuine bugs.
 - Custom Unity-flavor YAML emitter; no `serde_yaml`. `yaml::float` matches C# `ToString("R")` — table-driven tests in `yaml::tests::float_corpus_full_roundtrip` seeded from every distinct float in the golden corpus.
 - Golden-file `assert_eq!` over committed Unity-emitted samples. `.gitattributes` pins `*.asset binary` and `*.asset.meta binary` to prevent CRLF conversion.
@@ -185,6 +198,8 @@ One-shot rollout shipped (meow-tower commits `0d9143ec…668fd2eb`). The `.tpshe
 unity-sprite-author/
 ├── src/
 │   ├── lib.rs              # module declarations
+│   ├── bin/
+│   │   └── unity-sprite-author.rs  # offline CLI: pack .tps + author sprites
 │   ├── pipeline.rs         # orchestrate: parse → build → write → prune → delete
 │   ├── tpsheet.rs          # parser (mirrors SheetLoader.cs)
 │   ├── tps.rs              # minimal parser (spriteScale lookup)
@@ -223,5 +238,6 @@ unity-sprite-author/
 │   ├── migrate-tpsheet-meta.sh  # --dry-run; .tpsheet.meta → .tps.meta
 │   ├── regen-corpus.sh          # TexturePackerCLI sweep over $MEOW_CLIENT/Assets
 │   └── delete-authoring.sh      # Phase 3 atomic deletion of authoring C# + prefabs
+├── justfile                # `just install` → ~/.local/bin/unity-sprite-author
 └── CLAUDE.md
 ```

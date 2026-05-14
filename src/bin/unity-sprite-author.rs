@@ -1,0 +1,320 @@
+//! `unity-sprite-author` CLI — pack one `.tps` with TexturePackerCLI, then
+//! run `pipeline::generate` on the result. Missing `.tps.meta` / `.png.meta`
+//! are synthesized via `unity-assetdb` so first-time packs outside the
+//! Unity Editor don't error on the atlas-GUID read.
+//!
+//! See `CLAUDE.md` for the rlib's contract; this binary is a thin
+//! orchestrator that mirrors what `TPSheetPostprocessor.cs` does inside
+//! Unity.
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitCode};
+use std::time::Duration;
+
+use unity_assetdb::bake::with_meta_suffix;
+use unity_assetdb::register::{self, ImporterKind, RegisterOptions};
+use unity_assetdb::walk;
+use unity_sprite_author::pipeline::{self, GenerateInputs};
+
+const USAGE: &str = "\
+usage: unity-sprite-author <atlas.tps> [options]
+
+  Packs the .tps with TexturePackerCLI, then authors Unity Sprite
+  .asset files from the resulting .tpsheet. Missing .tps.meta and
+  .png.meta are minted via unity-assetdb.
+
+options:
+  --prefix <STR>        Sprite filename prefix. Default: TPSImporter
+                        `_prefix` from .tps.meta if present, else \"\".
+  --ppu <N>             Pixels-per-unit. Default: `spritePixelsToUnits`
+                        from .png.meta if present, else error.
+  --sprite-dir <DIR>    Output dir for sprite .asset files. Default:
+                        <tps-parent>/<tps-stem>/.
+  --skip-pack           Don't run TexturePackerCLI; assume .tpsheet
+                        and .png are already up to date.
+  --texturepacker <CMD> TexturePackerCLI command. Default: \"texturepacker\".
+  -h, --help            Show this help.
+";
+
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let cli = match Cli::parse(&args) {
+        Ok(c) => c,
+        Err(msg) => {
+            eprintln!("{msg}\n\n{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
+    if cli.help {
+        print!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
+    match run(&cli) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+struct Cli {
+    tps_path: PathBuf,
+    prefix: Option<String>,
+    ppu: Option<f32>,
+    sprite_dir: Option<PathBuf>,
+    skip_pack: bool,
+    texturepacker: String,
+    help: bool,
+}
+
+fn take_value<'a>(
+    iter: &mut std::slice::Iter<'a, String>,
+    flag: &'static str,
+) -> Result<&'a String, String> {
+    let v = iter.next().ok_or_else(|| format!("{flag} needs a value"))?;
+    if v.starts_with("--") {
+        return Err(format!("{flag} expected a value but got `{v}`"));
+    }
+    Ok(v)
+}
+
+impl Cli {
+    fn parse(args: &[String]) -> Result<Self, String> {
+        let mut tps_path: Option<PathBuf> = None;
+        let mut prefix: Option<String> = None;
+        let mut ppu: Option<f32> = None;
+        let mut sprite_dir: Option<PathBuf> = None;
+        let mut skip_pack = false;
+        let mut texturepacker = "texturepacker".to_string();
+        let mut help = false;
+        let mut iter = args.iter();
+        while let Some(arg) = iter.next() {
+            match arg.as_str() {
+                "-h" | "--help" => help = true,
+                "--skip-pack" => skip_pack = true,
+                "--prefix" => prefix = Some(take_value(&mut iter, "--prefix")?.clone()),
+                "--ppu" => {
+                    let v = take_value(&mut iter, "--ppu")?;
+                    ppu = Some(v.parse().map_err(|_| format!("invalid --ppu: {v}"))?);
+                }
+                "--sprite-dir" => {
+                    sprite_dir = Some(PathBuf::from(take_value(&mut iter, "--sprite-dir")?));
+                }
+                "--texturepacker" => {
+                    texturepacker = take_value(&mut iter, "--texturepacker")?.clone();
+                }
+                s if s.starts_with("--") => return Err(format!("unknown flag: {s}")),
+                _ => {
+                    if tps_path.is_some() {
+                        return Err(format!("unexpected positional arg: {arg}"));
+                    }
+                    tps_path = Some(PathBuf::from(arg));
+                }
+            }
+        }
+        if help {
+            return Ok(Self {
+                tps_path: PathBuf::new(),
+                prefix,
+                ppu,
+                sprite_dir,
+                skip_pack,
+                texturepacker,
+                help: true,
+            });
+        }
+        Ok(Self {
+            tps_path: tps_path.ok_or("missing <atlas.tps> argument")?,
+            prefix,
+            ppu,
+            sprite_dir,
+            skip_pack,
+            texturepacker,
+            help: false,
+        })
+    }
+}
+
+fn run(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+    // Canonicalize before TexturePackerCLI runs — texturepacker resolves
+    // relative paths in the .tps against its CWD, so we cd into the .tps's
+    // dir for the pack step regardless.
+    let tps_path = cli
+        .tps_path
+        .canonicalize()
+        .map_err(|e| format!("canonicalize {}: {e}", cli.tps_path.display()))?;
+    let tps_dir = tps_path
+        .parent()
+        .ok_or_else(|| format!("{} has no parent dir", tps_path.display()))?
+        .to_path_buf();
+    let tps_stem = tps_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| format!("{} has no file stem", tps_path.display()))?;
+    let tpsheet_path = tps_dir.join(format!("{tps_stem}.tpsheet"));
+    let png_path = tps_dir.join(format!("{tps_stem}.png"));
+    let sprite_dir = cli
+        .sprite_dir
+        .clone()
+        .unwrap_or_else(|| tps_dir.join(tps_stem));
+
+    if !cli.skip_pack {
+        pack(&cli.texturepacker, &tps_path)?;
+    }
+    if !tpsheet_path.exists() {
+        return Err(format!(
+            "{} not produced by pack — does the .tps emit a .tpsheet?",
+            tpsheet_path.display()
+        )
+        .into());
+    }
+    if !png_path.exists() {
+        return Err(format!(
+            "{} not produced by pack — does the .tps emit a .png?",
+            png_path.display()
+        )
+        .into());
+    }
+
+    let project_root = walk::resolve_project_root(Some(&tps_path))
+        .map_err(|e| format!("resolve project root for {}: {e}", tps_path.display()))?;
+    let out_dir = project_root.join("Library").join("unity-assetdb");
+
+    ensure_meta(&tps_path, &project_root, &out_dir, None)?;
+    ensure_meta(
+        &png_path,
+        &project_root,
+        &out_dir,
+        Some(ImporterKind::Texture),
+    )?;
+
+    let prefix = match &cli.prefix {
+        Some(p) => p.clone(),
+        None => read_tps_prefix(&tps_path).unwrap_or_default(),
+    };
+    let ppu = match cli.ppu {
+        Some(v) => v,
+        None => read_png_ppu(&png_path).ok_or_else(|| {
+            format!(
+                "{}.meta has no `spritePixelsToUnits` field — pass --ppu, or open the .png in \
+                 Unity once to let TextureImporter fill the field in",
+                png_path.display()
+            )
+        })?,
+    };
+
+    std::fs::create_dir_all(&sprite_dir)
+        .map_err(|e| format!("create sprite dir {}: {e}", sprite_dir.display()))?;
+
+    eprintln!(
+        "authoring sprites: tpsheet={} png={} sprite_dir={} prefix={:?} ppu={ppu}",
+        rel(&tpsheet_path, &project_root),
+        rel(&png_path, &project_root),
+        rel(&sprite_dir, &project_root),
+        prefix,
+    );
+    let out = pipeline::generate(&GenerateInputs {
+        tpsheet_path: &tpsheet_path,
+        tps_path: &tps_path,
+        atlas_png_path: &png_path,
+        sprite_dir: &sprite_dir,
+        prefix: &prefix,
+        ppu,
+    })?;
+
+    eprintln!(
+        "written: {}  deleted: {}  warnings: {}",
+        out.written_paths.len(),
+        out.deleted_paths.len(),
+        out.warnings.len()
+    );
+    for p in &out.written_paths {
+        println!("W\t{}", rel(p, &project_root));
+    }
+    for p in &out.deleted_paths {
+        println!("D\t{}", rel(p, &project_root));
+    }
+    for w in &out.warnings {
+        eprintln!("warn: {w}");
+    }
+    Ok(())
+}
+
+fn pack(cmd: &str, tps: &Path) -> Result<(), String> {
+    let dir = tps.parent().expect("tps has parent (canonicalized)");
+    let name = tps.file_name().expect("tps has filename");
+    let status = Command::new(cmd)
+        .arg(name)
+        .current_dir(dir)
+        .status()
+        .map_err(|e| format!("spawn `{cmd} {}`: {e}", name.to_string_lossy()))?;
+    if !status.success() {
+        return Err(format!(
+            "`{cmd} {}` exited with {status}",
+            name.to_string_lossy()
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_meta(
+    asset: &Path,
+    project_root: &Path,
+    out_dir: &Path,
+    importer: Option<ImporterKind>,
+) -> Result<(), String> {
+    let outcome = register::register(&RegisterOptions {
+        project_root: project_root.to_path_buf(),
+        out_dir: out_dir.to_path_buf(),
+        target: asset.to_path_buf(),
+        importer_override: importer,
+        scrub_chars: None,
+        lock_timeout: Duration::from_secs(10),
+    })
+    .map_err(|e| format!("register {}: {e}", asset.display()))?;
+    if outcome.created_meta {
+        eprintln!(
+            "minted .meta for {} (guid={:032x})",
+            rel(asset, project_root),
+            outcome.guid
+        );
+    }
+    Ok(())
+}
+
+/// Extract `_prefix:` from a `ScriptedImporter` block in a `.tps.meta`.
+/// Returns `None` when the field is absent (e.g. freshly-minted
+/// `DefaultImporter` meta), empty, or the file is unreadable.
+fn read_tps_prefix(tps: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(with_meta_suffix(tps)).ok()?;
+    for line in text.lines() {
+        if let Some(rest) = line.trim_start().strip_prefix("_prefix:") {
+            let v = rest.trim();
+            if v.is_empty() {
+                return None;
+            }
+            return Some(v.to_string());
+        }
+    }
+    None
+}
+
+/// Extract `spritePixelsToUnits:` from a `TextureImporter` block in a
+/// `.png.meta`. The serialized field name is `spritePixelsToUnits` even
+/// though the C# property is `spritePixelsPerUnit`.
+fn read_png_ppu(png: &Path) -> Option<f32> {
+    let text = std::fs::read_to_string(with_meta_suffix(png)).ok()?;
+    for line in text.lines() {
+        if let Some(rest) = line.trim_start().strip_prefix("spritePixelsToUnits:") {
+            return rest.trim().parse().ok();
+        }
+    }
+    None
+}
+
+fn rel<'a>(p: &'a Path, root: &Path) -> std::borrow::Cow<'a, str> {
+    p.strip_prefix(root)
+        .map(|r| r.to_string_lossy().into_owned().into())
+        .unwrap_or_else(|_| p.to_string_lossy())
+}
