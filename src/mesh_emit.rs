@@ -16,8 +16,11 @@
 
 #![allow(dead_code)]
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 
+use crate::mesh_manifest::{DrawMode, MeshCombined};
+use crate::tpsheet::SpriteEntry;
 use crate::yaml;
 
 /// A single Mesh sub-asset within a multi-mesh `.asset` file.
@@ -593,6 +596,197 @@ pub fn tiled_mesh(
     (ps, uvs, tris)
 }
 
+/// Build a single combined `MeshAsset` from a manifest entry + the
+/// per-sprite source data the renderers reference.
+///
+/// `lookup` resolves each renderer's `sprite` field to a `SpriteEntry`
+/// from the active `.tpsheet`. PPU and atlas size (for UV normalization)
+/// must mirror what the SMA path produces — same as the per-tpsheet
+/// emit. Errors are returned for unresolved sprite names; the caller
+/// surfaces them with manifest context.
+pub fn build_mesh<F>(
+    combined: &MeshCombined,
+    ppu: f32,
+    atlas_size: (u32, u32),
+    mut lookup: F,
+) -> Result<MeshAsset, BuildMeshError>
+where
+    F: FnMut(&str) -> Option<SpriteEntry>,
+{
+    let mut all_verts: Vec<[f32; 3]> = Vec::new();
+    let mut all_uvs: Vec<[f32; 2]> = Vec::new();
+    let mut all_colors: Vec<[u8; 4]> = Vec::new();
+    let mut all_tris: Vec<u16> = Vec::new();
+
+    let inv_ppu = 1.0_f32 / ppu;
+    let atlas_w = atlas_size.0 as f32;
+    let atlas_h = atlas_size.1 as f32;
+
+    for r in &combined.renderers {
+        let entry = lookup(&r.sprite).ok_or_else(|| BuildMeshError::UnresolvedSprite {
+            combined: combined.name.clone(),
+            sprite: r.sprite.clone(),
+        })?;
+
+        // Source pivot-relative vertices and outer UV corners — derived
+        // from the tpsheet entry. The SMA path always operates on
+        // axis-aligned-quad sprites for Tiled, and on arbitrary sprite
+        // meshes for Simple.
+        let pw = entry.rect.w as f32;
+        let ph = entry.rect.h as f32;
+        let pivot_px = (pw * entry.pivot.x, ph * entry.pivot.y);
+        let src_verts: Vec<[f32; 2]> = entry
+            .geometry
+            .vertices
+            .iter()
+            .map(|v| {
+                [
+                    (v.x - pivot_px.0) * inv_ppu,
+                    (v.y - pivot_px.1) * inv_ppu,
+                ]
+            })
+            .collect();
+        let src_uvs: Vec<[f32; 2]> = entry
+            .geometry
+            .vertices
+            .iter()
+            .map(|v| {
+                [
+                    (entry.rect.x as f32 + v.x) / atlas_w,
+                    (entry.rect.y as f32 + v.y) / atlas_h,
+                ]
+            })
+            .collect();
+        let src_tris: Vec<u16> = entry.geometry.triangles.clone();
+
+        let (mut verts2, uvs, tris) = match r.draw_mode {
+            DrawMode::Simple => (src_verts, src_uvs, src_tris),
+            DrawMode::Tiled => {
+                let size = r.size.expect("parser ensures tiled has size");
+                let n = src_verts.len();
+                if n != 4 {
+                    return Err(BuildMeshError::TiledNonQuad {
+                        combined: combined.name.clone(),
+                        sprite: r.sprite.clone(),
+                        vert_count: n,
+                    });
+                }
+                let quad = [src_verts[0], src_verts[1], src_verts[2], src_verts[3]];
+                let uv_min = src_uvs[0];
+                let uv_max = src_uvs[3];
+                let sprite_size_world = [pw * inv_ppu, ph * inv_ppu];
+                let sprite_pivot_norm = [entry.pivot.x, entry.pivot.y];
+                let (ps, uvs, tris) =
+                    tiled_mesh(quad, [uv_min, uv_max], sprite_size_world, sprite_pivot_norm, size);
+                (ps, uvs, tris)
+            }
+        };
+
+        // Apply flip: negate x/y *before* the localToRoot matrix —
+        // matches SpriteMeshBuilder.CalculateRendererToRootMatrix which
+        // pre-multiplies by `diag(flipX ? -1 : 1, flipY ? -1 : 1, 1)`.
+        if r.flip_x || r.flip_y {
+            for v in verts2.iter_mut() {
+                if r.flip_x {
+                    v[0] = -v[0];
+                }
+                if r.flip_y {
+                    v[1] = -v[1];
+                }
+            }
+        }
+
+        // Apply per-renderer 2D affine `local_to_root`. 8 floats, row-major:
+        // [m00, m01, m02, m03, m10, m11, m12, m13]. z always 0.
+        let m = r.local_to_root;
+        let base = all_verts.len() as u16;
+        for v in &verts2 {
+            let x = m[0] * v[0] + m[1] * v[1] + m[3];
+            let y = m[4] * v[0] + m[5] * v[1] + m[7];
+            all_verts.push([x, y, 0.0]);
+        }
+        all_uvs.extend(uvs);
+        if combined.used_in_canvas {
+            for _ in &verts2 {
+                all_colors.push([0xff, 0xff, 0xff, 0xff]);
+            }
+        }
+        all_tris.extend(tris.iter().map(|i| i + base));
+    }
+
+    if all_verts.is_empty() {
+        return Err(BuildMeshError::EmptyMesh(combined.name.clone()));
+    }
+
+    // AABB derives center/extent. Mirrors Unity's `Mesh.RecalculateBounds`
+    // (center = midpoint, extent = half-size). Z stays 0.
+    let mut min = all_verts[0];
+    let mut max = all_verts[0];
+    for v in &all_verts[1..] {
+        for i in 0..3 {
+            if v[i] < min[i] {
+                min[i] = v[i];
+            }
+            if v[i] > max[i] {
+                max[i] = v[i];
+            }
+        }
+    }
+    let center = [
+        (max[0] + min[0]) * 0.5,
+        (max[1] + min[1]) * 0.5,
+        (max[2] + min[2]) * 0.5,
+    ];
+    let extent = [
+        (max[0] - min[0]) * 0.5,
+        (max[1] - min[1]) * 0.5,
+        (max[2] - min[2]) * 0.5,
+    ];
+
+    Ok(MeshAsset {
+        file_id: combined.file_id,
+        name: combined.name.clone(),
+        vertices: all_verts,
+        uvs: all_uvs,
+        colors: all_colors,
+        indices: all_tris,
+        used_in_canvas: combined.used_in_canvas,
+        keep_vertices: combined.keep_vertices,
+        keep_indices: combined.keep_indices,
+        aabb_center: center,
+        aabb_extent: extent,
+    })
+}
+
+#[derive(Debug)]
+pub enum BuildMeshError {
+    UnresolvedSprite { combined: String, sprite: String },
+    TiledNonQuad { combined: String, sprite: String, vert_count: usize },
+    EmptyMesh(String),
+}
+
+impl std::fmt::Display for BuildMeshError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnresolvedSprite { combined, sprite } => {
+                write!(f, "mesh '{combined}' references unknown sprite '{sprite}'")
+            }
+            Self::TiledNonQuad { combined, sprite, vert_count } => write!(
+                f,
+                "mesh '{combined}' tiled renderer '{sprite}' has {vert_count} verts (need 4 for axis-aligned quad)"
+            ),
+            Self::EmptyMesh(n) => write!(f, "mesh '{n}' produced zero vertices"),
+        }
+    }
+}
+
+impl std::error::Error for BuildMeshError {}
+
+/// Convenience for building a sprite-name index over a tpsheet.
+pub fn sprite_index(entries: &[SpriteEntry]) -> HashMap<&str, &SpriteEntry> {
+    entries.iter().map(|e| (e.name.as_str(), e)).collect()
+}
+
 /// Emit a full multi-mesh `.asset` file. Header is the standard two-line
 /// Unity YAML preamble; each `MeshAsset` becomes a `--- !u!43 &<file_id>`
 /// section whose body is dispatched on `used_in_canvas`.
@@ -731,6 +925,130 @@ mod tests {
         assert_eq!(ps[7], [1.5, 1.0]);
         // UV on the second tile is sliced to half on x.
         assert_eq!(uvs[7], [0.5, 1.0]);
+    }
+
+    use crate::mesh_manifest::{MeshCombined, MeshRenderer};
+    use crate::tpsheet::{
+        Border, Geometry, Pivot, Rect, SpriteAlignment, SpriteEntry, Vertex,
+    };
+
+    fn quad_entry(name: &str, rx: u32, ry: u32, w: u32, h: u32, px: f32, py: f32) -> SpriteEntry {
+        // 4 verts in pixel coords relative to rect origin (BL, BR, TL, TR),
+        // tris [0,1,2,2,1,3]. UVs derived later inside build_mesh.
+        SpriteEntry {
+            name: name.to_string(),
+            rect: Rect { x: rx, y: ry, w, h },
+            pivot: Pivot { x: px, y: py },
+            alignment: SpriteAlignment::Custom,
+            border: Border::default(),
+            geometry: Geometry {
+                vertices: vec![
+                    Vertex { x: 0.0, y: 0.0 },
+                    Vertex { x: w as f32, y: 0.0 },
+                    Vertex { x: 0.0, y: h as f32 },
+                    Vertex { x: w as f32, y: h as f32 },
+                ],
+                triangles: vec![0, 1, 2, 2, 1, 3],
+            },
+        }
+    }
+
+    fn renderer(sprite: &str, draw: DrawMode, size: Option<[f32; 2]>) -> MeshRenderer {
+        MeshRenderer {
+            sprite: sprite.to_string(),
+            flip_x: false,
+            flip_y: false,
+            draw_mode: draw,
+            size,
+            local_to_root: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        }
+    }
+
+    #[test]
+    fn build_mesh_simple_single_renderer_aabb_centered() {
+        let entry = quad_entry("a", 0, 0, 100, 100, 0.5, 0.5);
+        let mc = MeshCombined {
+            file_id: 1,
+            name: "test".into(),
+            used_in_canvas: true,
+            keep_vertices: true,
+            keep_indices: true,
+            renderers: vec![renderer("a", DrawMode::Simple, None)],
+        };
+        let m = build_mesh(&mc, 100.0, (128, 128), |s| {
+            if s == "a" {
+                Some(entry.clone())
+            } else {
+                None
+            }
+        })
+        .unwrap();
+        assert_eq!(m.vertices.len(), 4);
+        // 100px @ ppu=100 = 1.0 world; centered pivot ⇒ verts in [-0.5, 0.5]
+        // → center=(0,0,0), extent=(0.5, 0.5, 0).
+        assert_eq!(m.aabb_center, [0.0, 0.0, 0.0]);
+        assert_eq!(m.aabb_extent, [0.5, 0.5, 0.0]);
+        assert_eq!(m.colors.len(), 4);
+        assert_eq!(m.colors[0], [0xff, 0xff, 0xff, 0xff]);
+    }
+
+    #[test]
+    fn build_mesh_simple_translated_renderer() {
+        let entry = quad_entry("a", 0, 0, 100, 100, 0.5, 0.5);
+        let mut r = renderer("a", DrawMode::Simple, None);
+        // translate by (10, 5) world units via the m03 / m13 slots.
+        r.local_to_root = [1.0, 0.0, 0.0, 10.0, 0.0, 1.0, 0.0, 5.0];
+        let mc = MeshCombined {
+            file_id: 1,
+            name: "t".into(),
+            used_in_canvas: false,
+            keep_vertices: false,
+            keep_indices: false,
+            renderers: vec![r],
+        };
+        let m = build_mesh(&mc, 100.0, (128, 128), |s| {
+            (s == "a").then(|| entry.clone())
+        })
+        .unwrap();
+        assert_eq!(m.aabb_center, [10.0, 5.0, 0.0]);
+        assert!(m.colors.is_empty(), "SpriteRenderer layout doesn't carry colors");
+    }
+
+    #[test]
+    fn build_mesh_flip_x_negates_before_matrix() {
+        // sprite at native (0,0)..(1,1); flipX should put it at (-1, 0)..(0, 1).
+        let entry = quad_entry("a", 0, 0, 100, 100, 0.0, 0.0);
+        let mut r = renderer("a", DrawMode::Simple, None);
+        r.flip_x = true;
+        let mc = MeshCombined {
+            file_id: 1,
+            name: "flip".into(),
+            used_in_canvas: true,
+            keep_vertices: true,
+            keep_indices: true,
+            renderers: vec![r],
+        };
+        let m = build_mesh(&mc, 100.0, (128, 128), |s| {
+            (s == "a").then(|| entry.clone())
+        })
+        .unwrap();
+        // verts span x in [-1, 0]: center.x = -0.5, extent.x = 0.5
+        assert_eq!(m.aabb_center[0], -0.5);
+        assert_eq!(m.aabb_extent[0], 0.5);
+    }
+
+    #[test]
+    fn build_mesh_unresolved_sprite_errors() {
+        let mc = MeshCombined {
+            file_id: 1,
+            name: "x".into(),
+            used_in_canvas: true,
+            keep_vertices: true,
+            keep_indices: true,
+            renderers: vec![renderer("missing", DrawMode::Simple, None)],
+        };
+        let err = build_mesh(&mc, 100.0, (128, 128), |_| None).unwrap_err();
+        assert!(matches!(err, BuildMeshError::UnresolvedSprite { .. }));
     }
 
     #[test]
