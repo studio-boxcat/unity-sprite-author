@@ -1015,6 +1015,16 @@ fn run(meow_client: &Path, write_mode: bool) -> R<()> {
                     prefab
                 ))
             })?;
+            // The pipeline applies the atlas's `_prefix` to every combined
+            // sprite's name when writing. The pspec output sprite alias
+            // ALREADY carries the prefix, so strip it before emit to avoid
+            // double-prefixing (`AC_` + `AC_IC_Cat` → `AC_AC_IC_Cat`).
+            let mut p = p;
+            if !atlas.prefix.is_empty() {
+                if let Some(bare) = p.output_sprite_alias.strip_prefix(&atlas.prefix) {
+                    p.output_sprite_alias = bare.to_string();
+                }
+            }
             by_atlas
                 .entry(atlas.tps_path)
                 .or_default()
