@@ -10,6 +10,7 @@ pub mod combine;
 pub mod emit;
 pub mod fab;
 pub mod triangulator;
+pub mod manifest;
 pub mod mesh_emit;
 pub mod mesh_manifest;
 pub mod meta;
