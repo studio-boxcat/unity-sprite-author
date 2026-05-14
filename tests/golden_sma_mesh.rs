@@ -96,35 +96,54 @@ fn decode_mesh_asset_from_golden(yaml: &str) -> MeshAsset {
         })
         .collect();
 
-    // typeless data → 28 verts of (pos f32x3, color u8x4, uv f32x2) = 24 bytes each
+    // Detect layout from `m_IsReadable` (1 → CanvasRenderer, 0 → SpriteRenderer).
+    let is_readable = parse_int_field(yaml, "  m_IsReadable:") != 0;
+    let used_in_canvas = is_readable;
+
+    // typeless data: stride depends on layout.
+    //   CanvasRenderer: 24 (pos f32x3 + color Color32 + uv f32x2)
+    //   SpriteRenderer: 16 (pos f32x3 + uv half2)
     let td_hex = find_value(yaml, "_typelessdata:");
     let td_bytes: Vec<u8> = (0..td_hex.len())
         .step_by(2)
         .map(|i| u8::from_str_radix(&td_hex[i..i + 2], 16).unwrap())
         .collect();
-    let stride = 24;
+    let stride = if used_in_canvas { 24 } else { 16 };
     let vc = td_bytes.len() / stride;
     let mut vertices = Vec::with_capacity(vc);
     let mut colors = Vec::with_capacity(vc);
     let mut uvs = Vec::with_capacity(vc);
+    let read_f32 = |bs: &[u8]| -> f32 {
+        f32::from_le_bytes([bs[0], bs[1], bs[2], bs[3]])
+    };
     for i in 0..vc {
         let o = i * stride;
-        let read_f32 = |bs: &[u8]| -> f32 {
-            f32::from_le_bytes([bs[0], bs[1], bs[2], bs[3]])
-        };
         let px = read_f32(&td_bytes[o..o + 4]);
         let py = read_f32(&td_bytes[o + 4..o + 8]);
         let pz = read_f32(&td_bytes[o + 8..o + 12]);
         vertices.push([px, py, pz]);
-        colors.push([
-            td_bytes[o + 12],
-            td_bytes[o + 13],
-            td_bytes[o + 14],
-            td_bytes[o + 15],
-        ]);
-        let ux = read_f32(&td_bytes[o + 16..o + 20]);
-        let uy = read_f32(&td_bytes[o + 20..o + 24]);
-        uvs.push([ux, uy]);
+        if used_in_canvas {
+            colors.push([
+                td_bytes[o + 12],
+                td_bytes[o + 13],
+                td_bytes[o + 14],
+                td_bytes[o + 15],
+            ]);
+            let ux = read_f32(&td_bytes[o + 16..o + 20]);
+            let uy = read_f32(&td_bytes[o + 20..o + 24]);
+            uvs.push([ux, uy]);
+        } else {
+            // half2 UV → up-convert to f32 via reference table for the test.
+            // We don't have float_from_half here; the round-trip emits via
+            // float_to_half, so we feed back the bits as the f32 that maps
+            // to those bits. Practical: parse u16 → reinterpret as the
+            // exact f32 reproducing the original half via mesh_emit's
+            // float_to_half_inverse helper. For golden round-trip we just
+            // need a value that re-encodes to the same u16.
+            let u_h = u16::from_le_bytes([td_bytes[o + 12], td_bytes[o + 13]]);
+            let v_h = u16::from_le_bytes([td_bytes[o + 14], td_bytes[o + 15]]);
+            uvs.push([half_to_f32(u_h), half_to_f32(v_h)]);
+        }
     }
 
     let (cx, cy, cz) = parse_xyz(yaml, "  m_LocalAABB:", "    m_Center:");
@@ -139,12 +158,43 @@ fn decode_mesh_asset_from_golden(yaml: &str) -> MeshAsset {
         uvs,
         colors,
         indices,
-        used_in_canvas: true,
+        used_in_canvas,
         keep_vertices,
         keep_indices,
         aabb_center: [cx, cy, cz],
         aabb_extent: [ex, ey, ez],
     }
+}
+
+/// IEEE 754 binary16 → f32. Standard reference impl; only used in tests
+/// to round-trip the half2 UV bytes from the golden into an f32 input
+/// that `mesh_emit::float_to_half` will re-encode to the same u16.
+fn half_to_f32(h: u16) -> f32 {
+    let sign = ((h & 0x8000) as u32) << 16;
+    let exp = ((h >> 10) & 0x1F) as u32;
+    let mant = (h & 0x3FF) as u32;
+    if exp == 0 {
+        if mant == 0 {
+            return f32::from_bits(sign);
+        }
+        // Subnormal.
+        let mut m = mant;
+        let mut e = 1u32;
+        while (m & 0x400) == 0 {
+            m <<= 1;
+            e += 1;
+        }
+        let exp32 = 127 - 15 - e + 1;
+        return f32::from_bits(sign | (exp32 << 23) | ((m & 0x3FF) << 13));
+    }
+    if exp == 0x1F {
+        if mant == 0 {
+            return f32::from_bits(sign | 0x7f80_0000); // Inf
+        }
+        return f32::from_bits(sign | 0x7fc0_0000 | (mant << 13)); // NaN
+    }
+    let exp32 = exp + (127 - 15);
+    f32::from_bits(sign | (exp32 << 23) | (mant << 13))
 }
 
 /// Drop every sub-asset block that isn't a Mesh (`!u!43`). Keeps the
@@ -189,7 +239,6 @@ fn parse_xyz(yaml: &str, section: &str, key: &str) -> (f32, f32, f32) {
 }
 
 #[test]
-#[ignore = "SpriteRenderer layout (Mathf.FloatToHalf, half2 UV) pending — mesh subset round-trip is exercised by box_29_ghost_first_mesh_byte_exact"]
 fn box_29_ghost_roundtrip() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/golden/sma/box_29_ghost/Box_29_Ghost.asset");
