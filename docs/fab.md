@@ -1,6 +1,12 @@
 # `.tps.fab.json` — Fabricated combined sprites
 
-> **Related:** [[CLAUDE.md]], [[TODO.md]]
+> **Related:** [[CLAUDE.md]], [[TODO.md]], [[sma-migration.md]]
+
+This doc pins the **v1** flat-`combined` schema parsed by `src/fab.rs`. The
+**v3** unified-tree schema (CSA + SMA in one file via `Output::Csa | Output::Sma`)
+lives in `src/manifest.rs` and bridges back into the v1 `fab::Combined` AST,
+so the byte-exact emit contract below applies unchanged. The pipeline sniffs
+for a `"trees"` key to choose between v1 and v3.
 
 A `<atlas>.tps.fab.json` sidecar declares **fabricated** sprites that the crate
 emits *instead of* their constituent parts. Saves atlas size by re-using small
@@ -196,9 +202,10 @@ table in [[CLAUDE.md]] with these deltas:
   matches both `Sprite.Create` and TexturePacker outputs) and `m_Rect.{w, h}`
   are f32 (sub-pixel-able) — the fabricated sprite branch in
   `emit::SpriteAsset` (`source: Fabricated`).
-- `textureRect == m_Rect` always. The on-disk preserve branch was dropped
-  crate-wide (see [[TODO.md]]); any sprite whose existing `.asset` has
-  divergent `textureRect.{w,h}` fails loud out of `generate()`.
+- `textureRect == m_Rect` always. Any sprite whose existing `.asset` has
+  divergent `textureRect.{w,h}` (legacy Tight + `spriteMode:Multiple`) is
+  overwritten with the current rect; the divergence surfaces as a
+  non-fatal entry in `GenerateOutput.warnings` (and stderr).
 
 ## Pipeline integration
 

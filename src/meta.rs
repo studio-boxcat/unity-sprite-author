@@ -203,8 +203,9 @@ pub fn resolve_sprite_meta<P: AsRef<Path>>(
 
 /// Pull the `textureRect.{width, height}` from an existing Sprite `.asset`'s
 /// `m_RD` block. The pipeline uses this to detect drift between the on-disk
-/// textureRect and the rect we're about to emit; divergence is a hard error
-/// (see `pipeline::Error::TextureRectDivergence`).
+/// textureRect and the rect we're about to emit; divergence surfaces as a
+/// non-fatal entry in `GenerateOutput.warnings` (the on-disk bytes are
+/// overwritten with the current tpsheet's rect).
 ///
 /// Returns `None` if the file doesn't exist or the textureRect block can't be
 /// parsed (no prior asset to diff against).

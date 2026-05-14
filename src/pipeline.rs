@@ -46,18 +46,6 @@ pub enum Error {
     BuildMesh(BuildMeshError),
     Manifest(manifest::ManifestError),
     Bridge(manifest::BridgeError),
-    /// On-disk `.asset`'s `textureRect.{w, h}` doesn't match the rect
-    /// the pipeline would emit. Only seen on Unity sprites authored
-    /// under `SpriteMeshType.Tight` + `spriteMode: Multiple`, which ran
-    /// an alpha-edge tightness pass this crate doesn't reproduce.
-    /// Resolution: delete the offending `.asset` so Unity re-emits it
-    /// under the current `spriteMode: 1` path (where `textureRect`
-    /// snaps to `m_Rect`).
-    TextureRectDivergence {
-        sprite: String,
-        on_disk: (f32, f32),
-        emitted: (f32, f32),
-    },
 }
 
 impl fmt::Display for Error {
@@ -80,13 +68,6 @@ impl fmt::Display for Error {
             Self::BuildMesh(e) => write!(f, "mesh build: {e}"),
             Self::Manifest(e) => write!(f, "manifest v3: {e}"),
             Self::Bridge(e) => write!(f, "manifest v3 bridge: {e}"),
-            Self::TextureRectDivergence { sprite, on_disk, emitted } => write!(
-                f,
-                "textureRect drift on {sprite:?}: on-disk ({}, {}) vs emitted ({}, {}). \
-                 Delete the .asset and let Unity re-emit it under spriteMode:1; \
-                 SpriteMeshType.Tight + spriteMode:Multiple is unsupported.",
-                on_disk.0, on_disk.1, emitted.0, emitted.1,
-            ),
         }
     }
 }
@@ -127,6 +108,13 @@ pub struct GenerateOutput {
     /// Pruned `.asset` paths plus the consumed `.tpsheet` + `.tpsheet.meta`.
     /// Call `AssetDatabase.DeleteAsset` on each in C#.
     pub deleted_paths: Vec<PathBuf>,
+    /// Non-fatal warnings — e.g. legacy `SpriteMeshType.Tight + spriteMode:
+    /// Multiple` outputs whose on-disk `textureRect` no longer matches the
+    /// tpsheet's rect. Each entry is a human-readable line; the caller
+    /// (BoxcatBridge) can route them through `Debug.LogWarning`. Also
+    /// echoed to stderr on emit for visibility before the bridge picks
+    /// the field up.
+    pub warnings: Vec<String>,
 }
 
 /// Author Unity Sprite `.asset` files byte-exactly from a TexturePacker
@@ -175,6 +163,7 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
     // For each sprite, gather (asset_path, asset_bytes, meta_path, meta_bytes).
     let mut writes: Vec<(PathBuf, Vec<u8>)> = Vec::with_capacity(sheet.sprites.len() * 2);
     let mut written_asset_paths: Vec<PathBuf> = Vec::with_capacity(sheet.sprites.len());
+    let mut warnings: Vec<String> = Vec::new();
     // Case-insensitive: macOS APFS / Windows NTFS treat `Foo.asset` and
     // `foo.asset` as the same file. A case-sensitive set would mis-flag an
     // existing `foo.asset` as orphan when the tpsheet says `Foo`, and the
@@ -215,18 +204,23 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
         // and mainObjectFileID). Preserve both axes to avoid byte churn.
         let (own_guid, meta_shape) = meta::resolve_sprite_meta(&meta_path).map_err(Error::Meta)?;
 
-        // Refuse to overwrite an .asset whose textureRect was authored under
-        // a different sprite-mesh path (Tight + spriteMode:Multiple). See
-        // Error::TextureRectDivergence.
+        // Legacy `SpriteMeshType.Tight + spriteMode:Multiple` outputs carry a
+        // textureRect that no longer matches the current tpsheet rect. The
+        // current tpsheet is authoritative — warn and overwrite. The warning
+        // is also echoed to stderr so it surfaces even before the bridge
+        // picks up `GenerateOutput.warnings`.
         let emitted_rect = (sprite.rect.w as f32, sprite.rect.h as f32);
         if let Some((w, h)) = meta::read_existing_texture_rect_size(&asset_path)
             && (w, h) != emitted_rect
         {
-            return Err(Error::TextureRectDivergence {
-                sprite: asset_name,
-                on_disk: (w, h),
-                emitted: emitted_rect,
-            });
+            let msg = format!(
+                "textureRect drift on {asset_name:?}: on-disk ({w}, {h}) \
+                 vs emitted ({}, {}); overwriting with current tpsheet \
+                 (legacy SpriteMeshType.Tight + spriteMode:Multiple)",
+                emitted_rect.0, emitted_rect.1,
+            );
+            eprintln!("unity-sprite-author: warning: {msg}");
+            warnings.push(msg);
         }
 
         let sprite_asset = SpriteAsset {
@@ -264,6 +258,7 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
             &mut current_asset_names_ci,
             &mut writes,
             &mut written_asset_paths,
+            &mut warnings,
         )?;
     }
 
@@ -396,6 +391,7 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
     Ok(GenerateOutput {
         written_paths: paths_to_import,
         deleted_paths,
+        warnings,
     })
 }
 
@@ -477,6 +473,7 @@ fn emit_combined_sprites(
     current_asset_names_ci: &mut HashSet<String>,
     writes: &mut Vec<(PathBuf, Vec<u8>)>,
     written_asset_paths: &mut Vec<PathBuf>,
+    warnings: &mut Vec<String>,
 ) -> Result<(), Error> {
     // Build a sprite-name → SpriteEntry lookup for the combine pass.
     let sprite_by_name: std::collections::HashMap<&str, &tpsheet::SpriteEntry> =
@@ -510,16 +507,18 @@ fn emit_combined_sprites(
         let (own_guid, meta_shape) = meta::resolve_sprite_meta(&meta_path).map_err(Error::Meta)?;
 
         // Fabricated sprites have rect.{x,y}=0 and f32 dims in m_Rect /
-        // textureRect. The TextureRectDivergence guard compares against the
-        // emitted (rect_w_f, rect_h_f).
+        // textureRect. Drift here is the same legacy case as the per-tpsheet
+        // path: warn and overwrite rather than block.
         if let Some((w, h)) = meta::read_existing_texture_rect_size(&asset_path)
             && (w, h) != (rect_w_f, rect_h_f)
         {
-            return Err(Error::TextureRectDivergence {
-                sprite: asset_name,
-                on_disk: (w, h),
-                emitted: (rect_w_f, rect_h_f),
-            });
+            let msg = format!(
+                "textureRect drift on {asset_name:?}: on-disk ({w}, {h}) \
+                 vs emitted ({rect_w_f}, {rect_h_f}); overwriting with current \
+                 manifest (legacy SpriteMeshType.Tight + spriteMode:Multiple)"
+            );
+            eprintln!("unity-sprite-author: warning: {msg}");
+            warnings.push(msg);
         }
 
         let sprite_asset = SpriteAsset {
@@ -1012,6 +1011,58 @@ mod tests {
         };
         let e = generate(&inputs).unwrap_err();
         assert!(matches!(e, Error::Fab(_)), "got {e:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pipeline_texture_rect_drift_warns_and_overwrites() {
+        // Legacy `SpriteMeshType.Tight + spriteMode:Multiple` outputs carry a
+        // textureRect that no longer matches the current tpsheet's rect. The
+        // pipeline used to hard-fail on this; now it warns + overwrites with
+        // the new bytes (current tpsheet is authoritative).
+        let dir = copy_orgel_to_temp("texrect_drift_warn");
+        let sprite_dir = dir.join("sprites");
+        let target = sprite_dir.join("Cake__DecoLeft.asset");
+        let original = fs::read(&target).expect("staged Cake__DecoLeft.asset");
+
+        // Surgically rewrite textureRect.{width,height} on disk so they
+        // diverge from the tpsheet rect. The committed values are
+        // width: 116, height: 67; bump them by +1 each.
+        let mut text = String::from_utf8(original.clone()).expect("utf8");
+        let needle = "    textureRect:\n      serializedVersion: 2\n      x: ";
+        let head = text.find(needle).expect("textureRect block");
+        let block_start = head + needle.len();
+        // Skip past `x: <int>\n      y: <int>\n      width: ` to the width number.
+        let after_xy = text[block_start..]
+            .find("width: ")
+            .expect("width line")
+            + block_start
+            + "width: ".len();
+        let width_end = text[after_xy..].find('\n').unwrap() + after_xy;
+        text.replace_range(after_xy..width_end, "9999");
+        fs::write(&target, &text).unwrap();
+
+        let inputs = GenerateInputs {
+            tpsheet_path: &dir.join("Orgel.tpsheet"),
+            tps_path: &dir.join("Orgel.tps"),
+            atlas_png_path: &dir.join("Orgel.png"),
+            sprite_dir: &sprite_dir,
+            prefix: "",
+            ppu: 80.0,
+        };
+        let out = generate(&inputs).expect("textureRect drift should not fail");
+        assert!(
+            out.warnings.iter().any(|w| w.contains("textureRect drift")
+                && w.contains("Cake__DecoLeft")),
+            "warning channel should report the drift; got {:?}",
+            out.warnings,
+        );
+        // After emit, the on-disk bytes no longer carry width: 9999.
+        let after = fs::read_to_string(&target).unwrap();
+        assert!(
+            !after.contains("width: 9999"),
+            "stale textureRect should have been overwritten"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }
