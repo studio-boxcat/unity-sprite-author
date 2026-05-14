@@ -4,24 +4,49 @@
 
 Deferred items surfaced during planning.
 
-## CSA migration — Phase 1b residual
+## CSA migration — Phase 1b ROOT CAUSED: tpsheet drift, not a pipeline bug
 
-- **5-ULP Y-axis divergence on non-Silloutte combined sprites.** Pinned
-  fixture `tests/golden/fab/pa_clock/` (PA_InfinitePencil_Clock —
-  6 UIIcon parts including FX/MXY methods + 1 UISolid color polygon).
-  `cargo run --example fab_verify -- --atlas-tps … --fab-json … --combined …`
-  reproduces the divergence at offset 321: `m_Rect.height` 540.66345 →
-  540.66296, cascading into `m_Offset.y` and `m_Pivot.y`. X-axis fields
-  (`m_Rect.width: 529.075`) match byte-exact. Likely root cause: f32
-  rounding noise in one of the Y-axis vertex transforms that isn't
-  exercised by the Silloutte 1/2/3 oracles (Silloutte parts use MX
-  exclusively; PA mixes ID, FX-desugared, and MXY). Same magnitude/shape
-  as the legacy `m_Offset` Y residue tracked elsewhere in this file.
-  Closing this is the gate to claiming 100% byte-exactness for the 58
-  CSA prefabs and starting Phase 3 (authoring code deletion). Migration
-  tooling itself (`examples/csa_dumper.cs` + `examples/csa_dump_to_fab.rs`)
-  produces 20/20 structurally valid manifests; the gap is in the
-  pipeline's emit path for this prefab shape, not in the migration.
+The 5-ULP `m_Rect.height` divergence on `PA_InfinitePencil_Clock` is
+**upstream data drift**, not a Rust pipeline bug. Investigation steps
+that nailed it:
+
+1. Unity-side bit-level probe (`/tmp/pa-probe.cs`) dumped per-leaf
+   `cis.MultiplyPoint(srcVert)` Y values + final combined AABB
+   (`y0=0xC027B97E`, `y1=0x40324CCD`, `rect.h=0x44072A76`).
+2. Rust-side trace in `combine::build_combined` + `apply_transform`
+   dumped same. Clock1's per-vert Y bits matched Unity bit-exact; Clock2
+   diverged 16 ULPs in `pre_y` (= `v_local × ui_scale`) at vertex 4:
+   Unity `0x438308EB` vs Rust `0x438308DB`. Same code path, same
+   inputs *from the loaded sprite* — so the divergence is in the input
+   data, not in the chain.
+3. Confirmed by running the pipeline *without* the fab manifest (so
+   Clock2 emits as per-tpsheet): `cmp` against committed `Clock2.asset`
+   diverges at char 349. Same for `Clock1.asset` (char 516) and
+   `Color_FFEBBE.asset` (char 490). Multiple committed constituent
+   sprites diverge from current-tpsheet emit.
+4. The .tpsheet I regenerated via `texturepacker` produces vertex/rect
+   data that doesn't match what TexturePacker historically produced
+   when the committed `_sprite.asset` files were emitted. TexturePacker
+   is deterministic w.r.t. source PNGs, so the source PNGs must have
+   drifted since the goldens were last regenerated — or TexturePacker
+   itself has version drift.
+
+**Implication for Phase 1b validation:** byte-exact diff against the
+*committed* `.asset` corpus cannot honestly succeed today, because the
+committed bytes were emitted from a now-lost historical tpsheet. The
+*correct* validation is a single-pass run-the-migration-end-to-end:
+regenerate every atlas's `.tpsheet` via `TexturePackerCLI`, run the
+pipeline, accept the new emit bytes as the canonical truth, commit the
+resulting `_sprite.asset` diffs as part of the migration commit. The
+Silloutte 1/2/3 goldens happen to align with the current TexturePacker
+output and remain byte-exact, which is why those tests pass.
+
+**Migration tool itself is correct.** Same Rust pipeline + same
+tpsheet = bit-stable output regardless of whether parts are per-tpsheet
+or fab-combined. `examples/fab_verify.rs` reproduces the
+diagnostic; `examples/csa_dumper.cs` + `examples/csa_dump_to_fab.rs`
+produce 20/20 structurally valid manifests covering all 58 CSA
+prefabs.
 
 ## Byte-exactness gaps to validate
 

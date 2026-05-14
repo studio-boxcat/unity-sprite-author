@@ -114,6 +114,7 @@ fn main() {
         prefix: &prefix,
         ppu,
     };
+    eprintln!("stage dir: {}", stage.display());
     let res = pipeline::generate(&inputs);
     match res {
         Ok(out) => eprintln!("pipeline ok: {} written, {} deleted", out.written_paths.len(), out.deleted_paths.len()),

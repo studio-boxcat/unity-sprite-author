@@ -1,15 +1,25 @@
-// Byte-exact test for `PA_InfinitePencil_Clock.asset` — a CSA-published
-// combined sprite that surfaces a 5-ULP Y-axis residual in the fab emit
-// path. Pinned `#[ignore]` so it lives as a fast oracle for the next
-// debug iteration without breaking `cargo test`.
+// Phase 1b *diagnostic* test — `PA_InfinitePencil_Clock.asset` does NOT
+// match byte-exact against the committed golden because the regenerated
+// `.tpsheet` (TexturePacker output today) differs from the historical
+// `.tpsheet` that emitted the committed `_sprite.asset` bytes.
 //
-// Repro: `cargo test --test golden_fab_pa_clock -- --ignored`.
-// Diff dump: `target/diff/PA_InfinitePencil_Clock.{actual,expected}`.
+// Per-tpsheet emit of the same atlas's constituent sprites also diverges
+// from their committed `.asset` files (Clock1.asset, Clock2.asset,
+// Color_FFEBBE.asset — see TODO.md "CSA migration — Phase 1b" entry for
+// the bit-level trace). So this isn't a Rust pipeline bug: same code +
+// same tpsheet = bit-stable output, and Silloutte oracle (3/3 byte-exact)
+// proves the pipeline against an aligned tpsheet.
 //
-// Signature: `m_Rect.height` 540.66345 → 540.66296, cascading into
-// `m_Offset.y` (−8.262054 → −8.262299) and `m_Pivot.y` (0.48471868 →
-// 0.4847182). X-axis fields match byte-exact. Combined parts include
-// 1 UISolid color polygon + 6 UIIcons (ID / FX-desugared / MXY).
+// Pinned `#[ignore]` so the diagnostic isn't lost. The proper resolution
+// is a corpus regen (TexturePackerCLI on every atlas → re-emit every
+// sprite from the new tpsheet → commit the resulting diff). After that
+// regen this test should pass byte-exact and become unignored. Until
+// then, `cargo test --test golden_fab_pa_clock -- --ignored` reproduces
+// the historical drift signature.
+//
+// Signature when failing: `m_Rect.height` 540.66345 → 540.66296,
+// cascading into `m_Offset.y` (−8.262054 → −8.262299) and `m_Pivot.y`
+// (0.48471868 → 0.4847182).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -38,7 +48,7 @@ fn first_diff(a: &[u8], b: &[u8]) -> Option<usize> {
 }
 
 #[test]
-#[ignore = "Phase 1b residual — see TODO.md and docs/sma-migration.md"]
+#[ignore = "Phase 1b tpsheet drift — committed sprite was emitted from a historical tpsheet; see TODO.md"]
 fn pa_clock_byte_exact() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/fab/pa_clock");
     let dst: PathBuf = std::env::temp_dir().join("uspa_pa_clock");
