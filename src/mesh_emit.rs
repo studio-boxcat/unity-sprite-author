@@ -83,22 +83,22 @@ pub fn emit_mesh_body_canvas(m: &MeshAsset) -> String {
     s.push_str("  m_SubMeshes:\n");
     s.push_str("  - serializedVersion: 2\n");
     s.push_str("    firstByte: 0\n");
-    let _ = write!(s, "    indexCount: {ic}\n");
+    let _ = writeln!(s, "    indexCount: {ic}");
     s.push_str("    topology: 0\n");
     s.push_str("    baseVertex: 0\n");
     s.push_str("    firstVertex: 0\n");
-    let _ = write!(s, "    vertexCount: {vc}\n");
+    let _ = writeln!(s, "    vertexCount: {vc}");
     s.push_str("    localAABB:\n");
-    let _ = write!(
+    let _ = writeln!(
         s,
-        "      m_Center: {{x: {}, y: {}, z: {}}}\n",
+        "      m_Center: {{x: {}, y: {}, z: {}}}",
         yaml::float(m.aabb_center[0]),
         yaml::float(m.aabb_center[1]),
         yaml::float(m.aabb_center[2])
     );
-    let _ = write!(
+    let _ = writeln!(
         s,
-        "      m_Extent: {{x: {}, y: {}, z: {}}}\n",
+        "      m_Extent: {{x: {}, y: {}, z: {}}}",
         yaml::float(m.aabb_extent[0]),
         yaml::float(m.aabb_extent[1]),
         yaml::float(m.aabb_extent[2])
@@ -116,34 +116,34 @@ pub fn emit_mesh_body_canvas(m: &MeshAsset) -> String {
     s.push_str("    m_Data: \n");
     s.push_str("  m_MeshCompression: 0\n");
     s.push_str("  m_IsReadable: 1\n");
-    let _ = write!(s, "  m_KeepVertices: {}\n", m.keep_vertices as u8);
-    let _ = write!(s, "  m_KeepIndices: {}\n", m.keep_indices as u8);
+    let _ = writeln!(s, "  m_KeepVertices: {}", m.keep_vertices as u8);
+    let _ = writeln!(s, "  m_KeepIndices: {}", m.keep_indices as u8);
     s.push_str("  m_IndexFormat: 0\n");
     s.push_str("  m_IndexBuffer: ");
     encode_index_buffer(&m.indices, &mut s);
     s.push('\n');
     s.push_str("  m_VertexData:\n");
     s.push_str("    serializedVersion: 3\n");
-    let _ = write!(s, "    m_VertexCount: {vc}\n");
+    let _ = writeln!(s, "    m_VertexCount: {vc}");
     s.push_str("    m_Channels:\n");
     emit_channels_canvas(&mut s);
-    let _ = write!(s, "    m_DataSize: {data_size}\n");
+    let _ = writeln!(s, "    m_DataSize: {data_size}");
     s.push_str("    _typelessdata: ");
     encode_vbo_canvas(&m.vertices, &m.colors, &m.uvs, &mut s);
     s.push('\n');
     s.push_str("  m_CompressedMesh:\n");
     s.push_str(EMPTY_COMPRESSED_MESH);
     s.push_str("  m_LocalAABB:\n");
-    let _ = write!(
+    let _ = writeln!(
         s,
-        "    m_Center: {{x: {}, y: {}, z: {}}}\n",
+        "    m_Center: {{x: {}, y: {}, z: {}}}",
         yaml::float(m.aabb_center[0]),
         yaml::float(m.aabb_center[1]),
         yaml::float(m.aabb_center[2])
     );
-    let _ = write!(
+    let _ = writeln!(
         s,
-        "    m_Extent: {{x: {}, y: {}, z: {}}}\n",
+        "    m_Extent: {{x: {}, y: {}, z: {}}}",
         yaml::float(m.aabb_extent[0]),
         yaml::float(m.aabb_extent[1]),
         yaml::float(m.aabb_extent[2])
@@ -170,9 +170,9 @@ fn emit_channels_canvas(s: &mut String) {
             _ => (0, 0, 0),
         };
         s.push_str("    - stream: 0\n");
-        let _ = write!(s, "      offset: {off}\n");
-        let _ = write!(s, "      format: {fmt}\n");
-        let _ = write!(s, "      dimension: {dim}\n");
+        let _ = writeln!(s, "      offset: {off}");
+        let _ = writeln!(s, "      format: {fmt}");
+        let _ = writeln!(s, "      dimension: {dim}");
     }
 }
 
@@ -375,22 +375,22 @@ pub fn emit_mesh_body_sprite(m: &MeshAsset) -> String {
     s.push_str("  m_SubMeshes:\n");
     s.push_str("  - serializedVersion: 2\n");
     s.push_str("    firstByte: 0\n");
-    let _ = write!(s, "    indexCount: {ic}\n");
+    let _ = writeln!(s, "    indexCount: {ic}");
     s.push_str("    topology: 0\n");
     s.push_str("    baseVertex: 0\n");
     s.push_str("    firstVertex: 0\n");
-    let _ = write!(s, "    vertexCount: {vc}\n");
+    let _ = writeln!(s, "    vertexCount: {vc}");
     s.push_str("    localAABB:\n");
-    let _ = write!(
+    let _ = writeln!(
         s,
-        "      m_Center: {{x: {}, y: {}, z: {}}}\n",
+        "      m_Center: {{x: {}, y: {}, z: {}}}",
         yaml::float(m.aabb_center[0]),
         yaml::float(m.aabb_center[1]),
         yaml::float(m.aabb_center[2])
     );
-    let _ = write!(
+    let _ = writeln!(
         s,
-        "      m_Extent: {{x: {}, y: {}, z: {}}}\n",
+        "      m_Extent: {{x: {}, y: {}, z: {}}}",
         yaml::float(m.aabb_extent[0]),
         yaml::float(m.aabb_extent[1]),
         yaml::float(m.aabb_extent[2])
@@ -408,34 +408,34 @@ pub fn emit_mesh_body_sprite(m: &MeshAsset) -> String {
     s.push_str("    m_Data: \n");
     s.push_str("  m_MeshCompression: 0\n");
     s.push_str("  m_IsReadable: 0\n");
-    let _ = write!(s, "  m_KeepVertices: {}\n", m.keep_vertices as u8);
-    let _ = write!(s, "  m_KeepIndices: {}\n", m.keep_indices as u8);
+    let _ = writeln!(s, "  m_KeepVertices: {}", m.keep_vertices as u8);
+    let _ = writeln!(s, "  m_KeepIndices: {}", m.keep_indices as u8);
     s.push_str("  m_IndexFormat: 0\n");
     s.push_str("  m_IndexBuffer: ");
     encode_index_buffer(&m.indices, &mut s);
     s.push('\n');
     s.push_str("  m_VertexData:\n");
     s.push_str("    serializedVersion: 3\n");
-    let _ = write!(s, "    m_VertexCount: {vc}\n");
+    let _ = writeln!(s, "    m_VertexCount: {vc}");
     s.push_str("    m_Channels:\n");
     emit_channels_sprite(&mut s);
-    let _ = write!(s, "    m_DataSize: {data_size}\n");
+    let _ = writeln!(s, "    m_DataSize: {data_size}");
     s.push_str("    _typelessdata: ");
     encode_vbo_sprite(&m.vertices, &m.uvs, &mut s);
     s.push('\n');
     s.push_str("  m_CompressedMesh:\n");
     s.push_str(EMPTY_COMPRESSED_MESH);
     s.push_str("  m_LocalAABB:\n");
-    let _ = write!(
+    let _ = writeln!(
         s,
-        "    m_Center: {{x: {}, y: {}, z: {}}}\n",
+        "    m_Center: {{x: {}, y: {}, z: {}}}",
         yaml::float(m.aabb_center[0]),
         yaml::float(m.aabb_center[1]),
         yaml::float(m.aabb_center[2])
     );
-    let _ = write!(
+    let _ = writeln!(
         s,
-        "    m_Extent: {{x: {}, y: {}, z: {}}}\n",
+        "    m_Extent: {{x: {}, y: {}, z: {}}}",
         yaml::float(m.aabb_extent[0]),
         yaml::float(m.aabb_extent[1]),
         yaml::float(m.aabb_extent[2])
@@ -460,9 +460,9 @@ fn emit_channels_sprite(s: &mut String) {
             _ => (0, 0, 0),
         };
         s.push_str("    - stream: 0\n");
-        let _ = write!(s, "      offset: {off}\n");
-        let _ = write!(s, "      format: {fmt}\n");
-        let _ = write!(s, "      dimension: {dim}\n");
+        let _ = writeln!(s, "      offset: {off}");
+        let _ = writeln!(s, "      format: {fmt}");
+        let _ = writeln!(s, "      dimension: {dim}");
     }
 }
 
@@ -795,7 +795,7 @@ pub fn emit_mesh_asset(meshes: &[MeshAsset]) -> Vec<u8> {
     s.push_str("%YAML 1.1\n");
     s.push_str("%TAG !u! tag:unity3d.com,2011:\n");
     for m in meshes {
-        let _ = write!(s, "--- !u!43 &{}\n", m.file_id);
+        let _ = writeln!(s, "--- !u!43 &{}", m.file_id);
         if m.used_in_canvas {
             s.push_str(&emit_mesh_body_canvas(m));
         } else {

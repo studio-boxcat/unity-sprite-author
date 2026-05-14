@@ -125,6 +125,7 @@ fn assetdb_alias(meow_client: &Path, name: &str) -> R<Vec<AliasHit>> {
     Ok(hits)
 }
 
+#[allow(dead_code)] // Debug-only fields surfaced via `{:?}` in error context.
 #[derive(Debug)]
 struct AliasHit {
     guid: String,
@@ -159,6 +160,7 @@ fn pspec_convert(meow_client: &Path, prefab: &Path) -> R<Value> {
 // ---------------------------------------------------------------------------
 // Domain — what we extract per prefab.
 
+#[allow(dead_code)] // Debug-only fields surfaced via `{:?}` in error context.
 #[derive(Debug)]
 struct PrefabCsa {
     prefab_path: PathBuf,
@@ -168,6 +170,7 @@ struct PrefabCsa {
     children: Vec<LeafNode>,
 }
 
+#[allow(dead_code)] // Debug-only fields surfaced via `{:?}` in error context.
 #[derive(Debug)]
 struct LeafNode {
     name: String,
@@ -183,6 +186,7 @@ struct LeafNode {
     children: Vec<LeafNode>,
 }
 
+#[allow(clippy::enum_variant_names)] // Both variants are Unity component types prefixed "UI*".
 #[derive(Debug)]
 enum LeafGraphic {
     UIIcon {
@@ -734,14 +738,13 @@ fn find_atlas_tps(meow_client: &Path, asset_path: &Path, hint: Option<&str>) -> 
                 }
             }
         }
-        if let Some(h) = hint {
-            if let Some(matched) = tps_hits
+        if let Some(h) = hint
+            && let Some(matched) = tps_hits
                 .iter()
                 .find(|p| p.file_stem().and_then(|s| s.to_str()) == Some(h))
             {
                 return Ok(matched.clone());
             }
-        }
         if tps_hits.len() == 1 {
             return Ok(tps_hits.into_iter().next().unwrap());
         }
@@ -990,6 +993,7 @@ fn run(meow_client: &Path, write_mode: bool) -> R<()> {
 
     // Per-prefab parse + per-leaf alias resolution. Atlas groups built as
     // we go: atlas_tps_path → Vec<PrefabCsa>.
+    #[allow(clippy::type_complexity)] // single-use intermediate; a type alias would be more noise than signal.
     let mut by_atlas: BTreeMap<PathBuf, Vec<(PrefabCsa, BTreeMap<String, String>)>> =
         BTreeMap::new();
     let mut alias_cache: BTreeMap<String, (AtlasInfo, String)> = BTreeMap::new();
@@ -1025,11 +1029,10 @@ fn run(meow_client: &Path, write_mode: bool) -> R<()> {
             // ALREADY carries the prefix, so strip it before emit to avoid
             // double-prefixing (`AC_` + `AC_IC_Cat` → `AC_AC_IC_Cat`).
             let mut p = p;
-            if !atlas.prefix.is_empty() {
-                if let Some(bare) = p.output_sprite_alias.strip_prefix(&atlas.prefix) {
+            if !atlas.prefix.is_empty()
+                && let Some(bare) = p.output_sprite_alias.strip_prefix(&atlas.prefix) {
                     p.output_sprite_alias = bare.to_string();
                 }
-            }
             by_atlas
                 .entry(atlas.tps_path)
                 .or_default()

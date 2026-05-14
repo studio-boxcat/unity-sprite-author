@@ -1,9 +1,10 @@
-// Unified `.tps.fab.json` / `.tps.mesh.json` manifest — v3 schema.
+// Unified `.tps.fab.json` manifest — the single supported schema.
 //
-// Replaces the two flat-array schemas (`fab::Manifest` + `mesh_manifest::MeshManifest`)
-// with a single tree-shaped schema mirroring pspec (`tools/pspec` in meow-tower).
-// Each `Tree` is one authored output (a CSA-published Sprite or an SMA-published
-// Mesh); children are GameObjects whose transforms compose down the tree.
+// Tree-shaped, mirroring pspec (`tools/pspec` in meow-tower). Each `Tree` is
+// one authored output (a CSA-published Sprite or an SMA-published Mesh);
+// children are GameObjects whose transforms compose down the tree. The
+// parser produces the internal `fab::Combined` / `mesh_manifest::MeshCombined`
+// IR via `to_fab_combined` / `to_mesh_combined`.
 //
 // > **Related:** [[fab.md]], [[sma-migration.md]], pspec orientation
 //
@@ -596,8 +597,9 @@ fn walk_node<'a>(
 }
 
 // ---------------------------------------------------------------------------
-// Bridge: v3 Tree → existing flat `fab::Combined` / `mesh_emit::MeshCombined`
-// so the byte-exact emit pipeline keeps consuming a single typed AST.
+// Bridge: `Tree` → `fab::Combined` (sprites) / `mesh_manifest::MeshCombined`
+// (meshes). The downstream emit pipelines (combine.rs, mesh_emit.rs) consume
+// these IRs directly.
 
 #[derive(Debug)]
 pub enum BridgeError {
@@ -608,7 +610,7 @@ pub enum BridgeError {
     /// under SMA, or sprite-renderer under CSA).
     GraphicMismatch { tree: String, reason: &'static str },
     /// Method requires `size` (R*/MX_R*/MY_R*/MXY_R*/TX*/TY*) but the
-    /// node's `size_delta` is zero. v3 manifests must declare size_delta
+    /// node's `size_delta` is zero. Manifests must declare `sizeDelta`
     /// on size-fitted UISlice leaves.
     ZeroSizeForSliceMethod { tree: String, sprite: String },
 }
@@ -657,7 +659,7 @@ pub fn to_fab_combined(tree: &Tree) -> Result<crate::fab::Combined, BridgeError>
                 ..
             } => {
                 let fab_method = map_method(*method);
-                let size = if fab_method.requires_size_v3() {
+                let size = if fab_method.requires_size() {
                     let sd = leaf.size_delta;
                     if sd[0] == 0.0 || sd[1] == 0.0 {
                         return Err(BridgeError::ZeroSizeForSliceMethod {
@@ -703,10 +705,8 @@ pub fn to_fab_combined(tree: &Tree) -> Result<crate::fab::Combined, BridgeError>
                         rot_deg: leaf.world_rot_deg,
                     },
                     // UISolid under CanvasSpriteAuthor takes no per-part
-                    // scale-factor, but the canvas-chain still uses
-                    // ui_scale = 1.0 (identity) so the matrix-style op order
-                    // preserves the FMA residue. Mirrors the v1 schema's
-                    // polygon emit.
+                    // scale-factor; ui_scale = 1.0 keeps the canvas-chain
+                    // op order matching the matrix-style emit.
                     ui_scale: 1.0,
                     offset: leaf.world_pos,
                 });
@@ -755,18 +755,6 @@ fn map_method(m: SpriteMethod) -> crate::fab::Method {
         SpriteMethod::MyR3c3 => F::MyR3c3,
         SpriteMethod::MxyR3c3 => F::MxyR3c3,
         SpriteMethod::MxyR3c3Nf => F::MxyR3c3Nf,
-    }
-}
-
-// Mirror of `fab::Method::requires_size` so the bridge can decide
-// whether to thread size_delta through. Kept private to manifest.rs.
-trait MethodCapV3 {
-    fn requires_size_v3(self) -> bool;
-}
-impl MethodCapV3 for crate::fab::Method {
-    fn requires_size_v3(self) -> bool {
-        use crate::fab::Method as M;
-        !matches!(self, M::Id | M::Mx | M::My | M::Mxy)
     }
 }
 
