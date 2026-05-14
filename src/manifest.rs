@@ -16,21 +16,21 @@
 //         "name": "Silloutte1",
 //         "scale": 0.01,                       // root's `scaleFactor` (CSA) or 1.0 (SMA)
 //         "rootAnchored": [141.8, 370.875],    // optional, only matters for FMA residue
-//         "output": "csa",                      // or { "type":"sma", "fileId":…, "outputPath":…, "usedInCanvas":… }
+//         "mode": "ui",                      // or { "type":"sma", "fileId":…, "outputPath":…, "usedInCanvas":… }
 //         "children": [
 //           {
 //             "name": "Image",
 //             "pos": [0, -22.25],
 //             "sizeDelta": [212.5, 545],
 //             "pivot": [0.5, 0.5],
-//             "graphic": { "type":"polygon", "color":"32264DBD", "vertices":[[…]] }
+//             "type":"polygon", "color":"32264DBD", "vertices":[[…]]
 //           },
 //           {
 //             "name": "B",
 //             "pos": [0, -294.75],
 //             "sizeDelta": [212.5, 17.5],
 //             "pivot": [0.5, 1],
-//             "graphic": { "type":"sprite", "sprite":"Mansion_…__B", "method":"MX" }
+//             "type":"sprite", "sprite":"Mansion_…__B", "method":"MX"
 //           },
 //           …
 //         ]
@@ -116,7 +116,7 @@ pub enum Graphic {
     /// UISolid or color-quad polygon.
     Polygon {
         /// Resolved tpsheet entry name (e.g. `Color_32264DBDFF` for color `"32264DBD"`,
-        /// `Color_32264DFF` for `"32264D"`).
+        /// `Color_32264D` for `"32264D"`).
         polygon_sprite: String,
         vertices: Vec<[f32; 2]>,
         triangles: Option<Vec<u16>>,
@@ -207,11 +207,28 @@ pub fn parse(json: &str) -> Result<Manifest, ManifestError> {
         if !seen.insert(t.name.clone()) {
             return Err(ManifestError::DuplicateName(t.name));
         }
-        let output = translate_output(&t.name, t.output)?;
-        let root = translate_node(&t.name, t.root)?;
+        let output = translate_mode(&t)?;
+        let mut children = Vec::with_capacity(t.children.len());
+        for c in t.children {
+            children.push(translate_node(&t.name, c)?);
+        }
+        // Wrap the flat children list back into the `root: Node` form that
+        // the bridge consumes downstream. The `root` is a pure container
+        // (no graphic) carrying the original children.
+        let root = Node {
+            name: String::new(),
+            pos: [0.0, 0.0],
+            size_delta: [0.0, 0.0],
+            pivot: [0.5, 0.5],
+            scale: [1.0, 1.0],
+            rot_deg: 0.0,
+            graphic: None,
+            children,
+        };
+        let default_scale = if matches!(output, Output::Csa) { 0.01 } else { 1.0 };
         trees.push(Tree {
             name: t.name,
-            scale: t.scale.unwrap_or(1.0),
+            scale: t.scale.unwrap_or(default_scale),
             root_anchored: t.root_anchored.unwrap_or([0.0, 0.0]),
             output,
             root,
@@ -220,59 +237,54 @@ pub fn parse(json: &str) -> Result<Manifest, ManifestError> {
     Ok(Manifest { trees })
 }
 
-fn translate_output(tree: &str, raw: raw::OutputSpec) -> Result<Output, ManifestError> {
-    match raw {
-        raw::OutputSpec::Tag(s) if s == "csa" => Ok(Output::Csa),
-        raw::OutputSpec::Tag(s) => Err(ManifestError::OutputShape {
-            tree: tree.to_string(),
-            reason: if s == "sma" {
-                "sma output must be an object with fileId/outputPath/usedInCanvas"
-            } else {
-                "unknown output tag"
-            },
-        }),
-        raw::OutputSpec::Object {
-            kind,
-            file_id,
-            output_path,
-            used_in_canvas,
-            keep_vertices,
-            keep_indices,
-        } => {
-            if kind != "sma" {
+fn translate_mode(t: &raw::Tree) -> Result<Output, ManifestError> {
+    let sma_fields_present = t.file_id.is_some()
+        || t.output_path.is_some()
+        || t.keep_vertices.is_some()
+        || t.keep_indices.is_some();
+    match t.mode.as_str() {
+        "ui" => {
+            if sma_fields_present {
                 return Err(ManifestError::OutputShape {
-                    tree: tree.to_string(),
-                    reason: "object output must declare type: \"sma\"",
+                    tree: t.name.clone(),
+                    reason: "mode=ui must not carry fileId/outputPath/keepVertices/keepIndices",
                 });
             }
-            let file_id = file_id.ok_or(ManifestError::OutputShape {
-                tree: tree.to_string(),
-                reason: "sma output requires `fileId`",
+            Ok(Output::Csa)
+        }
+        "sma-canvas" | "sma-renderer" => {
+            let file_id = t.file_id.ok_or(ManifestError::OutputShape {
+                tree: t.name.clone(),
+                reason: "mode=sma-* requires `fileId`",
             })?;
-            let output_path = output_path.ok_or(ManifestError::OutputShape {
-                tree: tree.to_string(),
-                reason: "sma output requires `outputPath`",
-            })?;
-            let used_in_canvas = used_in_canvas.ok_or(ManifestError::OutputShape {
-                tree: tree.to_string(),
-                reason: "sma output requires `usedInCanvas`",
+            let output_path = t.output_path.clone().ok_or(ManifestError::OutputShape {
+                tree: t.name.clone(),
+                reason: "mode=sma-* requires `outputPath`",
             })?;
             Ok(Output::Sma {
                 file_id,
                 output_path,
-                used_in_canvas,
-                keep_vertices: keep_vertices.unwrap_or(true),
-                keep_indices: keep_indices.unwrap_or(true),
+                used_in_canvas: t.mode == "sma-canvas",
+                keep_vertices: t.keep_vertices.unwrap_or(true),
+                keep_indices: t.keep_indices.unwrap_or(true),
             })
         }
+        _ => Err(ManifestError::OutputShape {
+            tree: t.name.clone(),
+            reason: "mode must be \"ui\" | \"sma-canvas\" | \"sma-renderer\"",
+        }),
     }
 }
 
 fn translate_node(tree: &str, raw: raw::Node) -> Result<Node, ManifestError> {
-    let scale = raw.scale.as_ref().map(raw::ScaleSpec::resolve).unwrap_or([1.0, 1.0]);
-    let graphic = match raw.graphic {
-        Some(g) => Some(translate_graphic(tree, g)?),
+    let scale = raw
+        .scale
+        .as_ref()
+        .map(raw::ScaleSpec::resolve)
+        .unwrap_or([1.0, 1.0]);
+    let graphic = match raw.kind.as_deref() {
         None => None,
+        Some(k) => Some(translate_graphic_flat(tree, k, &raw)?),
     };
     let mut children = Vec::with_capacity(raw.children.len());
     for c in raw.children {
@@ -290,14 +302,17 @@ fn translate_node(tree: &str, raw: raw::Node) -> Result<Node, ManifestError> {
     })
 }
 
-fn translate_graphic(tree: &str, g: raw::Graphic) -> Result<Graphic, ManifestError> {
-    match g.kind.as_str() {
+fn translate_graphic_flat(tree: &str, kind: &str, raw: &raw::Node) -> Result<Graphic, ManifestError> {
+    match kind {
         "sprite" => {
-            let sprite = g.sprite.ok_or(ManifestError::GraphicShape {
-                tree: tree.to_string(),
-                reason: "sprite graphic requires `sprite`",
-            })?;
-            let method_str = g.method.as_deref().unwrap_or("ID");
+            let sprite = raw
+                .sprite
+                .clone()
+                .ok_or(ManifestError::GraphicShape {
+                    tree: tree.to_string(),
+                    reason: "type=sprite requires `sprite`",
+                })?;
+            let method_str = raw.method.as_deref().unwrap_or("ID");
             let method = parse_method(method_str).ok_or_else(|| ManifestError::UnknownMethod {
                 tree: tree.to_string(),
                 method: method_str.to_string(),
@@ -305,19 +320,19 @@ fn translate_graphic(tree: &str, g: raw::Graphic) -> Result<Graphic, ManifestErr
             Ok(Graphic::Sprite {
                 sprite,
                 method,
-                ui_scale: g.ui_scale.unwrap_or(100.0),
-                border_mult: g.border_mult.unwrap_or(1.0),
-                flip_x: g.flip_x.unwrap_or(false),
-                flip_y: g.flip_y.unwrap_or(false),
+                ui_scale: raw.ui_scale.unwrap_or(100.0),
+                border_mult: raw.border_mult.unwrap_or(1.0),
+                flip_x: raw.flip_x.unwrap_or(false),
+                flip_y: raw.flip_y.unwrap_or(false),
             })
         }
         "polygon" => {
-            let color = g.color.ok_or(ManifestError::GraphicShape {
+            let color = raw.color.clone().ok_or(ManifestError::GraphicShape {
                 tree: tree.to_string(),
-                reason: "polygon graphic requires `color`",
+                reason: "type=polygon requires `color`",
             })?;
             let polygon_sprite = resolve_color(tree, &color)?;
-            let vertices = g.vertices.unwrap_or_default();
+            let vertices = raw.vertices.clone().unwrap_or_default();
             if vertices.len() < 3 {
                 return Err(ManifestError::PolygonTooFewVertices {
                     tree: tree.to_string(),
@@ -327,15 +342,18 @@ fn translate_graphic(tree: &str, g: raw::Graphic) -> Result<Graphic, ManifestErr
             Ok(Graphic::Polygon {
                 polygon_sprite,
                 vertices,
-                triangles: g.triangles,
+                triangles: raw.triangles.clone(),
             })
         }
-        "sprite-renderer" => {
-            let sprite = g.sprite.ok_or(ManifestError::GraphicShape {
-                tree: tree.to_string(),
-                reason: "sprite-renderer graphic requires `sprite`",
-            })?;
-            let draw_mode = match g.draw_mode.as_deref().unwrap_or("simple") {
+        "spriteRenderer" | "sprite-renderer" => {
+            let sprite = raw
+                .sprite
+                .clone()
+                .ok_or(ManifestError::GraphicShape {
+                    tree: tree.to_string(),
+                    reason: "type=spriteRenderer requires `sprite`",
+                })?;
+            let draw_mode = match raw.draw_mode.as_deref().unwrap_or("simple") {
                 "simple" => DrawMode::Simple,
                 "tiled" => DrawMode::Tiled,
                 other => {
@@ -348,15 +366,12 @@ fn translate_graphic(tree: &str, g: raw::Graphic) -> Result<Graphic, ManifestErr
             Ok(Graphic::SpriteRenderer {
                 sprite,
                 draw_mode,
-                size: g.size,
+                size: raw.size,
             })
         }
-        other => Err(ManifestError::GraphicShape {
+        _ => Err(ManifestError::GraphicShape {
             tree: tree.to_string(),
-            reason: match other {
-                "sprite" | "polygon" | "sprite-renderer" => "internal",
-                _ => "type must be \"sprite\" | \"polygon\" | \"sprite-renderer\"",
-            },
+            reason: "type must be \"sprite\" | \"polygon\" | \"spriteRenderer\"",
         }),
     }
 }
@@ -370,12 +385,13 @@ fn resolve_color(tree: &str, c: &str) -> Result<String, ManifestError> {
             color: c.to_string(),
         });
     }
+    // Atlas entry names match the input verbatim — 6-hex when alpha is
+    // implicit FF, 8-hex when alpha is explicit. The corpus
+    // convention is to drop the redundant `FF` alpha when fully opaque,
+    // so `"FFFFFF"` (6-hex) → `Color_FFFFFF` (the actual sprite name in
+    // the tpsheet), not `Color_FFFFFFFF`.
     let upper = c.to_ascii_uppercase();
-    Ok(if len == 6 {
-        format!("Color_{upper}FF")
-    } else {
-        format!("Color_{upper}")
-    })
+    Ok(format!("Color_{upper}"))
 }
 
 fn parse_method(s: &str) -> Option<SpriteMethod> {
@@ -418,64 +434,43 @@ mod raw {
         pub trees: Vec<Tree>,
     }
 
+    /// Per-tree input. Replaces the old `{ output, root: { children } }`
+    /// shape with flat `{ mode, children }` plus optional SMA fields at
+    /// the tree level. `scale` is in 0..1 range (CSA canvasScale: 0.01;
+    /// SMA worldScale: 1.0).
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
     pub struct Tree {
         pub name: String,
+        pub mode: String, // "ui" | "sma-canvas" | "sma-renderer"
         pub scale: Option<f32>,
         pub root_anchored: Option<[f32; 2]>,
-        pub output: OutputSpec,
-        #[serde(default = "default_root")]
-        pub root: Node,
+        // SMA fields — required when mode starts with "sma-", rejected otherwise.
+        pub file_id: Option<i64>,
+        pub output_path: Option<String>,
+        pub keep_vertices: Option<bool>,
+        pub keep_indices: Option<bool>,
+        #[serde(default)]
+        pub children: Vec<Node>,
     }
 
-    fn default_root() -> Node {
-        Node {
-            name: None, pos: None, size_delta: None, pivot: None,
-            scale: None, rot_deg: None, graphic: None, children: Vec::new(),
-        }
-    }
-
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    pub enum OutputSpec {
-        Tag(String),
-        Object {
-            #[serde(rename = "type")]
-            kind: String,
-            #[serde(rename = "fileId")]
-            file_id: Option<i64>,
-            #[serde(rename = "outputPath")]
-            output_path: Option<String>,
-            #[serde(rename = "usedInCanvas")]
-            used_in_canvas: Option<bool>,
-            #[serde(rename = "keepVertices")]
-            keep_vertices: Option<bool>,
-            #[serde(rename = "keepIndices")]
-            keep_indices: Option<bool>,
-        },
-    }
-
+    /// Per-leaf input. Graphic + RectTransform fields are flattened
+    /// onto the node directly. `type` discriminates the graphic kind
+    /// ("sprite" | "polygon" | "spriteRenderer"); absent = pure container.
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
     pub struct Node {
+        // Transform fields:
         pub name: Option<String>,
         pub pos: Option<[f32; 2]>,
         pub size_delta: Option<[f32; 2]>,
         pub pivot: Option<[f32; 2]>,
         pub scale: Option<ScaleSpec>,
         pub rot_deg: Option<f32>,
-        pub graphic: Option<Graphic>,
-        #[serde(default)]
-        pub children: Vec<Node>,
-    }
 
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    pub struct Graphic {
+        // Graphic discriminator + fields:
         #[serde(rename = "type")]
-        pub kind: String,
-
+        pub kind: Option<String>,
         // sprite + sprite-renderer
         pub sprite: Option<String>,
         // sprite only
@@ -491,6 +486,9 @@ mod raw {
         // sprite-renderer
         pub draw_mode: Option<String>,
         pub size: Option<[f32; 2]>,
+
+        #[serde(default)]
+        pub children: Vec<Node>,
     }
 
     #[derive(Deserialize)]
@@ -874,12 +872,10 @@ mod tests {
               "version": 1,
               "trees": [{
                 "name": "X",
-                "output": "csa",
-                "root": {
-                  "children": [
-                    { "graphic": { "type":"sprite", "sprite":"foo" } }
+                "mode": "ui",
+                "children": [
+                    { "type":"sprite", "sprite":"foo" }
                   ]
-                }
               }]
             }"#,
         )
@@ -887,7 +883,8 @@ mod tests {
         assert_eq!(m.trees.len(), 1);
         let t = &m.trees[0];
         assert_eq!(t.output, Output::Csa);
-        assert_eq!(t.scale, 1.0);
+        // mode=ui defaults scale to CSA canvasScale (0.01).
+        assert_eq!(t.scale, 0.01);
         assert_eq!(t.root.children.len(), 1);
         match &t.root.children[0].graphic.as_ref().unwrap() {
             Graphic::Sprite { method, ui_scale, .. } => {
@@ -902,15 +899,15 @@ mod tests {
     fn parse_polygon_color_6_hex() {
         let m = parse(
             r#"{ "version": 1, "trees": [{
-              "name": "X", "output": "csa",
-              "root": { "children": [{
-                "graphic": { "type":"polygon", "color":"32264D", "vertices":[[0,0],[1,0],[1,1]] }
-              }]}
+              "name": "X", "mode": "ui",
+              "children": [{
+                "type":"polygon", "color":"32264D", "vertices":[[0,0],[1,0],[1,1]]
+              }]
             }]}"#,
         )
         .unwrap();
         match &m.trees[0].root.children[0].graphic.as_ref().unwrap() {
-            Graphic::Polygon { polygon_sprite, .. } => assert_eq!(polygon_sprite, "Color_32264DFF"),
+            Graphic::Polygon { polygon_sprite, .. } => assert_eq!(polygon_sprite, "Color_32264D"),
             _ => panic!(),
         }
     }
@@ -919,10 +916,10 @@ mod tests {
     fn parse_polygon_color_8_hex() {
         let m = parse(
             r#"{ "version": 1, "trees": [{
-              "name": "X", "output": "csa",
-              "root": { "children": [{
-                "graphic": { "type":"polygon", "color":"DEADBEEF", "vertices":[[0,0],[1,0],[1,1]] }
-              }]}
+              "name": "X", "mode": "ui",
+              "children": [{
+                "type":"polygon", "color":"DEADBEEF", "vertices":[[0,0],[1,0],[1,1]]
+              }]
             }]}"#,
         )
         .unwrap();
@@ -937,10 +934,10 @@ mod tests {
         let m = parse(
             r#"{ "version": 1, "trees": [{
               "name": "X",
-              "output": { "type":"sma", "fileId":-1234, "outputPath":"!Output/X.asset", "usedInCanvas":false },
-              "root": { "children": [{
-                "graphic": { "type":"sprite-renderer", "sprite":"foo" }
-              }]}
+              "mode":"sma-renderer", "fileId":-1234, "outputPath":"!Output/X.asset",
+              "children": [{
+                "type":"spriteRenderer", "sprite":"foo"
+              }]
             }]}"#,
         )
         .unwrap();
@@ -967,11 +964,11 @@ mod tests {
     fn parse_scale_uniform_and_per_axis() {
         let m = parse(
             r#"{ "version": 1, "trees": [{
-              "name": "X", "output": "csa",
-              "root": { "children": [
-                { "scale": 2.5, "graphic": {"type":"sprite","sprite":"a"} },
-                { "scale": [-1, 1], "graphic": {"type":"sprite","sprite":"b"} }
-              ]}
+              "name": "X", "mode": "ui",
+              "children": [
+                { "scale": 2.5, "type":"sprite","sprite":"a" },
+                { "scale": [-1, 1], "type":"sprite","sprite":"b" }
+              ]
             }]}"#,
         )
         .unwrap();
@@ -984,18 +981,18 @@ mod tests {
     fn parse_nested_children() {
         let m = parse(
             r#"{ "version": 1, "trees": [{
-              "name": "X", "output": "csa",
-              "root": { "children": [{
+              "name": "X", "mode": "ui",
+              "children": [{
                 "name": "Body",
                 "pivot": [0.5, 0.4515571],
                 "sizeDelta": [154, 181],
-                "graphic": {"type":"sprite","sprite":"body"},
+                "type":"sprite","sprite":"body",
                 "children": [{
                   "name": "SP",
                   "pos": [-69.8, -36.7],
-                  "graphic": {"type":"sprite","sprite":"sp"}
+                  "type":"sprite","sprite":"sp"
                 }]
-              }]}
+              }]
             }]}"#,
         )
         .unwrap();
@@ -1017,10 +1014,10 @@ mod tests {
     fn parse_rejects_bad_color() {
         let m = parse(
             r#"{ "version":1, "trees":[{
-              "name":"X", "output":"csa",
-              "root": { "children": [{
-                "graphic": {"type":"polygon","color":"NOPE","vertices":[[0,0],[1,0],[1,1]]}
-              }]}
+              "name":"X", "mode": "ui",
+              "children": [{
+                "type":"polygon","color":"NOPE","vertices":[[0,0],[1,0],[1,1]]
+              }]
             }]}"#,
         );
         assert!(matches!(m, Err(ManifestError::BadColor { .. })));
@@ -1030,10 +1027,10 @@ mod tests {
     fn parse_rejects_unknown_method() {
         let m = parse(
             r#"{ "version":1, "trees":[{
-              "name":"X", "output":"csa",
-              "root": { "children": [{
-                "graphic": {"type":"sprite","sprite":"a","method":"BOGUS"}
-              }]}
+              "name":"X", "mode": "ui",
+              "children": [{
+                "type":"sprite","sprite":"a","method":"BOGUS"
+              }]
             }]}"#,
         );
         assert!(matches!(m, Err(ManifestError::UnknownMethod { .. })));
@@ -1043,8 +1040,8 @@ mod tests {
     fn parse_rejects_sma_as_tag() {
         let m = parse(
             r#"{ "version":1, "trees":[{
-              "name":"X", "output":"sma",
-              "root": { "children": [{ "graphic": {"type":"sprite-renderer","sprite":"a"} }]}
+              "name":"X", "mode": "sma-tag",
+              "children": [{ "type":"spriteRenderer","sprite":"a" }]
             }]}"#,
         );
         assert!(matches!(m, Err(ManifestError::OutputShape { .. })));
@@ -1058,8 +1055,8 @@ mod tests {
     fn walk_single_root_child_at_origin() {
         let m = parse_single(
             r#"{ "version":1, "trees":[{
-              "name":"X", "output":"csa",
-              "root":{"children":[{"graphic":{"type":"sprite","sprite":"a"}}]}
+              "name":"X", "mode": "ui",
+              "children":[{"type":"sprite","sprite":"a"}]
             }]}"#,
         );
         let leaves = walk(&m.trees[0]);
@@ -1072,10 +1069,10 @@ mod tests {
     fn walk_child_translated() {
         let m = parse_single(
             r#"{ "version":1, "trees":[{
-              "name":"X", "output":"csa",
-              "root":{"children":[
-                {"pos":[10,20],"graphic":{"type":"sprite","sprite":"a"}}
-              ]}
+              "name":"X", "mode": "ui",
+              "children":[
+                {"pos":[10,20],"type":"sprite","sprite":"a"}
+              ]
             }]}"#,
         );
         let leaves = walk(&m.trees[0]);
@@ -1094,18 +1091,18 @@ mod tests {
         //                     ≈ -27.931835
         let m = parse_single(
             r#"{ "version":1, "trees":[{
-              "name":"X", "output":"csa",
-              "root":{"children":[{
+              "name":"X", "mode": "ui",
+              "children":[{
                 "name":"Body",
                 "pivot":[0.5, 0.4515571],
                 "sizeDelta":[154, 181],
-                "graphic":{"type":"sprite","sprite":"body"},
+                "type":"sprite","sprite":"body",
                 "children":[{
                   "name":"SP",
                   "pos":[-69.8, -36.7],
-                  "graphic":{"type":"sprite","sprite":"sp"}
+                  "type":"sprite","sprite":"sp"
                 }]
-              }]}
+              }]
             }]}"#,
         );
         let leaves = walk(&m.trees[0]);
@@ -1129,15 +1126,15 @@ mod tests {
     fn walk_composes_scale_through_descendants() {
         let m = parse_single(
             r#"{ "version":1, "trees":[{
-              "name":"X", "output":"csa",
-              "root":{"children":[{
+              "name":"X", "mode": "ui",
+              "children":[{
                 "scale":[-1, 1],
-                "graphic":{"type":"sprite","sprite":"parent"},
+                "type":"sprite","sprite":"parent",
                 "children":[{
                   "scale":[2, 3],
-                  "graphic":{"type":"sprite","sprite":"child"}
+                  "type":"sprite","sprite":"child"
                 }]
-              }]}
+              }]
             }]}"#,
         );
         let leaves = walk(&m.trees[0]);
@@ -1151,14 +1148,14 @@ mod tests {
         // a leaf; only its descendants with graphics do.
         let m = parse_single(
             r#"{ "version":1, "trees":[{
-              "name":"X", "output":"csa",
-              "root":{"children":[{
+              "name":"X", "mode": "ui",
+              "children":[{
                 "pos":[5, 10],
                 "children":[{
                   "pos":[1, 2],
-                  "graphic":{"type":"sprite","sprite":"a"}
+                  "type":"sprite","sprite":"a"
                 }]
-              }]}
+              }]
             }]}"#,
         );
         let leaves = walk(&m.trees[0]);
@@ -1170,15 +1167,16 @@ mod tests {
     fn bridge_to_fab_csa_minimal() {
         let m = parse_single(
             r#"{ "version":1, "trees":[{
-              "name":"X","output":"csa",
-              "root":{"children":[
-                {"graphic":{"type":"sprite","sprite":"foo"}}
-              ]}
+              "name":"X","mode": "ui",
+              "children":[
+                {"type":"sprite","sprite":"foo"}
+              ]
             }]}"#,
         );
         let c = to_fab_combined(&m.trees[0]).unwrap();
         assert_eq!(c.name, "X");
-        assert_eq!(c.canvas_scale, 1.0);
+        // mode=ui defaults canvas_scale to 0.01 (CSA convention).
+        assert_eq!(c.canvas_scale, 0.01);
         assert_eq!(c.parts.len(), 1);
         match &c.parts[0] {
             crate::fab::Part::AtlasSprite { sprite, method, ui_scale, size, offset, .. } => {
@@ -1196,18 +1194,18 @@ mod tests {
     fn bridge_to_fab_polygon_with_offset() {
         let m = parse_single(
             r#"{ "version":1, "trees":[{
-              "name":"X","output":"csa","scale":0.01,
-              "root":{"children":[{
+              "name":"X","mode": "ui","scale":0.01,
+              "children":[{
                 "pos":[10, 20],
-                "graphic":{"type":"polygon","color":"32264D","vertices":[[0,0],[1,0],[1,1]]}
-              }]}
+                "type":"polygon","color":"32264D","vertices":[[0,0],[1,0],[1,1]]
+              }]
             }]}"#,
         );
         let c = to_fab_combined(&m.trees[0]).unwrap();
         assert_eq!(c.canvas_scale, 0.01);
         match &c.parts[0] {
             crate::fab::Part::Polygon { polygon_sprite, offset, .. } => {
-                assert_eq!(polygon_sprite, "Color_32264DFF");
+                assert_eq!(polygon_sprite, "Color_32264D");
                 assert_eq!(*offset, [10.0, 20.0]);
             }
             _ => panic!(),
@@ -1219,10 +1217,10 @@ mod tests {
         // scale: [-1, 1] should flow into Affine.sx/sy.
         let m = parse_single(
             r#"{ "version":1, "trees":[{
-              "name":"X","output":"csa",
-              "root":{"children":[
-                {"scale":[-1,1],"graphic":{"type":"sprite","sprite":"a"}}
-              ]}
+              "name":"X","mode": "ui",
+              "children":[
+                {"scale":[-1,1],"type":"sprite","sprite":"a"}
+              ]
             }]}"#,
         );
         let c = to_fab_combined(&m.trees[0]).unwrap();
@@ -1239,11 +1237,11 @@ mod tests {
     fn bridge_size_fitted_method_takes_size_delta() {
         let m = parse_single(
             r#"{ "version":1, "trees":[{
-              "name":"X","output":"csa",
-              "root":{"children":[{
+              "name":"X","mode": "ui",
+              "children":[{
                 "sizeDelta":[200, 150],
-                "graphic":{"type":"sprite","sprite":"a","method":"R3C3"}
-              }]}
+                "type":"sprite","sprite":"a","method":"R3C3"
+              }]
             }]}"#,
         );
         let c = to_fab_combined(&m.trees[0]).unwrap();
@@ -1260,10 +1258,10 @@ mod tests {
     fn bridge_rejects_size_fitted_with_zero_size() {
         let m = parse_single(
             r#"{ "version":1, "trees":[{
-              "name":"X","output":"csa",
-              "root":{"children":[
-                {"graphic":{"type":"sprite","sprite":"a","method":"R3C3"}}
-              ]}
+              "name":"X","mode": "ui",
+              "children":[
+                {"type":"sprite","sprite":"a","method":"R3C3"}
+              ]
             }]}"#,
         );
         let err = to_fab_combined(&m.trees[0]).unwrap_err();
@@ -1274,10 +1272,10 @@ mod tests {
     fn bridge_rejects_sprite_renderer_in_csa() {
         let m = parse_single(
             r#"{ "version":1, "trees":[{
-              "name":"X","output":"csa",
-              "root":{"children":[
-                {"graphic":{"type":"sprite-renderer","sprite":"a"}}
-              ]}
+              "name":"X","mode": "ui",
+              "children":[
+                {"type":"spriteRenderer","sprite":"a"}
+              ]
             }]}"#,
         );
         let err = to_fab_combined(&m.trees[0]).unwrap_err();
@@ -1289,8 +1287,8 @@ mod tests {
         let m = parse_single(
             r#"{ "version":1, "trees":[{
               "name":"X",
-              "output":{"type":"sma","fileId":1,"outputPath":"o.asset","usedInCanvas":true},
-              "root":{"children":[{"graphic":{"type":"sprite-renderer","sprite":"a"}}]}
+              "mode":"sma-canvas", "fileId":1,"outputPath":"o.asset",
+              "children":[{"type":"spriteRenderer","sprite":"a"}]
             }]}"#,
         );
         let err = to_fab_combined(&m.trees[0]).unwrap_err();
@@ -1304,11 +1302,11 @@ mod tests {
         // residual computation downstream.
         let m = parse_single(
             r#"{ "version":1, "trees":[{
-              "name":"Silloutte3","output":"csa","scale":0.01,
+              "name":"Silloutte3","mode": "ui","scale":0.01,
               "rootAnchored":[141.8, 370.875],
-              "root":{"children":[
-                {"graphic":{"type":"sprite","sprite":"a","method":"MX"}}
-              ]}
+              "children":[
+                {"type":"sprite","sprite":"a","method":"MX"}
+              ]
             }]}"#,
         );
         let c = to_fab_combined(&m.trees[0]).unwrap();
@@ -1320,10 +1318,10 @@ mod tests {
         let m = parse_single(
             r#"{ "version":1, "trees":[{
               "name":"X",
-              "output":{"type":"sma","fileId":-1234,"outputPath":"o.asset","usedInCanvas":true},
-              "root":{"children":[
-                {"graphic":{"type":"sprite-renderer","sprite":"foo"}}
-              ]}
+              "mode":"sma-canvas", "fileId":-1234,"outputPath":"o.asset",
+              "children":[
+                {"type":"spriteRenderer","sprite":"foo"}
+              ]
             }]}"#,
         );
         let mc = to_mesh_combined(&m.trees[0]).unwrap();
@@ -1344,10 +1342,10 @@ mod tests {
         let m = parse_single(
             r#"{ "version":1, "trees":[{
               "name":"X",
-              "output":{"type":"sma","fileId":1,"outputPath":"o.asset","usedInCanvas":false},
-              "root":{"children":[
-                {"pos":[10,20],"graphic":{"type":"sprite-renderer","sprite":"a"}}
-              ]}
+              "mode":"sma-renderer", "fileId":1,"outputPath":"o.asset",
+              "children":[
+                {"pos":[10,20],"type":"spriteRenderer","sprite":"a"}
+              ]
             }]}"#,
         );
         let mc = to_mesh_combined(&m.trees[0]).unwrap();
@@ -1364,10 +1362,10 @@ mod tests {
         let m = parse_single(
             r#"{ "version":1, "trees":[{
               "name":"X",
-              "output":{"type":"sma","fileId":1,"outputPath":"o.asset","usedInCanvas":false},
-              "root":{"children":[
-                {"scale":[-1,1],"graphic":{"type":"sprite-renderer","sprite":"a"}}
-              ]}
+              "mode":"sma-renderer", "fileId":1,"outputPath":"o.asset",
+              "children":[
+                {"scale":[-1,1],"type":"spriteRenderer","sprite":"a"}
+              ]
             }]}"#,
         );
         let mc = to_mesh_combined(&m.trees[0]).unwrap();
@@ -1383,10 +1381,10 @@ mod tests {
         let m = parse_single(
             r#"{ "version":1, "trees":[{
               "name":"X",
-              "output":{"type":"sma","fileId":1,"outputPath":"o.asset","usedInCanvas":false},
-              "root":{"children":[
-                {"graphic":{"type":"sprite-renderer","sprite":"brick","drawMode":"tiled","size":[4.05,1.0]}}
-              ]}
+              "mode":"sma-renderer", "fileId":1,"outputPath":"o.asset",
+              "children":[
+                {"type":"spriteRenderer","sprite":"brick","drawMode":"tiled","size":[4.05,1.0]}
+              ]
             }]}"#,
         );
         let mc = to_mesh_combined(&m.trees[0]).unwrap();
@@ -1399,8 +1397,8 @@ mod tests {
     fn bridge_to_mesh_rejects_csa_tree() {
         let m = parse_single(
             r#"{ "version":1, "trees":[{
-              "name":"X","output":"csa",
-              "root":{"children":[{"graphic":{"type":"sprite","sprite":"a"}}]}
+              "name":"X","mode": "ui",
+              "children":[{"type":"sprite","sprite":"a"}]
             }]}"#,
         );
         let err = to_mesh_combined(&m.trees[0]).unwrap_err();
@@ -1412,10 +1410,10 @@ mod tests {
         let m = parse_single(
             r#"{ "version":1, "trees":[{
               "name":"X",
-              "output":{"type":"sma","fileId":1,"outputPath":"o.asset","usedInCanvas":true},
-              "root":{"children":[
-                {"graphic":{"type":"polygon","color":"112233","vertices":[[0,0],[1,0],[1,1]]}}
-              ]}
+              "mode":"sma-canvas", "fileId":1,"outputPath":"o.asset",
+              "children":[
+                {"type":"polygon","color":"112233","vertices":[[0,0],[1,0],[1,1]]}
+              ]
             }]}"#,
         );
         let err = to_mesh_combined(&m.trees[0]).unwrap_err();
@@ -1426,8 +1424,8 @@ mod tests {
     fn parse_rejects_duplicate_tree_name() {
         let m = parse(
             r#"{ "version":1, "trees":[
-              {"name":"X","output":"csa","root":{"children":[{"graphic":{"type":"sprite","sprite":"a"}}]}},
-              {"name":"X","output":"csa","root":{"children":[{"graphic":{"type":"sprite","sprite":"b"}}]}}
+              {"name":"X","mode": "ui","children":[{"type":"sprite","sprite":"a"}]},
+              {"name":"X","mode": "ui","children":[{"type":"sprite","sprite":"b"}]}
             ]}"#,
         );
         assert!(matches!(m, Err(ManifestError::DuplicateName(n)) if n == "X"));
