@@ -11,6 +11,7 @@ pub mod emit;
 pub mod fab;
 pub mod triangulator;
 pub mod mesh_emit;
+pub mod mesh_manifest;
 pub mod meta;
 pub mod pipeline;
 pub mod render_data;
