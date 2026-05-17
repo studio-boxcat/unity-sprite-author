@@ -39,11 +39,11 @@ pub enum Part {
         /// Target rect, world units. `None` ⇒ native-scale (UIIconMeshGen
         /// path). `Some` ⇒ size-fitted (UISliceMeshGen path).
         size: Option<(f32, f32)>,
-        /// Target-rect pivot in 0..1. `None` ⇒ inherit the sprite's own
-        /// tps `pivotPoint` at the build_combined step — the common case
-        /// for CSA-style hierarchies where the GameObject's
-        /// RectTransform.pivot mirrors the sprite's natural anchor.
-        /// `Some` overrides for leaves that intentionally diverge.
+        /// Target-rect pivot (= `RectTransform.pivot` of the GameObject)
+        /// in 0..1. `None` ⇒ the centered default (0.5, 0.5) — Unity's
+        /// RectTransform standard. `Some` overrides for leaves that
+        /// intentionally diverge (e.g. asymmetric-pivot mirror tricks
+        /// or top/bottom-edge anchored slices).
         part_pivot: Option<[f32; 2]>,
         /// Slice-method border multiplier. Only meaningful for methods that
         /// declare a border in their source rect.

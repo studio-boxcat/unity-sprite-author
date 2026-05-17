@@ -181,9 +181,13 @@ fn leaf_scale_composes_through_deep_container_chain() {
 #[test]
 fn sprite_leaf_omitting_pivot_inherits_none_from_bridge() {
     // No `pivot` in JSON → Part.part_pivot = None. The runtime resolves
-    // None against the tps sprite-entry's pivotPoint in build_combined, so
-    // a leaf authored without `pivot` automatically lines up with the
-    // sprite's natural anchor.
+    // None against the Unity RectTransform default (0.5, 0.5) in
+    // build_combined. (Earlier design defaulted to the sprite's tps
+    // pivotPoint; reverted because GO RectTransform.pivot and sprite
+    // tps pivotPoint are semantically distinct — conflating them broke
+    // CSA prefabs that set a non-centered RectTransform.pivot for
+    // size-fitted methods. See PA_InfinitePencil_Clock for the
+    // asymmetric-mirror pattern that relies on this distinction.)
     let m = parse(
         r#"{ "version":1, "combined":[{
               "name":"X", "mode":"ui",
@@ -199,10 +203,81 @@ fn sprite_leaf_omitting_pivot_inherits_none_from_bridge() {
 }
 
 #[test]
-fn sprite_leaf_explicit_pivot_overrides_tps_default() {
+fn build_combined_resolves_missing_part_pivot_to_centered_default() {
+    // End-to-end: a Part with `part_pivot: None` and a slice method
+    // (R3C3 requires part_pivot for target-rect anchoring) renders the
+    // target rect centered around the leaf origin — proving the default
+    // is (0.5, 0.5), NOT the sprite's tps pivotPoint (which is (0, 1)
+    // for this fixture). A regression to "default = tps pivot" would
+    // shift the rect to a corner-anchored layout and the test would
+    // catch it via the AABB centre being far from the leaf origin.
+    use unity_sprite_author::combine::{self, AtlasSize};
+    use unity_sprite_author::fab::{Affine, Combined, Method, Part};
+    use unity_sprite_author::tpsheet::{Geometry, Pivot, Rect, SpriteAlignment, SpriteEntry, Vertex};
+
+    // Synthetic sprite with non-centered tps pivot (0, 1) — top-left corner.
+    let entry = SpriteEntry {
+        name: "synthetic".into(),
+        rect: Rect { x: 0, y: 0, w: 100, h: 100 },
+        border: Default::default(),
+        pivot: Pivot { x: 0.0, y: 1.0 },
+        alignment: SpriteAlignment::TopLeft,
+        geometry: Geometry {
+            vertices: vec![
+                Vertex { x: 0.0,   y: 0.0   },
+                Vertex { x: 100.0, y: 0.0   },
+                Vertex { x: 100.0, y: 100.0 },
+                Vertex { x: 0.0,   y: 100.0 },
+            ],
+            triangles: vec![0, 1, 2, 0, 2, 3],
+        },
+    };
+    let combined = Combined {
+        name: "X".into(),
+        pivot: [0.5, 0.5],
+        border: [0.0; 4],
+        parts: vec![Part::AtlasSprite {
+            sprite: "synthetic".into(),
+            method: Method::R3c3,
+            size: Some((1.0, 1.0)),       // 100 canvas px × 0.01 = 1.0 world units
+            part_pivot: None,             // ← KEY: default should resolve to (0.5, 0.5)
+            border_mult: 1.0,
+            affine: Affine::default(),
+            offset: [0.0, 0.0],
+        }],
+    };
+
+    // sprite_bound = (100/100, 100/100) = (1, 1) world units; sized to match
+    // target (1, 1) → scale = 1, no resize. Centered around (0, 0) means verts
+    // span (-0.5, 0.5) on both axes. A tps-pivot-default regression would
+    // shift to (-1.0, 0.0)..(0.0, 1.0) (anchored top-left).
+    let entry = std::sync::Arc::new(entry);
+    let m = combine::build_combined(
+        &combined,
+        |_| Some(((*entry).clone(), 1.0)),
+        AtlasSize { width: 128, height: 128 },
+        100.0,
+    )
+    .unwrap();
+    // R3c3 with border=0 collapses to a 1-quad strip; assert AABB is centered.
+    let (min_x, max_x, min_y, max_y) = m.verts.iter().fold(
+        (f32::MAX, f32::MIN, f32::MAX, f32::MIN),
+        |(mnx, mxx, mny, mxy), v| (mnx.min(v[0]), mxx.max(v[0]), mny.min(v[1]), mxy.max(v[1])),
+    );
+    let cx = (min_x + max_x) * 0.5;
+    let cy = (min_y + max_y) * 0.5;
+    assert!(
+        cx.abs() < 1e-5 && cy.abs() < 1e-5,
+        "centered default → AABB centred at origin; got ({cx}, {cy}) from x:[{min_x}, {max_x}] y:[{min_y}, {max_y}]. \
+         A regression to tps-default would shift the centre by ~(±target/2, ±target/2).",
+    );
+}
+
+#[test]
+fn sprite_leaf_explicit_pivot_overrides_centered_default() {
     // Explicit `pivot` survives as Some(_), overriding the runtime's
-    // tps-default lookup — required for leaves that intentionally
-    // diverge from the sprite's natural anchor.
+    // (0.5, 0.5) default — required for size-fitted leaves that
+    // intentionally diverge from center (e.g. asymmetric-pivot mirror).
     let m = parse(
         r#"{ "version":1, "combined":[{
               "name":"X", "mode":"ui",

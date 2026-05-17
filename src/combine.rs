@@ -1575,11 +1575,12 @@ where
         let part_mesh = match part {
             Part::AtlasSprite { method, size, part_pivot, border_mult, affine, offset, .. } => {
                 check_method_constraints(*method, &entry, &combined.name, source_name)?;
-                // None ⇒ inherit the sprite's natural anchor. Diverging JSON
-                // pivots stay as Some(...) and override here. Stripping the
-                // common "matches tps" case keeps fab.json signal-only.
-                let resolved_pivot = part_pivot
-                    .unwrap_or([entry.pivot.x, entry.pivot.y]);
+                // None ⇒ centered default (0.5, 0.5) — Unity RectTransform.pivot
+                // standard, the value every CSA prefab used implicitly. (Earlier
+                // design defaulted to the sprite's tps pivotPoint; reverted
+                // because GO RectTransform.pivot and sprite tps pivot are
+                // semantically distinct knobs that only coincidentally match.)
+                let resolved_pivot = part_pivot.unwrap_or([0.5, 0.5]);
                 // None ⇒ for strictly-size-fitted methods (slice grids,
                 // tilers), inherit the sprite's natural rect in world units
                 // (= sprite_bound_size) — slice math with scale=1 reduces
