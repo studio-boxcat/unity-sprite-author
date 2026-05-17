@@ -144,6 +144,47 @@ fn leaf_scale_magnitude_flows_into_affine_unmodified() {
 }
 
 #[test]
+fn parent_world_scale_flips_child_pos_through_walker() {
+    // Mirror trick: a container with `scale: [-1, 1]` should X-flip ALL
+    // descendants — their meshes AND their positions. Unity's
+    // RectTransform cascade computes child world_pos as
+    //   parent_world_pos + parent_world_scale × child.pos
+    // so a child at pos (-504, 0) under a flipped parent lands at world
+    // (+504, 0), not (-504, 0).
+    //
+    // The walker previously omitted the parent-scale multiply, causing the
+    // L and R children to overlap on the same side (TT_LobbyCell_Frame
+    // pivot.x: golden 0.5, broken 0.77 — asymmetric AABB).
+    use unity_sprite_author::manifest::{parse, to_fab_combined};
+    let m = parse(
+        r#"{ "version":1, "combined":[{
+              "name":"X", "mode":"ui",
+              "children":[{
+                "scale":[-1, 1],
+                "children":[
+                  {"type":"sprite", "sprite":"a", "pos":[-504, 0]}
+                ]
+              }]
+            }]}"#,
+    )
+    .unwrap();
+    let c = to_fab_combined(&m.trees[0]).unwrap();
+    let (offset, sx) = match &c.parts[0] {
+        unity_sprite_author::fab::Part::AtlasSprite { offset, affine, .. } => (*offset, affine.sx),
+        _ => panic!(),
+    };
+    // R-mirror: parent scale (-1, 1) applied to child pos (-504, 0) ⇒ (+504, 0).
+    // Bridge pre-scales offset by canvas_scale (0.01) ⇒ (+5.04, 0).
+    assert_eq!(
+        offset, [5.04, 0.0],
+        "child pos should be flipped by parent's world_scale before \
+         canvas_scale pre-multiply. Got offset={offset:?}",
+    );
+    // Sprite mesh itself also flipped (affine.sx = -1).
+    assert_eq!(sx, -1.0);
+}
+
+#[test]
 fn leaf_scale_composes_through_deep_container_chain() {
     // Mirror the GiftShop GS_Door2 shape (max depth observed in the
     // meow-tower corpus): root → container(scale=[-1,1] flip) →

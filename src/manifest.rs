@@ -550,9 +550,15 @@ fn walk_node<'a>(
         (0.5 - parent_pivot[0]) * parent_size[0],
         (0.5 - parent_pivot[1]) * parent_size[1],
     ];
+    // Apply parent's composed world_scale to the child's local pos. This
+    // matches Unity's RectTransform/Transform cascade: a child at local
+    // pos (-504, 0) under a parent with localScale (-1, 1) lands at world
+    // (+504, 0). Without this multiply, mirror containers (R sibling of L)
+    // collapse onto the L side — see TT_LobbyCell_Frame regression where
+    // golden pivot.x=0.5 went to 0.77 because L and R overlapped.
     let world_pos = [
-        parent_world_pos[0] + parent_center_offset[0] + node.pos[0],
-        parent_world_pos[1] + parent_center_offset[1] + node.pos[1],
+        parent_world_pos[0] + (parent_center_offset[0] + node.pos[0]) * parent_world_scale[0],
+        parent_world_pos[1] + (parent_center_offset[1] + node.pos[1]) * parent_world_scale[1],
     ];
     let world_scale = [
         parent_world_scale[0] * node.scale[0],
