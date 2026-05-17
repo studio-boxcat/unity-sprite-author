@@ -364,6 +364,74 @@ fn build_combined_resolves_missing_part_pivot_to_centered_default() {
 }
 
 #[test]
+fn icon_mirror_mesh_is_independent_of_part_pivot() {
+    // UIIconMeshGen.MX/MY/MXY hardcodes the mirror axis at the sprite's
+    // natural (tps) pivot — RectTransform.pivot doesn't enter the math.
+    // This pins that property so any future "harmonize defaults" refactor
+    // that auto-threads rect_pivot through every mesh-gen path can't
+    // silently shift the 80+ UIIcon leaves in the meow-tower corpus that
+    // carry a non-default RectTransform.pivot.
+    //
+    // Test shape: build the same MX leaf twice with different part_pivot
+    // values (default-None vs. explicit-tps) and assert vertex equality.
+    use unity_sprite_author::combine::{self, AtlasSize};
+    use unity_sprite_author::fab::{Affine, Combined, Method, Part};
+    use unity_sprite_author::tpsheet::{Geometry, Pivot, Rect, SpriteAlignment, SpriteEntry, Vertex};
+
+    // Non-centered tps pivot at (0, 1) — top-left. If icon_mirror ever
+    // consumed rect_pivot, swapping None ↔ Some([0, 1]) would shift verts.
+    let entry = SpriteEntry {
+        name: "synthetic".into(),
+        rect: Rect { x: 0, y: 0, w: 100, h: 100 },
+        border: Default::default(),
+        pivot: Pivot { x: 0.0, y: 1.0 },
+        alignment: SpriteAlignment::TopLeft,
+        geometry: Geometry {
+            vertices: vec![
+                Vertex { x: 0.0,   y: 0.0   },
+                Vertex { x: 100.0, y: 0.0   },
+                Vertex { x: 100.0, y: 100.0 },
+                Vertex { x: 0.0,   y: 100.0 },
+            ],
+            triangles: vec![0, 1, 2, 0, 2, 3],
+        },
+    };
+    let entry_arc = std::sync::Arc::new(entry);
+    let resolve = {
+        let e = entry_arc.clone();
+        move |_: &str| Some(((*e).clone(), 1.0))
+    };
+
+    let make = |part_pivot: Option<[f32; 2]>| Combined {
+        name: "X".into(), pivot: [0.5, 0.5], border: [0.0; 4],
+        parts: vec![Part::AtlasSprite {
+            sprite: "synthetic".into(),
+            method: Method::Mx,
+            size: None,              // ← UIIcon: no size
+            part_pivot,
+            border_mult: 1.0,
+            affine: Affine::default(),
+            offset: [0.0, 0.0],
+        }],
+    };
+
+    let m_default = combine::build_combined(
+        &make(None), resolve.clone(), AtlasSize { width: 128, height: 128 }, 100.0,
+    ).unwrap();
+    let m_explicit = combine::build_combined(
+        &make(Some([0.0, 1.0])), resolve, AtlasSize { width: 128, height: 128 }, 100.0,
+    ).unwrap();
+
+    assert_eq!(
+        m_default.verts, m_explicit.verts,
+        "icon_mirror (MX/MY/MXY, size=None) must be independent of part_pivot — \
+         UIIconMeshGen hardcodes the mirror axis at the sprite's tps pivot. \
+         If verts diverge, the icon_mirror path is now consuming rect_pivot, \
+         which silently shifts 80+ UIIcon leaves with non-default RectTransform.pivot."
+    );
+}
+
+#[test]
 fn sprite_leaf_explicit_pivot_overrides_centered_default() {
     // Explicit `pivot` survives as Some(_), overriding the runtime's
     // (0.5, 0.5) default — required for size-fitted leaves that
