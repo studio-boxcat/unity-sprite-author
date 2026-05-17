@@ -1498,13 +1498,23 @@ fn icon_mirror(src: &SrcMesh, ctx: &SliceCtx, axis: MirrorAxis) -> PartMesh {
 // UISliceMeshGen.Identity (UISliceMethod=9): stretch the full source sprite
 // to the target rect, anchored at part_pivot. No mirror, no border. Used by
 // CSA "Color_*" 1×1 color sprites under UISlice to render solid-color bars.
+//
+// Formula (matches slice_mirror's per-copy math with one copy, sign=(1,1)):
+//   v_local = v_src × scale + translation + offset
+//     scale       = target / sprite_bound   (via slice=(1,1) full coverage)
+//     translation = sprite_pivot × target   (shift sprite-pivot origin to
+//                                            (sprite_pivot × target))
+//     offset      = (mirror_pivot - rect_pivot) × target
+//
+// For Identity we want the sprite's pivot point to land at rect's pivot
+// point — i.e., verts centered around (0, 0) when both pivots are (0.5,
+// 0.5). Setting mirror_pivot = (0, 0) cancels the translation term:
+//   v_local = v_src × scale + sprite_pivot × target - rect_pivot × target
+//          = v_src × scale + (sprite_pivot - rect_pivot) × target
 fn slice_identity(src: &SrcMesh, ctx: &SliceCtx, target_size: (f32, f32)) -> PartMesh {
-    // slice=(1.0, 1.0) — full sprite covers the target rect (no fractional
-    // slicing). mirror_pivot=(0.5, 0.5) — rect-center anchor for the
-    // (mirror_pivot - rect_pivot) offset term.
     let x = slice_vertex_translation(
         target_size, ctx.part_pivot, ctx.sprite_pivot_norm, ctx.sprite_bound_size,
-        (1.0, 1.0), (0.5, 0.5),
+        (1.0, 1.0), (0.0, 0.0),
     );
     let verts: Vec<[f32; 2]> = src.verts.iter()
         .map(|v| {

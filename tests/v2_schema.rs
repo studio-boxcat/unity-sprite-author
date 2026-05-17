@@ -144,6 +144,64 @@ fn leaf_scale_magnitude_flows_into_affine_unmodified() {
 }
 
 #[test]
+fn uislice_id_centered_pivot_centers_aabb_at_origin() {
+    // Regression guard: slice_identity must place the stretched sprite
+    // centered around origin when both rect_pivot and sprite_pivot are
+    // (0.5, 0.5). An earlier impl used mirror_pivot=(0.5, 0.5) which
+    // produced verts in the [0, target] range (top-left anchored)
+    // instead of [-target/2, target/2]. Fix: mirror_pivot=(0, 0).
+    //
+    // Caught by golden_diff against TT_LobbyCell_Frame: the two
+    // Color_E39E52 top/bottom bars were emitted at the wrong anchor.
+    use unity_sprite_author::combine::{self, AtlasSize};
+    use unity_sprite_author::fab::{Affine, Combined, Method, Part};
+    use unity_sprite_author::tpsheet::{Geometry, Pivot, Rect, SpriteAlignment, SpriteEntry, Vertex};
+
+    let entry = SpriteEntry {
+        name: "c".into(),
+        rect: Rect { x: 0, y: 0, w: 1, h: 1 },
+        border: Default::default(),
+        pivot: Pivot { x: 0.5, y: 0.5 },
+        alignment: SpriteAlignment::Center,
+        geometry: Geometry {
+            vertices: vec![
+                Vertex { x: 0.0, y: 0.0 },
+                Vertex { x: 1.0, y: 0.0 },
+                Vertex { x: 1.0, y: 1.0 },
+                Vertex { x: 0.0, y: 1.0 },
+            ],
+            triangles: vec![0, 1, 2, 0, 2, 3],
+        },
+    };
+    let combined = Combined {
+        name: "X".into(), pivot: [0.5, 0.5], border: [0.0; 4],
+        parts: vec![Part::AtlasSprite {
+            sprite: "c".into(),
+            method: Method::Id,
+            size: Some((10.0, 0.24)),
+            part_pivot: None,                // → (0.5, 0.5) at build_combined
+            border_mult: 1.0,
+            affine: Affine::default(),
+            offset: [0.0, 0.0],
+        }],
+    };
+    let m = combine::build_combined(
+        &combined,
+        |_| Some((entry.clone(), 1.0)),
+        AtlasSize { width: 8, height: 8 },
+        100.0,
+    ).unwrap();
+    let (min_x, max_x, min_y, max_y) = m.verts.iter().fold(
+        (f32::MAX, f32::MIN, f32::MAX, f32::MIN),
+        |(mnx, mxx, mny, mxy), v| (mnx.min(v[0]), mxx.max(v[0]), mny.min(v[1]), mxy.max(v[1])),
+    );
+    assert!((min_x - -5.0).abs() < 1e-5, "min_x = {min_x}, expected -5.0");
+    assert!((max_x - 5.0).abs() < 1e-5,  "max_x = {max_x}, expected 5.0");
+    assert!((min_y - -0.12).abs() < 1e-5, "min_y = {min_y}, expected -0.12");
+    assert!((max_y - 0.12).abs() < 1e-5,  "max_y = {max_y}, expected 0.12");
+}
+
+#[test]
 fn uislice_id_method_stretches_source_to_target_size() {
     // UISlice's Identity method (UISliceMethod::Identity = 9) renders the
     // sprite stretched to fill the target rect. UIIcon's ID renders at
