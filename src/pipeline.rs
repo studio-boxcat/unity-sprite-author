@@ -98,7 +98,9 @@ pub struct GenerateInputs<'a> {
 /// notify Unity of the filesystem changes.
 #[derive(Debug, Default)]
 pub struct GenerateOutput {
-    /// Sprite `.asset` paths newly written or updated. Call
+    /// Sprite `.asset` paths newly written or updated, plus the atlas `.png`
+    /// when its sibling `.png.meta` was rewritten to sync `alphaIsTransparency`
+    /// with the tpsheet's `alphahandling`. Call
     /// `AssetDatabase.ImportAsset(p, ForceUpdate)` on each in C#.
     pub written_paths: Vec<PathBuf>,
     /// Pruned `.asset` paths plus the consumed `.tpsheet` + `.tpsheet.meta`.
@@ -160,6 +162,22 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
     let mut writes: Vec<(PathBuf, Vec<u8>)> = Vec::with_capacity(sheet.sprites.len() * 2);
     let mut written_asset_paths: Vec<PathBuf> = Vec::with_capacity(sheet.sprites.len());
     let mut warnings: Vec<String> = Vec::new();
+
+    // Keep the atlas .png.meta's `alphaIsTransparency:` in lockstep with the
+    // tpsheet's `alphahandling`. PremultiplyAlpha / KeepTransparentPixels → 0
+    // (premultiplied); anything else → 1 (Unity's straight-alpha default).
+    // No-op when already in sync; otherwise commit the rewrite and tell C# to
+    // reimport the .png — a .meta-only touch isn't always enough to retrigger
+    // TextureImporter. The .png itself is queued post-commit (it isn't in
+    // `writes` and so wouldn't pass the changed_finals filter on its own).
+    let new_atlas_meta_text =
+        meta::update_alpha_is_transparency(&atlas_meta_text, sheet.tex.alpha_is_transparency)
+            .map_err(Error::Meta)?;
+    let atlas_meta_rewritten = new_atlas_meta_text != atlas_meta_text;
+    if atlas_meta_rewritten {
+        writes.push((atlas_meta_path.clone(), new_atlas_meta_text.into_bytes()));
+    }
+
     // Case-insensitive: macOS APFS / Windows NTFS treat `Foo.asset` and
     // `foo.asset` as the same file. A case-sensitive set would mis-flag an
     // existing `foo.asset` as orphan when the tpsheet says `Foo`, and the
@@ -377,6 +395,11 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
         if changed_finals.contains(asset_path) {
             paths_to_import.push(asset_path.clone());
         }
+    }
+    // .png.meta rewrite doesn't enroll the .png via `writes` (we only stage
+    // the .meta there), so add the .png here so C# reimports the texture.
+    if atlas_meta_rewritten {
+        paths_to_import.push(input.atlas_png_path.to_path_buf());
     }
 
     // Prune orphans (and the consumed .tpsheet pair). Surface non-NotFound
@@ -864,6 +887,103 @@ mod tests {
                 "Cake__DecoLeft must not be queued for deletion (case-insensitive match), got {p:?}"
             );
         }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pipeline_syncs_png_meta_alpha_when_mismatched() {
+        // Orgel.tpsheet says PremultiplyAlpha (alpha_is_transparency=false →
+        // expect `alphaIsTransparency: 0`). Stage a png.meta with `1` so the
+        // pipeline has work to do. After generate(), the png.meta carries 0
+        // AND the .png is in written_paths (so the C# side reimports the
+        // texture and the new importer setting takes effect).
+        let dir = copy_orgel_to_temp("alpha_sync_mismatch");
+        let png_meta = dir.join("Orgel.png.meta");
+        let original = fs::read_to_string(&png_meta).unwrap();
+        let mutated = original.replace("alphaIsTransparency: 0", "alphaIsTransparency: 1");
+        assert_ne!(mutated, original, "fixture expectation: starts as `0`");
+        fs::write(&png_meta, &mutated).unwrap();
+
+        let png_path = dir.join("Orgel.png");
+        let inputs = GenerateInputs {
+            tpsheet_path: &dir.join("Orgel.tpsheet"),
+            tps_path: &dir.join("Orgel.tps"),
+            atlas_png_path: &png_path,
+            sprite_dir: &dir.join("sprites"),
+            prefix: "",
+            ppu: 80.0,
+        };
+        let out = generate(&inputs).unwrap();
+
+        let after = fs::read_to_string(&png_meta).unwrap();
+        assert!(
+            after.contains("alphaIsTransparency: 0\n"),
+            "png.meta should be flipped to 0; got:\n{after}"
+        );
+        assert!(
+            out.written_paths.iter().any(|p| p == &png_path),
+            "atlas .png should be in written_paths so C# reimports texture; got {:?}",
+            out.written_paths,
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pipeline_does_not_touch_png_meta_when_alpha_matches() {
+        // Orgel fixture already matches (tpsheet PremultiplyAlpha + meta `0`).
+        // Pipeline must NOT touch png.meta and must NOT enroll .png in
+        // written_paths — that would trigger a needless texture reimport.
+        let dir = copy_orgel_to_temp("alpha_sync_match");
+        let png_meta = dir.join("Orgel.png.meta");
+        let before = fs::read(&png_meta).unwrap();
+
+        let png_path = dir.join("Orgel.png");
+        let inputs = GenerateInputs {
+            tpsheet_path: &dir.join("Orgel.tpsheet"),
+            tps_path: &dir.join("Orgel.tps"),
+            atlas_png_path: &png_path,
+            sprite_dir: &dir.join("sprites"),
+            prefix: "",
+            ppu: 80.0,
+        };
+        let out = generate(&inputs).unwrap();
+
+        let after = fs::read(&png_meta).unwrap();
+        assert_eq!(before, after, "png.meta must be byte-identical when alpha matches");
+        assert!(
+            !out.written_paths.iter().any(|p| p == &png_path),
+            ".png must NOT be in written_paths when no rewrite occurred"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pipeline_errors_when_png_meta_lacks_alpha_field() {
+        // Malformed png.meta (no alphaIsTransparency line) surfaces as a
+        // Meta error rather than silently injecting a new line.
+        let dir = copy_orgel_to_temp("alpha_sync_missing");
+        let png_meta = dir.join("Orgel.png.meta");
+        let original = fs::read_to_string(&png_meta).unwrap();
+        let stripped: String = original
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("alphaIsTransparency:"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&png_meta, &stripped).unwrap();
+
+        let inputs = GenerateInputs {
+            tpsheet_path: &dir.join("Orgel.tpsheet"),
+            tps_path: &dir.join("Orgel.tps"),
+            atlas_png_path: &dir.join("Orgel.png"),
+            sprite_dir: &dir.join("sprites"),
+            prefix: "",
+            ppu: 80.0,
+        };
+        let err = generate(&inputs).unwrap_err();
+        assert!(
+            matches!(err, Error::Meta(meta::MetaError::NoAlphaIsTransparencyField)),
+            "got {err:?}"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

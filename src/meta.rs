@@ -1,6 +1,8 @@
 // .meta file I/O. Reads the `guid:` field from a Unity .meta (works for both
-// .png.meta and .asset.meta), and renders the sprite .asset.meta template
-// in two shapes that exist in the corpus:
+// .png.meta and .asset.meta), renders the sprite .asset.meta template in
+// two shapes that exist in the corpus, and surgically rewrites the atlas
+// .png.meta's `alphaIsTransparency` line so it stays in lockstep with the
+// tpsheet's `alphahandling` (see `update_alpha_is_transparency`).
 //
 //   - Modern186: 186 bytes, no trailing spaces. The fresh-mint shape.
 //   - Legacy189: 189 bytes, trailing spaces after userData/assetBundle*.
@@ -25,6 +27,8 @@ pub enum MetaError {
     Io(io::Error),
     InvalidGuid(String),
     NoGuidField,
+    NoAlphaIsTransparencyField,
+    InvalidAlphaIsTransparencyValue(String),
 }
 
 impl fmt::Display for MetaError {
@@ -33,6 +37,12 @@ impl fmt::Display for MetaError {
             Self::Io(e) => write!(f, "meta io error: {e}"),
             Self::InvalidGuid(s) => write!(f, "invalid guid hex: {s:?}"),
             Self::NoGuidField => write!(f, "meta has no `guid:` field"),
+            Self::NoAlphaIsTransparencyField => {
+                write!(f, "png.meta has no `alphaIsTransparency:` field")
+            }
+            Self::InvalidAlphaIsTransparencyValue(v) => {
+                write!(f, "png.meta `alphaIsTransparency:` value not 0/1: {v:?}")
+            }
         }
     }
 }
@@ -199,6 +209,45 @@ pub fn resolve_sprite_meta<P: AsRef<Path>>(
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok((mint_guid(), MetaShape::FRESH)),
         Err(e) => Err(MetaError::Io(e)),
     }
+}
+
+/// Rewrite a png `.meta` so its `alphaIsTransparency:` line reflects `want`:
+/// `true` → `1` (Unity default, straight alpha), `false` → `0` (premultiplied).
+/// Source of truth is the `.tpsheet` header's `alphahandling` (PremultiplyAlpha
+/// / KeepTransparentPixels → `false`; anything else → `true`).
+///
+/// Surgical: edits only the matching line, preserves leading indent and the
+/// rest of the file byte-stably so an idempotent re-run round-trips identical.
+/// Errors if the field is missing ([`MetaError::NoAlphaIsTransparencyField`])
+/// or carries a non-{0,1} value ([`MetaError::InvalidAlphaIsTransparencyValue`]).
+pub fn update_alpha_is_transparency(
+    meta_text: &str,
+    want: bool,
+) -> Result<String, MetaError> {
+    let desired = if want { '1' } else { '0' };
+    let mut out = String::with_capacity(meta_text.len());
+    let mut found = false;
+    for line in meta_text.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("alphaIsTransparency:") {
+            let value = rest.trim_end_matches(['\r', '\n']).trim();
+            if value != "0" && value != "1" {
+                return Err(MetaError::InvalidAlphaIsTransparencyValue(value.to_string()));
+            }
+            let indent_len = line.len() - trimmed.len();
+            out.push_str(&line[..indent_len]);
+            out.push_str("alphaIsTransparency: ");
+            out.push(desired);
+            out.push('\n');
+            found = true;
+        } else {
+            out.push_str(line);
+        }
+    }
+    if !found {
+        return Err(MetaError::NoAlphaIsTransparencyField);
+    }
+    Ok(out)
 }
 
 /// Pull the `textureRect.{width, height}` from an existing Sprite `.asset`'s
@@ -422,6 +471,58 @@ mod tests {
         std::fs::write(&path, "Sprite:\n  m_Rect:\n    width: 1\n").unwrap();
         assert!(read_existing_texture_rect_size(&path).is_none());
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn update_alpha_flips_one_to_zero() {
+        // Orgel fixture: alphaIsTransparency: 0 already matches PremultiplyAlpha.
+        // Construct a 1 variant and ask for transparent=false.
+        let src = ATLAS_META.replace("alphaIsTransparency: 0", "alphaIsTransparency: 1");
+        let out = update_alpha_is_transparency(&src, false).unwrap();
+        assert!(out.contains("alphaIsTransparency: 0\n"));
+        assert!(!out.contains("alphaIsTransparency: 1"));
+        // Surrounding bytes unchanged.
+        let expected = src.replace("alphaIsTransparency: 1", "alphaIsTransparency: 0");
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn update_alpha_flips_zero_to_one() {
+        // Orgel fixture is the 0 case; flip to 1 (transparent default).
+        let out = update_alpha_is_transparency(ATLAS_META, true).unwrap();
+        assert!(out.contains("alphaIsTransparency: 1\n"));
+        assert!(!out.contains("alphaIsTransparency: 0\n"));
+        let expected = ATLAS_META.replace("alphaIsTransparency: 0", "alphaIsTransparency: 1");
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn update_alpha_noop_when_already_matches_is_byte_identical() {
+        let out = update_alpha_is_transparency(ATLAS_META, false).unwrap();
+        assert_eq!(out, ATLAS_META, "matching value must round-trip byte-identical");
+    }
+
+    #[test]
+    fn update_alpha_missing_field_errors() {
+        let stripped: String = ATLAS_META
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("alphaIsTransparency:"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let err = update_alpha_is_transparency(&stripped, true).unwrap_err();
+        assert!(matches!(err, MetaError::NoAlphaIsTransparencyField), "got {err:?}");
+    }
+
+    #[test]
+    fn update_alpha_invalid_value_errors() {
+        // Field present but value isn't 0/1 — surface as InvalidAlphaIsTransparencyValue
+        // rather than silently rewriting (the .meta is malformed).
+        let src = ATLAS_META.replace("alphaIsTransparency: 0", "alphaIsTransparency: 2");
+        let err = update_alpha_is_transparency(&src, false).unwrap_err();
+        assert!(
+            matches!(err, MetaError::InvalidAlphaIsTransparencyValue(_)),
+            "got {err:?}"
+        );
     }
 
     #[test]
