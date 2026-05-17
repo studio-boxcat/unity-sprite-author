@@ -203,6 +203,96 @@ fn sprite_leaf_omitting_pivot_inherits_none_from_bridge() {
 }
 
 #[test]
+fn ui_icon_vs_ui_slice_method_dispatch_pinned_by_size_presence() {
+    // The schema doesn't carry a UIIcon-vs-UISlice flag — both produce
+    // `type: "sprite"` with `method: "MX/MY/MXY"`. The runtime
+    // distinguishes them by the `size` field:
+    //   - size: None → icon_mirror (matches UIIcon, native scale)
+    //   - size: Some → slice_mirror (matches UISlice, stretch-to-rect)
+    //
+    // This test pins the dispatch so the migrator's invariant — UIIcon
+    // leaves never emit `size`, UISlice leaves always do — translates to
+    // the expected runtime path. A regression that auto-defaulted size
+    // for size==None sprite leaves with MX/MY/MXY would silently flip
+    // every UIIcon leaf into the slice path, breaking the 50+ UIIcon
+    // combined sprites in meow-tower.
+    use unity_sprite_author::combine::{self, AtlasSize};
+    use unity_sprite_author::fab::{Affine, Combined, Method, Part};
+    use unity_sprite_author::tpsheet::{Geometry, Pivot, Rect, SpriteAlignment, SpriteEntry, Vertex};
+
+    let entry = SpriteEntry {
+        name: "synthetic".into(),
+        rect: Rect { x: 0, y: 0, w: 100, h: 100 },
+        border: Default::default(),
+        pivot: Pivot { x: 0.5, y: 0.5 },
+        alignment: SpriteAlignment::Center,
+        geometry: Geometry {
+            vertices: vec![
+                Vertex { x: 0.0,   y: 0.0   },
+                Vertex { x: 100.0, y: 0.0   },
+                Vertex { x: 100.0, y: 100.0 },
+                Vertex { x: 0.0,   y: 100.0 },
+            ],
+            triangles: vec![0, 1, 2, 0, 2, 3],
+        },
+    };
+    let entry_arc = std::sync::Arc::new(entry);
+
+    // UIIcon path (size=None) — MXY produces 4 mirrored copies; AABB
+    // spans 2× native on each axis around the sprite pivot.
+    let combined_icon = Combined {
+        name: "X".into(), pivot: [0.5, 0.5], border: [0.0; 4],
+        parts: vec![Part::AtlasSprite {
+            sprite: "synthetic".into(),
+            method: Method::Mxy,
+            size: None,                    // ← UIIcon: no size
+            part_pivot: None,
+            border_mult: 1.0,
+            affine: Affine::default(),
+            offset: [0.0, 0.0],
+        }],
+    };
+    let resolve = {
+        let e = entry_arc.clone();
+        move |_: &str| Some(((*e).clone(), 1.0))
+    };
+    let m_icon = combine::build_combined(
+        &combined_icon, resolve.clone(), AtlasSize { width: 128, height: 128 }, 100.0,
+    ).unwrap();
+    assert_eq!(m_icon.verts.len(), 16, "icon_mirror MXY = 4 copies × 4 verts");
+
+    // UISlice path (size=Some) — slice_mirror stretches the source rect to
+    // fit the target size; vert count depends on slice topology (4 corners
+    // × 4 quadrants = 16 for a simple MXY slice).
+    let combined_slice = Combined {
+        name: "X".into(), pivot: [0.5, 0.5], border: [0.0; 4],
+        parts: vec![Part::AtlasSprite {
+            sprite: "synthetic".into(),
+            method: Method::Mxy,
+            size: Some((2.0, 2.0)),        // ← UISlice: explicit target rect
+            part_pivot: None,
+            border_mult: 1.0,
+            affine: Affine::default(),
+            offset: [0.0, 0.0],
+        }],
+    };
+    let m_slice = combine::build_combined(
+        &combined_slice, resolve, AtlasSize { width: 128, height: 128 }, 100.0,
+    ).unwrap();
+    // Vert layouts diverge — a single number can't pin slice topology
+    // robustly without a fixture, but presence of a non-zero output proves
+    // the path was taken. The critical pin is that the two paths produce
+    // DIFFERENT vertex layouts, which we assert by comparing vert counts:
+    // a regression collapsing both paths into one would equalize them.
+    assert!(
+        m_icon.verts != m_slice.verts,
+        "UIIcon (icon_mirror) and UISlice (slice_mirror) must produce \
+         different meshes for the same sprite + method — the size field is \
+         the path discriminator. If they're equal, the dispatch collapsed."
+    );
+}
+
+#[test]
 fn build_combined_resolves_missing_part_pivot_to_centered_default() {
     // End-to-end: a Part with `part_pivot: None` and a slice method
     // (R3C3 requires part_pivot for target-rect anchoring) renders the
