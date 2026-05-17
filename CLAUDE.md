@@ -53,13 +53,14 @@ use unity_sprite_author::pipeline;
 let result = pipeline::generate(&pipeline::GenerateInputs {
     tpsheet_path:   Path::new("Assets/Atlas.tpsheet"),
     tps_path:       Path::new("Assets/Atlas.tps"),
-    atlas_png_path: Path::new("Assets/Atlas.png"),  // sibling .png.meta read for atlas GUID
+    atlas_png_path: Path::new("Assets/Atlas.png"),  // sibling .png.meta read for atlas GUID + `alphaIsTransparency` sync
     sprite_dir:     Path::new("Assets/Sprites"),    // output dir
     prefix:         "Atlas",                        // "" if none
     ppu:            100.0,                          // from TextureImporter.spritePixelsPerUnit
 })?;
-// result.written_paths — new/updated sprite .asset paths (caller invokes
-//                       AssetDatabase.ImportAsset on each in Unity)
+// result.written_paths — new/updated sprite .asset paths, plus the atlas
+//                       .png when alphaIsTransparency was rewritten
+//                       (caller invokes AssetDatabase.ImportAsset on each)
 // result.deleted_paths — pruned .asset paths + the consumed .tpsheet(.meta)
 ```
 
@@ -70,6 +71,7 @@ let result = pipeline::generate(&pipeline::GenerateInputs {
 - **Skip-write-if-equal**: before writing, read existing bytes; if identical, skip. Avoids mtime churn that would re-import dependents in Unity.
 - **No global state**: no `OnceCell`, `lazy_static`, thread-locals, or caches outliving a `generate` call. Mono does not unload native plugins on domain reload — global state would leak across script recompiles.
 - `.tpsheet` + `.tpsheet.meta` deletion happens inside this crate on success only. Both paths are reported in `deleted_paths` so the caller can route them through `AssetDatabase.DeleteAsset`.
+- Atlas `.png.meta` `alphaIsTransparency` is kept in lockstep with the tpsheet's `alphahandling` header: `PremultiplyAlpha` / `KeepTransparentPixels` → `0` (premultiplied); anything else → `1` (Unity straight-alpha default). Surgical line rewrite — only the value flips. When a rewrite happens, the atlas `.png` path is appended to `written_paths` so the caller's `AssetDatabase.ImportAsset` retriggers `TextureImporter` (a `.meta`-only touch isn't always enough). Missing field → `Error::Meta(NoAlphaIsTransparencyField)`.
 
 ### CLI
 
@@ -203,7 +205,7 @@ unity-sprite-author/
 │   ├── pipeline.rs         # orchestrate: parse → build → write → prune → delete
 │   ├── tpsheet.rs          # parser (mirrors SheetLoader.cs)
 │   ├── tps.rs              # minimal parser (spriteScale lookup)
-│   ├── meta.rs             # .png.meta GUID read; .asset.meta read/write
+│   ├── meta.rs             # .png.meta GUID read + alphaIsTransparency rewrite; .asset.meta read/write
 │   ├── render_data.rs      # _typelessdata, m_IndexBuffer, uvTransform
 │   ├── emit.rs             # SpriteAsset → bytes
 │   ├── yaml.rs             # Unity-flavor YAML + yaml::float (C# ToString("R"))
