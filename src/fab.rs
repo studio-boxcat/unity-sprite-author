@@ -17,15 +17,17 @@ pub struct Manifest {
 
 /// A single fabricated combined sprite. `name` becomes the output filename
 /// stem (no `.asset`); `parts` are stitched in declared order into one mesh.
+///
+/// One scale source per node: the per-part `affine.sx/sy` carries the leaf's
+/// composed world-scale (sign = flip, magnitude = old `uiScale × canvasScale`).
+/// The canvas factor itself is mode-implicit and pre-applied to `offset` at
+/// the bridge layer, so the runtime per-vert chain is `affine·v + offset`
+/// only — no `× canvas_scale`, no `× ui_scale`.
 #[derive(Debug, PartialEq)]
 pub struct Combined {
     pub name: String,
     pub pivot: [f32; 2],
     pub border: [f32; 4],
-    /// Global multiplier applied to every part after its per-part affine +
-    /// `ui_scale` + `offset` chain. `1.0` for SpriteRenderer / Box prefabs;
-    /// `0.01` for `CanvasSpriteAuthor.Publish()` to undo the per-part `100×`.
-    pub canvas_scale: f32,
     pub parts: Vec<Part>,
 }
 
@@ -37,19 +39,20 @@ pub enum Part {
         /// Target rect, world units. `None` ⇒ native-scale (UIIconMeshGen
         /// path). `Some` ⇒ size-fitted (UISliceMeshGen path).
         size: Option<(f32, f32)>,
-        /// Target-rect pivot in 0..1. Defaults to `(0.5, 0.5)`.
-        part_pivot: [f32; 2],
+        /// Target-rect pivot in 0..1. `None` ⇒ inherit the sprite's own
+        /// tps `pivotPoint` at the build_combined step — the common case
+        /// for CSA-style hierarchies where the GameObject's
+        /// RectTransform.pivot mirrors the sprite's natural anchor.
+        /// `Some` overrides for leaves that intentionally diverge.
+        part_pivot: Option<[f32; 2]>,
         /// Slice-method border multiplier. Only meaningful for methods that
         /// declare a border in their source rect.
         border_mult: f32,
         affine: Affine,
-        /// Per-part scale applied AFTER the affine, BEFORE `offset` + the
-        /// combined `canvas_scale`. `1.0` default; `UIIcon._scaleFactor`
-        /// (typically `100`) for CanvasSpriteAuthor reproduction.
-        ui_scale: f32,
-        /// Per-part canvas-pixel offset applied AFTER `ui_scale`, BEFORE
-        /// the combined `canvas_scale`. For CanvasSpriteAuthor this is the
-        /// part's `RectTransform.anchoredPosition`.
+        /// Per-part world-unit offset. Pre-multiplied at the bridge by the
+        /// mode-implicit canvas factor (`Output::canvas_scale_implicit`), so
+        /// no further scaling happens at runtime. For CSA this is the part's
+        /// `RectTransform.anchoredPosition × 0.01`.
         offset: [f32; 2],
     },
     Polygon {
@@ -60,9 +63,6 @@ pub enum Part {
         /// e.g. UISolid quad: `(0, 2, 3, 3, 1, 0)`.
         triangles: Option<Vec<u16>>,
         affine: Affine,
-        /// UISolid has no per-part scale (`ui_scale = 1`); SpriteRenderer /
-        /// Box prefab callers leave both `ui_scale` and `offset` at identity.
-        ui_scale: f32,
         offset: [f32; 2],
     },
 }
@@ -73,12 +73,12 @@ pub struct Affine {
     pub ty: f32,
     pub sx: f32,
     pub sy: f32,
-    pub rot_deg: f32,
+    pub rot_deg_ccw: f32,
 }
 
 impl Default for Affine {
     fn default() -> Self {
-        Self { tx: 0.0, ty: 0.0, sx: 1.0, sy: 1.0, rot_deg: 0.0 }
+        Self { tx: 0.0, ty: 0.0, sx: 1.0, sy: 1.0, rot_deg_ccw: 0.0 }
     }
 }
 

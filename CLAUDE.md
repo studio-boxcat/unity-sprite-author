@@ -209,8 +209,8 @@ unity-sprite-author/
 │   ├── yaml.rs             # Unity-flavor YAML + yaml::float (C# ToString("R"))
 │   ├── triangulator.rs     # ear-clipping triangulator for fab polygon parts
 │   ├── combine.rs          # fab combined-sprite mesh stitching
-│   ├── fab.rs              # .tps.fab.json v1 sidecar parser
-│   ├── manifest.rs         # .tps.fab.json v3 unified tree (CSA + SMA) → fab/mesh bridge
+│   ├── manifest.rs         # .tps.fab.json unified tree (CSA + SMA) → fab/mesh bridge
+│   ├── fab.rs              # typed IR for fabricated combined sprites (consumed by combine.rs)
 │   ├── mesh_emit.rs        # Mesh .asset emit (SpriteRenderer half2 UVs + CanvasRenderer f32 UVs)
 │   └── mesh_manifest.rs    # Mesh IR consumed by `mesh_emit`; v3 manifest bridges into it
 ├── tests/
@@ -225,8 +225,6 @@ unity-sprite-author/
 │   └── unity-probes.md     # in-Editor procedures for the four blocked TODOs
 ├── examples/
 │   ├── drift_report.rs              # diagnostic — runs across meow-tower, prints first diff per atlas
-│   ├── csa_to_fab.rs                # Unity-free CSA prefab → v3 .tps.fab.json converter
-│   ├── csa_dumper.cs                # Unity scratch — dump CSA prefab tree to JSON
 │   ├── sma_dumper.cs                # Unity scratch — dump SMA SpriteRenderer tree
 │   └── migrate_corpus.rs            # offline corpus migration runner (no Unity Editor)
 ├── benches/

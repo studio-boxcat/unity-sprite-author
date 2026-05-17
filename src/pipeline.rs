@@ -932,7 +932,7 @@ mod tests {
         // Cake__DecoLeft is a known fixture.
         let fab_text = r#"{
             "version": 1,
-            "trees": [{
+            "combined": [{
                 "name": "FAB_DecoCombined",
                 "mode": "ui",
                 "children": [

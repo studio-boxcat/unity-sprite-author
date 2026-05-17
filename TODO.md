@@ -44,11 +44,11 @@ The Unity-side SMA pipeline accepts these because it walks geometry; the
 Rust port requires every renderer's sprite to resolve in the sibling
 tpsheet. To unblock the polygon path on SMA:
 
-- **Migration tool** (`examples/csa_to_fab.rs` SMA branch): detect
-  `sprite_guid == ""` + hashed name, recover `(color RGBA, mesh.vertices,
-  mesh.triangles)` from the SpriteRenderer's MeshFilter or
-  `sprite.vertices`.
-- **Manifest schema** (`src/manifest.rs` v3 Node): add polygon-leaf
+- **Authoring path** (hand- or LLM-edited fab.json): once the SMA polygon
+  branch lands, declare polygon leaves under SMA trees the same way the
+  CSA side does. (The CSA-prefab migration tool that previously seeded
+  these is gone — CSA prefabs were retired in meow-tower c23474b2ab40.)
+- **Manifest schema** (`src/manifest.rs` Node): add polygon-leaf
   fields to `spriteRenderer` mode (mirrors the existing UISolid path on
   CSA trees).
 - **Emit extension** (`src/mesh_emit::build_mesh`): for polygon

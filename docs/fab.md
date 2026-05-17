@@ -8,14 +8,10 @@ authored as a unified prefab-style tree. The crate emits the declared
 outputs *instead of* their constituent parts; parts referenced inside any
 tree are excluded from per-tpsheet emission.
 
-The schema landed as part of the CSA / SMA Author migration: it replaces
-the old flat `.tps.fab.json` (v1) and `.tps.mesh.json` (legacy) parsers,
-which were retired alongside this rewrite. The unified tree mirrors the
-authoring shape in Unity (`CanvasSpriteAuthor` / `SpriteMeshAuthor`
-prefabs) so the migration tool emits canonical JSON directly.
-
-Authoring is hand-written and/or LLM-assisted today; the dump-and-convert
-path is in `examples/csa_to_fab.rs`.
+Authoring is hand-written and/or LLM-assisted today. The historical
+`CanvasSpriteAuthor` and `SpriteMeshAuthor` Unity prefabs that seeded the
+corpus have been retired (meow-tower c23474b2ab40); new trees are
+declared directly in the sidecar JSON.
 
 ## Location
 
@@ -38,13 +34,12 @@ absent → behavior unchanged. No `pipeline::generate` parameter.
 ```jsonc
 {
   "version": 1,
-  "trees": [
+  "combined": [
     {
       "name": "Silloutte1",              // output sprite filename stem (no .asset)
-                                         //  — also the tree's identity in errors.
-      "mode": "ui",                      // "ui" (CSA), "sma-canvas", or "sma-renderer"
-      "scale": 0.01,                     // optional. Root's `scaleFactor` (CSA 0.01) or
-                                         //   world-unit (SMA 1.0). Default 1.
+                                         //  — also the combined sprite's identity in errors.
+      "mode": "ui",                      // "ui" (CSA) | "sma-canvas" | "sma-renderer"
+                                         //  — drives canvas_scale_implicit (see below).
       // SMA-only fields (required when mode starts with "sma-"):
       "fileId":     -8704840387945618417,
       "outputPath": "out.asset",
@@ -53,13 +48,13 @@ absent → behavior unchanged. No `pipeline::generate` parameter.
 
       "children": [
         // --- container (pure transform, no graphic) ---
-        { "name": "Body", "pos": [0, 8.768], "pivot": [0.5, 0.5],
+        { "name": "Body", "pos": [0, 8.768],
           "children": [
-            // --- sprite leaf (UIIcon / SpriteRenderer) ---
+            // --- sprite leaf (atlas-backed) ---
             { "type": "sprite", "sprite": "Mansion_Silloutte__1__B", "method": "MX",
               "pos": [0, -294.75], "scale": [-1, 1] }
           ] },
-        // --- polygon leaf (UISolid background) ---
+        // --- polygon leaf (solid-color quad) ---
         { "type": "polygon", "color": "32264DBD",      // → tpsheet entry `Color_32264DBD`
           "pos": [0, -22.25],
           "vertices": [[-106.25, -272.5], [106.25, -272.5], [-106.25, 272.5], [106.25, 272.5]],
@@ -70,31 +65,48 @@ absent → behavior unchanged. No `pipeline::generate` parameter.
 }
 ```
 
+There is **one scale source per node**: `node.scale`. Sign carries flip,
+magnitude carries the composed scale at that node. The historical CSA
+chain (`tree.scale × leaf.uiScale`, typically `0.01 × 100 = 1.0`) is
+collapsed — a leaf that previously had `uiScale: 53.125` under a CSA
+tree (`tree.scale: 0.01`) now declares `scale: 0.53125`.
+
+The canvas factor itself is **mode-implicit**:
+
+| `mode` | `canvas_scale_implicit` |
+| --- | --- |
+| `ui` | `0.01` |
+| `sma-canvas`, `sma-renderer` | `1.0` |
+
+It is applied at exactly one seam — the bridge pre-multiplies each
+leaf's anchored `pos` so `Part.offset` lands in world units. The
+runtime per-vert chain therefore drops `× canvas_scale` entirely.
+
 ### Node fields (any depth)
 
 | Field | Meaning |
 | --- | --- |
 | `name` | Diagnostic only. Optional. |
 | `pos` | `RectTransform.anchoredPosition`, canvas-pixel units. Default `(0, 0)`. |
-| `sizeDelta` | `RectTransform.sizeDelta`. Consumed by size-fitted methods + SMA tiled mode. |
-| `pivot` | `RectTransform.pivot` (0..1). Default `(0.5, 0.5)`. |
-| `scale` | Per-node scale. Either `1.5` (uniform) or `[-1, 1]` (per-axis, for flips). Default `[1, 1]`. |
-| `rotDeg` | Rotation in degrees. Default `0`. |
+| `size` | `RectTransform.sizeDelta` for sprite/polygon, or `SpriteRenderer.size` for SMA tiled. Default: inherit sprite's natural rect (sprite leaves with a strictly-size-fitted method — `R*`, `MX_R*`, `MY_R*`, `MXY_R*`, `TX`, `TY`, `TX_MC3`); irrelevant for `ID`, `MX`/`MY`/`MXY` without size (native-scale path), polygons (uses its own `vertices`), and `simple`-mode SpriteRenderers. Omit when matching the natural value. Note: for `MX`/`MY`/`MXY` the presence vs. absence of `size` switches between slice-fitted and native-scale behavior; don't add a default value blindly. |
+| `pivot` | `RectTransform.pivot` (0..1). Default: inherit sprite's tps `pivotPoint` (sprite leaves) / `(0.5, 0.5)` (containers, polygon). Omit when matching the natural value. |
+| `scale` | Per-node scale. Either `1.5` (uniform) or `[-1, 1]` (per-axis). Sign = flip, magnitude = composed scale. Default `[1, 1]`. |
+| `rotDegCCW` | Counter-clockwise rotation around Z, degrees (Unity UI canvas convention, Y-up). Default `0`. |
 | `type` | Graphic discriminator: `"sprite"` \| `"polygon"` \| `"spriteRenderer"`. Absent → pure container. |
 
 ### Sprite / polygon / SpriteRenderer leaf fields
 
-- **`type: "sprite"`** (UIIcon under CSA): `sprite` = tpsheet entry name;
+- **`type: "sprite"`** (atlas-backed leaf): `sprite` = tpsheet entry name;
   `method ∈ {ID, MX, MY, MXY, R*, MX_R*, MY_R*, MXY_R*, TX, TY, TX_MC3}`
   (geometric flips use negative `scale` instead of methods);
-  `uiScale: f32` (default `100`, CSA's UIIcon `_scaleFactor`);
   `borderMult: f32`; `flipX`/`flipY: bool` (alternative to negative `scale`).
-- **`type: "polygon"`** (UISolid): `color: "RRGGBB[AA]"` (hex, 6 or 8 digits)
+- **`type: "polygon"`** (solid-color quad): `color: "RRGGBB[AA]"` (hex, 6 or 8 digits)
   resolves to `Color_<UPPER>` in the tpsheet; `vertices: [[f32; 2]]` (canvas
-  pixels); optional `triangles: [u16]` (default ear-clip; UISolid quads
+  pixels); optional `triangles: [u16]` (default ear-clip; quads
   pass `[0,2,3,3,1,0]` explicitly).
-- **`type: "spriteRenderer"`** (SMA): `sprite` + `drawMode: "simple" | "tiled"`;
-  `size: [f32; 2]` (required when `tiled`, rejected when `simple`).
+- **`type: "spriteRenderer"`** (SMA): `sprite` + `drawMode: "simple" | "tiled"`.
+  The tiled draw rect lives in the node-level `size` field (shared with the
+  sprite/polygon RectTransform-size slot — same field, different role per leaf type).
 
 ### Rules enforced at parse time
 
@@ -108,32 +120,36 @@ absent → behavior unchanged. No `pipeline::generate` parameter.
 - SMA-only fields (`fileId`, `outputPath`, `keepVertices`, `keepIndices`)
   must be present when `mode` starts with `sma-` and rejected otherwise.
 - Slice grids (`R*`, `MX_*`, `MY_*`, `MXY_*`) and tilers (`TX*`, `TY*`)
-  require `sizeDelta`; omitting it is a parse error.
+  require a non-zero target rect — omit `size` to inherit the sprite's
+  natural rect, or pass an explicit `[w, h]` to override. Explicit
+  `[0, 0]` is a parse error (slice math would divide by zero).
 - `serde(deny_unknown_fields)` — typos and stale fields surface as parse
-  errors instead of silent drops.
+  errors instead of silent drops. A pre-c23474b2 tree-level `scale` or
+  leaf `uiScale` therefore lands as a hard parse failure naming the
+  offending field; no silent migration.
 
 ### Per-part transform
 
-The full transform composed onto each part's local-frame vert is the f32
-op sequence Unity uses, in this exact order:
+The full transform composed onto each part's local-frame vert in f32:
 
 ```
-v_world = ((R(rotDeg) · S(sx, sy) · v) × uiScale) × canvasScale
-        + (offset × canvasScale)
-        + (tx, ty)
+v_world = R(rotDegCCW) · S(sx, sy) · v + offset + (tx, ty)
 ```
 
-`offset × canvasScale` is precomputed once per part (`offset_scaled` in
-`combine::SliceCtx`) so the per-vert chain is a single two-step f32 op
-(`v × canvasScale + offset_scaled`). Matches Unity's matrix-style emit.
-
-Defaults `uiScale = canvasScale = 1`, `offset = (0, 0)` collapse the full
-chain to the affine-only path `v' = T · R · S · v`. SpriteRenderer / Box
-prefabs and any Canvas hierarchy whose root sits at origin run the same
-op order without divergence.
+`offset` here is the bridge-precomputed world-unit translation
+(`leaf.pos × canvas_scale_implicit`, stored on `fab::Part`). The
+per-vert chain is therefore one multiply (the per-part affine scale),
+one optional rotate, and one add. For SpriteRenderer / Box prefabs
+`offset = (0, 0)` and the chain collapses to `T · R · S · v`.
 
 For a geometric flip set `sx` or `sy` to `-1`. Method-style flips
 (`FX`/`FY`/`FXY`) aren't supported.
+
+Composition through container hierarchies follows the standard
+multiplicative walk: a leaf's effective `(sx, sy)` is its own `scale`
+multiplied by every ancestor's `scale`. Because magnitude is
+front-loaded into the leaf, container nodes typically declare just
+`[±1, ±1]` for flips and identity scaling.
 
 ### Polygon UV sampling
 
@@ -158,8 +174,8 @@ so the resulting `m_IndexBuffer` runs back-to-front):
    produces local-frame output (slice / tile / mirror).
 2. **Polygon leaf**: ear-clip `vertices` (or use `triangles` override);
    UVs all sample the polygon sprite's atlas-rect center.
-3. Apply `combine::apply_transform` per vert — the full canvas chain (per-part
-   affine → uiScale → canvasScale + offset_scaled).
+3. Apply `combine::apply_transform` per vert — per-part affine then add the
+   bridge-precomputed world-unit `offset`.
 4. Append verts/uvs/tris into the combined buffer with index offset.
 
 Sprite field mapping follows the tpsheet → Sprite `.asset` field-map table

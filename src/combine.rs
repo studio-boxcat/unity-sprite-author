@@ -250,10 +250,9 @@ fn check_method_constraints(
     Ok(())
 }
 
-/// Build the mesh for a single polygon part with default canvas-chain
-/// identity (`uiScale = 1`, `offset_scaled = (0, 0)`, `canvasScale = 1`) — the
-/// SpriteRenderer / Box-prefab path. CanvasSpriteAuthor callers go through
-/// `build_combined`, which passes non-identity canvas-chain values through
+/// Build the mesh for a single polygon part with identity `offset` — the
+/// SpriteRenderer / Box-prefab path. CSA callers go through `build_combined`,
+/// which feeds the bridge-precomputed per-part offset into
 /// `polygon_mesh_with_tris` directly.
 ///
 /// - `vertices` are caller-supplied (interpreted in whatever frame the
@@ -263,8 +262,7 @@ fn check_method_constraints(
 /// - All UVs sample the center pixel of `polygon_sprite_rect`, normalized
 ///   against the atlas size — matches `SolidUVCache.Get` in meow-tower.
 /// - `apply_transform` runs each vert through the affine chain *after*
-///   triangulation. With identity canvas-chain values it collapses to
-///   plain `T · R · S`.
+///   triangulation. With `offset = (0, 0)` it's plain `T · R · S`.
 ///
 /// Triangulator output preserves the relative ordering of input verts; the
 /// crate emits the polygon's own verts (not a re-triangulated subset), so the
@@ -275,30 +273,23 @@ pub fn polygon_mesh(
     polygon_sprite_rect: Rect,
     atlas: AtlasSize,
 ) -> PartMesh {
-    polygon_mesh_with_tris(vertices, None, affine, polygon_sprite_rect, atlas, 1.0, (0.0, 0.0), 1.0)
+    polygon_mesh_with_tris(vertices, None, affine, polygon_sprite_rect, atlas, (0.0, 0.0))
 }
 
 // Polygon-part mesh with optional explicit triangles. When `tris_override` is
 // `Some`, those indices are used verbatim (caller-validated for length and
 // range upstream). Otherwise we ear-clip via the triangulator.
 //
-// `ui_scale` / `offset` / `canvas_scale` mirror the atlas-sprite chain — when
-// all three are at their identity defaults (1.0, (0,0), 1.0) the canvas chain
-// collapses to a plain affine, so `polygon_mesh` callers (SpriteRenderer / Box
-// prefabs) are unaffected. Polygons under CanvasSpriteAuthor must thread the
-// real values: UISolid has no per-part scale (`ui_scale = 1`) but inherits the
-// combined `canvas_scale = 0.01` and carries the part's anchored position as
-// `offset` so f32 op order matches Unity's matrix-style emit.
-#[allow(clippy::too_many_arguments)] // mirrors `atlas_sprite_mesh` — each arg is meaningful
+// `offset` is the part's world-unit translation (bridge already applied the
+// mode-implicit canvas factor). For SpriteRenderer / Box prefabs the caller
+// passes `offset = (0, 0)` and the chain collapses to the plain affine.
 fn polygon_mesh_with_tris(
     vertices: &[[f32; 2]],
     tris_override: Option<&[u16]>,
     affine: Affine,
     polygon_sprite_rect: Rect,
     atlas: AtlasSize,
-    ui_scale: f32,
-    offset_scaled: (f32, f32),
-    canvas_scale: f32,
+    offset: (f32, f32),
 ) -> PartMesh {
     let tris = match tris_override {
         Some(t) => t.to_vec(),
@@ -311,9 +302,7 @@ fn polygon_mesh_with_tris(
         part_pivot: (0.5, 0.5),
         border_mult: 1.0,
         affine,
-        ui_scale,
-        offset_scaled,
-        canvas_scale,
+        offset,
     };
     let verts: Vec<[f32; 2]> = vertices.iter().map(|v| apply_transform(*v, &ctx)).collect();
 
@@ -341,9 +330,8 @@ fn polygon_mesh_with_tris(
 /// a precomputed reciprocal, not direct division, to match Unity's f32 op
 /// order for `Sprite.vertices` (see `local_src_verts`). The per-method
 /// slice/mirror/tile math then transforms into the target-rect frame, and
-/// `apply_transform` runs each vert through the canvas chain (affine →
-/// uiScale → canvasScale + offset_scaled). With identity canvas-chain
-/// values the final step collapses to the plain per-part affine.
+/// `apply_transform` runs each vert through the per-part affine then adds
+/// the bridge-precomputed world-unit `offset`.
 ///
 /// Every `Method` variant is wired (ID / MX / MY / MXY plus the slice-grid
 /// family and the TX/TY/TX_MC3 tilers). FX/FY/FXY are rejected at parse
@@ -359,9 +347,7 @@ pub fn atlas_sprite_mesh(
     atlas: AtlasSize,
     ppu: f32,
     invert_scale: f32,
-    ui_scale: f32,
-    offset_scaled: (f32, f32),
-    canvas_scale: f32,
+    offset: (f32, f32),
 ) -> PartMesh {
     // The sprite's effective PPU = ppu / invert_scale = ppu * spriteScale.
     // Sprite.vertices in Unity are stored in world units = pixel /
@@ -380,9 +366,7 @@ pub fn atlas_sprite_mesh(
         part_pivot: (part_pivot[0], part_pivot[1]),
         border_mult,
         affine,
-        ui_scale,
-        offset_scaled,
-        canvas_scale,
+        offset,
     };
     match method {
         Method::Id => {
@@ -437,21 +421,11 @@ struct SliceCtx {
     part_pivot: (f32, f32),
     border_mult: f32,
     affine: Affine,
-    // CanvasSpriteAuthor-style round-trip transform. For SpriteMeshAuthor /
-    // Box prefabs these collapse to identity (ui_scale=1, offset_scaled=(0,0),
-    // canvas_scale=1) so the existing affine-only path is unchanged. For
-    // UIIcon parts under CanvasSpriteAuthor, ui_scale = UIIcon._scaleFactor
-    // (typically 100), canvas_scale = CanvasSpriteAuthor._scaleFactor
-    // (typically 0.01). Reproduces Unity's f32 op sequence (× 100, × 0.01)
-    // bit-for-bit.
-    //
-    // `offset_scaled` is the per-part `offset × canvas_scale`, precomputed
-    // once per part so the per-vert chain is a single two-step f32 op:
-    // `v × canvas_scale + offset_scaled`. Matches Unity's matrix-style
-    // emit when the CanvasSpriteAuthor root sits at origin.
-    ui_scale: f32,
-    offset_scaled: (f32, f32),
-    canvas_scale: f32,
+    // Per-part world-unit offset. Already canvas-scaled by the bridge
+    // (`Output::canvas_scale_implicit`), so the per-vert chain is a single
+    // add: `v_world = affine·v + offset`. For SpriteMeshAuthor / Box prefabs
+    // `offset = (0, 0)` and the chain collapses to the affine-only path.
+    offset: (f32, f32),
 }
 
 // (px, py) → pivot-relative world units (matches Unity's Sprite.vertices).
@@ -1599,26 +1573,40 @@ where
         });
 
         let part_mesh = match part {
-            Part::AtlasSprite { method, size, part_pivot, border_mult, affine, ui_scale, offset, .. } => {
+            Part::AtlasSprite { method, size, part_pivot, border_mult, affine, offset, .. } => {
                 check_method_constraints(*method, &entry, &combined.name, source_name)?;
-                let offset_scaled = (offset[0] * combined.canvas_scale, offset[1] * combined.canvas_scale);
+                // None ⇒ inherit the sprite's natural anchor. Diverging JSON
+                // pivots stay as Some(...) and override here. Stripping the
+                // common "matches tps" case keeps fab.json signal-only.
+                let resolved_pivot = part_pivot
+                    .unwrap_or([entry.pivot.x, entry.pivot.y]);
+                // None ⇒ for strictly-size-fitted methods (slice grids,
+                // tilers), inherit the sprite's natural rect in world units
+                // (= sprite_bound_size) — slice math with scale=1 reduces
+                // to source verts at native size. For ID/MX/MY/MXY the
+                // size==None branch (icon_mirror / passthrough) is the
+                // semantically different "native" path; don't default to
+                // Some there, or icon_mirror would silently become slice_mirror.
+                let effective_ppu = ppu / invert_scale;
+                let resolved_size = if size.is_none() && method.requires_size() {
+                    Some((entry.rect.w as f32 / effective_ppu, entry.rect.h as f32 / effective_ppu))
+                } else {
+                    *size
+                };
                 atlas_sprite_mesh(
-                    &entry, *method, *size, *part_pivot, *border_mult, *affine,
+                    &entry, *method, resolved_size, resolved_pivot, *border_mult, *affine,
                     atlas, ppu, invert_scale,
-                    *ui_scale, offset_scaled, combined.canvas_scale,
+                    (offset[0], offset[1]),
                 )
             }
-            Part::Polygon { vertices, triangles, affine, ui_scale, offset, .. } => {
-                let offset_scaled = (offset[0] * combined.canvas_scale, offset[1] * combined.canvas_scale);
+            Part::Polygon { vertices, triangles, affine, offset, .. } => {
                 polygon_mesh_with_tris(
                     vertices,
                     triangles.as_deref(),
                     *affine,
                     entry.rect,
                     atlas,
-                    *ui_scale,
-                    offset_scaled,
-                    combined.canvas_scale,
+                    (offset[0], offset[1]),
                 )
             }
         };
@@ -1643,42 +1631,40 @@ fn apply_affine(v: [f32; 2], a: Affine) -> [f32; 2] {
     // T · R · S applied to v: scale → rotate → translate.
     let sx = v[0] * a.sx;
     let sy = v[1] * a.sy;
-    let (rs, rc) = a.rot_deg.to_radians().sin_cos();
+    let (rs, rc) = a.rot_deg_ccw.to_radians().sin_cos();
     let rx = sx * rc - sy * rs;
     let ry = sx * rs + sy * rc;
     [rx + a.tx, ry + a.ty]
 }
 
-// Atlas-sprite full transform: applies the per-part affine (scale + rotate),
-// then the CanvasSpriteAuthor-style round-trip — × ui_scale, + offset (canvas
-// pixels), × canvas_scale — then the affine translate (in world units).
+// Per-vert transform: per-part affine (scale + rotate) followed by the
+// pre-scaled world-unit offset, then the affine translate.
 //
-// For Box-prefab / SpriteRenderer use cases (ui_scale=1, offset=(0,0),
-// canvas_scale=1) this collapses to apply_affine — the canvas chain is
-// effectively identity. For CanvasSpriteAuthor reproduction (ui_scale=100,
-// offset=anchored, canvas_scale=0.01), the chain reproduces Unity's exact
-// f32 op sequence so the emitted typelessdata bytes match.
+// The CSA-era `× ui_scale × canvas_scale` two-multiply chain is split:
+//   - `ui_scale` is now part of each node's `scale` (composed by the walker
+//     into `affine.sx/sy`).
+//   - `canvas_scale` is pre-multiplied into the leaf's `offset` and (for
+//     size-fitted methods) `size` at the bridge layer
+//     (`Output::canvas_scale_implicit`).
+// Each vertex therefore traverses one multiply (scale), one optional rotate,
+// and one add (offset + translate). For SpriteRenderer / Box prefabs
+// `offset = (0, 0)` and `affine = identity` collapses this to passthrough.
 fn apply_transform(v: [f32; 2], ctx: &SliceCtx) -> [f32; 2] {
     let a = ctx.affine;
-    // 1. scale (per-part sx, sy) — applied in world units (post-srcPos).
+    // 1. scale (per-part sx, sy) — magnitude carries `old uiScale × old canvasScale`.
     let mut x = v[0] * a.sx;
     let mut y = v[1] * a.sy;
     // 2. rotate.
-    if a.rot_deg != 0.0 {
-        let (rs, rc) = a.rot_deg.to_radians().sin_cos();
+    if a.rot_deg_ccw != 0.0 {
+        let (rs, rc) = a.rot_deg_ccw.to_radians().sin_cos();
         let nx = x * rc - y * rs;
         let ny = x * rs + y * rc;
         x = nx; y = ny;
     }
-    // 3. × ui_scale (to canvas-pixel units).
-    x *= ctx.ui_scale;
-    y *= ctx.ui_scale;
-    // 4. Multiply by canvas_scale, then add the precomputed `offset_scaled`
-    //    (= `offset × canvas_scale`, computed once per part). Two-step f32 —
-    //    matches Unity's matrix-style vertex-transform op order.
-    x = x * ctx.canvas_scale + ctx.offset_scaled.0;
-    y = y * ctx.canvas_scale + ctx.offset_scaled.1;
-    // 5. + (tx, ty) (additional world-unit translate).
+    // 3. + offset (world-unit; bridge pre-applied mode-implicit canvas factor).
+    x += ctx.offset.0;
+    y += ctx.offset.1;
+    // 4. + (tx, ty) world-unit affine translate.
     [x + a.tx, y + a.ty]
 }
 
@@ -1750,7 +1736,7 @@ mod tests {
     #[test]
     fn polygon_rotation_90deg() {
         let verts = [[1.0, 0.0]];
-        let a = Affine { rot_deg: 90.0, ..Affine::default() };
+        let a = Affine { rot_deg_ccw: 90.0, ..Affine::default() };
         let m = polygon_mesh_one(&verts[0], a);
         assert!((m[0] - 0.0).abs() < 1e-5, "{:?}", m);
         assert!((m[1] - 1.0).abs() < 1e-5, "{:?}", m);
@@ -1789,7 +1775,7 @@ mod tests {
         let entry = quad_entry(10, 20, 2, 4, (0.5, 0.5));
         let m = atlas_sprite_mesh(
             &entry, Method::Id, None, [0.5, 0.5], 1.0, Affine::default(),
-            AtlasSize { width: 100, height: 100 }, 100.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            AtlasSize { width: 100, height: 100 }, 100.0, 1.0, (0.0, 0.0),
         );
         assert_eq!(m.verts, vec![
             [-0.01, -0.02], [0.01, -0.02], [-0.01, 0.02], [0.01, 0.02],
@@ -1807,7 +1793,7 @@ mod tests {
             &entry, Method::Id, None, [0.5, 0.5], 1.0,
             Affine { tx: 5.0, ty: 7.0, ..Affine::default() },
             AtlasSize { width: 16, height: 16 },
-            1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            1.0, 1.0, (0.0, 0.0),
         );
         // pivot pixel = (1, 1). local verts pre-translate:
         //   (-1, -1), (1, -1), (-1, 1), (1, 1).
@@ -1826,7 +1812,7 @@ mod tests {
         let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
             &entry, Method::Mx, Some((4.0, 2.0)), [0.5, 0.5], 1.0, Affine::default(),
-            AtlasSize { width: 8, height: 8 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            AtlasSize { width: 8, height: 8 }, 1.0, 1.0, (0.0, 0.0),
         );
         assert_eq!(m.verts.len(), 8, "2× source verts");
         assert_eq!(m.tris.len(), 12, "2× indices");
@@ -1844,7 +1830,7 @@ mod tests {
         let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
             &entry, Method::Mx, Some((4.0, 2.0)), [0.5, 0.5], 1.0, Affine::default(),
-            AtlasSize { width: 8, height: 8 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            AtlasSize { width: 8, height: 8 }, 1.0, 1.0, (0.0, 0.0),
         );
         // First copy bottom-left: src (0,0) → pivot-rel (-1,-1) → scale (1,1) → translate (1,1) → slice (0,0) → offset (0,-1) → (0,-1).
         assert_eq!(m.verts[0], [0.0, -1.0]);
@@ -1860,7 +1846,7 @@ mod tests {
         let entry = quad_entry(10, 20, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
             &entry, Method::Mx, Some((4.0, 2.0)), [0.5, 0.5], 1.0, Affine::default(),
-            AtlasSize { width: 100, height: 100 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            AtlasSize { width: 100, height: 100 }, 1.0, 1.0, (0.0, 0.0),
         );
         assert_eq!(m.uvs[..4], m.uvs[4..]);
     }
@@ -1870,7 +1856,7 @@ mod tests {
         let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
             &entry, Method::My, Some((2.0, 4.0)), [0.5, 0.5], 1.0, Affine::default(),
-            AtlasSize { width: 8, height: 8 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            AtlasSize { width: 8, height: 8 }, 1.0, 1.0, (0.0, 0.0),
         );
         // First copy (Y+): src (0,0) → (-1,-1) * (1,1) + (1,1) = (0,0); + offset (-1,0) → (-1, 0). Wait, mirror_pivot = (0, 0.5), rect_pivot = (0.5, 0.5).
         // offset = (0 - 0.5, 0.5 - 0.5) * (2, 4) = (-1, 0).
@@ -1890,7 +1876,7 @@ mod tests {
         let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
             &entry, Method::Mxy, Some((4.0, 4.0)), [0.5, 0.5], 1.0, Affine::default(),
-            AtlasSize { width: 8, height: 8 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            AtlasSize { width: 8, height: 8 }, 1.0, 1.0, (0.0, 0.0),
         );
         assert_eq!(m.verts.len(), 16, "4× source");
         assert_eq!(m.tris.len(), 24);
@@ -1977,7 +1963,7 @@ mod tests {
         let entry = quad_entry(0, 0, 1, 1, (0.5, 0.5));
         let m = atlas_sprite_mesh(
             &entry, Method::Tx, Some((4.0, 2.0)), [0.5, 0.5], 1.0, Affine::default(),
-            AtlasSize { width: 8, height: 8 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            AtlasSize { width: 8, height: 8 }, 1.0, 1.0, (0.0, 0.0),
         );
         assert_eq!(m.verts.len(), 10, "5 vert pairs for cols_half=2");
         // BuildStrapIndices: 2 forward + 1 centre-seam + 1 backward = 4 quads
@@ -2000,7 +1986,7 @@ mod tests {
         let entry = quad_entry(0, 0, 1, 1, (0.5, 0.5));
         let m = atlas_sprite_mesh(
             &entry, Method::Ty, Some((2.0, 4.0)), [0.5, 0.5], 1.0, Affine::default(),
-            AtlasSize { width: 8, height: 8 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            AtlasSize { width: 8, height: 8 }, 1.0, 1.0, (0.0, 0.0),
         );
         assert_eq!(m.verts.len(), 10);
         assert_eq!(m.tris.len(), 24);
@@ -2018,7 +2004,7 @@ mod tests {
         let entry = quad_entry(10, 0, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
             &entry, Method::Tx, Some((4.0, 2.0)), [0.5, 0.5], 1.0, Affine::default(),
-            AtlasSize { width: 100, height: 100 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            AtlasSize { width: 100, height: 100 }, 1.0, 1.0, (0.0, 0.0),
         );
         // u_min = rect.x / atlas_w = 10 / 100 = 0.1.
         assert!((m.uvs[0][0] - 0.1).abs() < 1e-6);
@@ -2044,9 +2030,9 @@ mod tests {
         let entry = quad_entry_with_border(0, 0, 10, 4, (0.5, 0.5), 2, 2);
         let combined = make_combined("BX", vec![Part::AtlasSprite {
             sprite: "A".into(), method: Method::TxMc3,
-            size: Some((6.0, 4.0)), part_pivot: [0.5, 0.5],
+            size: Some((6.0, 4.0)), part_pivot: Some([0.5, 0.5]),
             border_mult: 1.0, affine: Affine::default(),
-            ui_scale: 1.0, offset: [0.0, 0.0],
+            offset: [0.0, 0.0],
         }]);
         let err = build_combined(
             &combined, |_| Some((entry.clone(), 1.0)),
@@ -2060,9 +2046,9 @@ mod tests {
         let entry = quad_entry_with_border(0, 0, 10, 4, (0.5, 0.5), 0, 0);
         let combined = make_combined("BX", vec![Part::AtlasSprite {
             sprite: "A".into(), method: Method::TxMc3,
-            size: Some((6.0, 4.0)), part_pivot: [0.5, 0.5],
+            size: Some((6.0, 4.0)), part_pivot: Some([0.5, 0.5]),
             border_mult: 1.0, affine: Affine::default(),
-            ui_scale: 1.0, offset: [0.0, 0.0],
+            offset: [0.0, 0.0],
         }]);
         let err = build_combined(
             &combined, |_| Some((entry.clone(), 1.0)),
@@ -2079,7 +2065,7 @@ mod tests {
         let entry = quad_entry_with_border(0, 0, 4, 4, (0.5, 0.5), 0, 4);
         let m = atlas_sprite_mesh(
             &entry, Method::TxMc3, Some((8.0, 4.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, (0.0, 0.0),
         );
         assert_eq!(m.verts.len(), 8);
         assert_eq!(m.tris.len(), 18);
@@ -2096,7 +2082,7 @@ mod tests {
         let entry = quad_entry_with_border(0, 0, 4, 4, (0.5, 0.5), 0, 4);
         let m = atlas_sprite_mesh(
             &entry, Method::TxMc3, Some((8.0, 4.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, (0.0, 0.0),
         );
         // u_max = (0 + 4) / 16 = 0.25. Verts 0/1 are col 0 (left outer).
         assert!((m.uvs[0][0] - 0.25).abs() < 1e-6, "{:?}", m.uvs[0]);
@@ -2115,7 +2101,7 @@ mod tests {
         entry.border = crate::tpsheet::Border { left: 2, bottom: 0, right: 2, top: 0 };
         let m = atlas_sprite_mesh(
             &entry, Method::R1c3, Some((8.0, 2.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, (0.0, 0.0),
         );
         assert_eq!(m.verts.len(), 8);
         assert_eq!(m.tris.len(), 18, "3 quads × 6 indices");
@@ -2127,7 +2113,7 @@ mod tests {
         entry.border = crate::tpsheet::Border { left: 2, bottom: 0, right: 2, top: 0 };
         let m = atlas_sprite_mesh(
             &entry, Method::R1c3, Some((8.0, 2.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, (0.0, 0.0),
         );
         // Verts 1 and 2 (inner cols on bottom row) share U.
         assert_eq!(m.uvs[1][0], m.uvs[2][0]);
@@ -2142,9 +2128,9 @@ mod tests {
         entry.border = crate::tpsheet::Border { left: 1, bottom: 0, right: 2, top: 0 };
         let combined = make_combined("BX", vec![Part::AtlasSprite {
             sprite: "A".into(), method: Method::R1c3,
-            size: Some((8.0, 2.0)), part_pivot: [0.5, 0.5],
+            size: Some((8.0, 2.0)), part_pivot: Some([0.5, 0.5]),
             border_mult: 1.0, affine: Affine::default(),
-            ui_scale: 1.0, offset: [0.0, 0.0],
+            offset: [0.0, 0.0],
         }]);
         let err = build_combined(
             &combined, |_| Some((entry.clone(), 1.0)),
@@ -2168,9 +2154,9 @@ mod tests {
         e.border.bottom = 1;
         let combined = make_combined("BX", vec![Part::AtlasSprite {
             sprite: "A".into(), method: Method::MxyR3c3,
-            size: Some((8.0, 8.0)), part_pivot: [0.5, 0.5],
+            size: Some((8.0, 8.0)), part_pivot: Some([0.5, 0.5]),
             border_mult: 1.0, affine: Affine::default(),
-            ui_scale: 1.0, offset: [0.0, 0.0],
+            offset: [0.0, 0.0],
         }]);
         let err = build_combined(&combined, |_| Some((e.clone(), 1.0)),
             AtlasSize { width: 16, height: 16 }, 1.0).unwrap_err();
@@ -2182,7 +2168,7 @@ mod tests {
         let e = mxy_satisfying_entry();
         let m = atlas_sprite_mesh(
             &e, Method::MxyR3c3, Some((8.0, 8.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, (0.0, 0.0),
         );
         assert_eq!(m.verts.len(), 16);
         assert_eq!(m.tris.len(), 54);
@@ -2193,7 +2179,7 @@ mod tests {
         let e = mxy_satisfying_entry();
         let m = atlas_sprite_mesh(
             &e, Method::MxyR3c3Nf, Some((8.0, 8.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, (0.0, 0.0),
         );
         assert_eq!(m.tris.len(), 48, "8 quads × 6 indices");
     }
@@ -2204,7 +2190,7 @@ mod tests {
         let e = mxy_satisfying_entry();
         let m = atlas_sprite_mesh(
             &e, Method::MxyR3c3, Some((8.0, 8.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, (0.0, 0.0),
         );
         let grid = UvGrid::for_entry(&e, AtlasSize { width: 16, height: 16 }, 1.0);
         for uv in &m.uvs {
@@ -2231,7 +2217,7 @@ mod tests {
         e.border = crate::tpsheet::Border { left: 0, bottom: 0, right: 2, top: 0 };
         let m = atlas_sprite_mesh(
             &e, Method::MxR1c4, Some((10.0, 4.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, (0.0, 0.0),
         );
         assert_eq!(m.verts.len(), 10);
         assert_eq!(m.tris.len(), 24, "4 quads × 6 indices");
@@ -2243,7 +2229,7 @@ mod tests {
         e.border = crate::tpsheet::Border { left: 0, bottom: 0, right: 2, top: 0 };
         let m = atlas_sprite_mesh(
             &e, Method::MxR1c4, Some((10.0, 4.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, (0.0, 0.0),
         );
         // Bottom row: u3, u2, u0, u2, u3 (mirror around col index 2).
         let grid = UvGrid::for_entry(&e, AtlasSize { width: 16, height: 16 }, 1.0);
@@ -2260,7 +2246,7 @@ mod tests {
         e.border = crate::tpsheet::Border { left: 0, bottom: 1, right: 4, top: 3 };
         let m = atlas_sprite_mesh(
             &e, Method::MxR3c2, Some((8.0, 8.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, (0.0, 0.0),
         );
         assert_eq!(m.verts.len(), 12);
         assert_eq!(m.tris.len(), 36);
@@ -2272,7 +2258,7 @@ mod tests {
         e.border = crate::tpsheet::Border { left: 0, bottom: 1, right: 2, top: 1 };
         let m = atlas_sprite_mesh(
             &e, Method::MxR3c4, Some((10.0, 8.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, (0.0, 0.0),
         );
         assert_eq!(m.verts.len(), 20);
         assert_eq!(m.tris.len(), 72, "12 quads × 6 indices");
@@ -2284,7 +2270,7 @@ mod tests {
         e.border = crate::tpsheet::Border { left: 1, bottom: 1, right: 1, top: 1 };
         let m = atlas_sprite_mesh(
             &e, Method::MxR3c6, Some((10.0, 8.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, (0.0, 0.0),
         );
         assert_eq!(m.verts.len(), 28);
         assert_eq!(m.tris.len(), 108, "18 quads × 6 indices");
@@ -2296,9 +2282,9 @@ mod tests {
         e.border = crate::tpsheet::Border { left: 1, bottom: 0, right: 2, top: 0 };
         let combined = make_combined("BX", vec![Part::AtlasSprite {
             sprite: "A".into(), method: Method::MxR1c4,
-            size: Some((10.0, 4.0)), part_pivot: [0.5, 0.5],
+            size: Some((10.0, 4.0)), part_pivot: Some([0.5, 0.5]),
             border_mult: 1.0, affine: Affine::default(),
-            ui_scale: 1.0, offset: [0.0, 0.0],
+            offset: [0.0, 0.0],
         }]);
         let err = build_combined(&combined, |_| Some((e.clone(), 1.0)),
             AtlasSize { width: 16, height: 16 }, 1.0).unwrap_err();
@@ -2313,7 +2299,7 @@ mod tests {
         e.border = crate::tpsheet::Border { left: 0, bottom: 0, right: 0, top: 4 };
         let m = atlas_sprite_mesh(
             &e, Method::MyR3c1, Some((4.0, 8.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, (0.0, 0.0),
         );
         assert_eq!(m.verts.len(), 8);
         assert_eq!(m.tris.len(), 18);
@@ -2325,7 +2311,7 @@ mod tests {
         e.border = crate::tpsheet::Border { left: 0, bottom: 0, right: 0, top: 4 };
         let m = atlas_sprite_mesh(
             &e, Method::MyR3c1, Some((4.0, 8.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, (0.0, 0.0),
         );
         let grid = UvGrid::for_entry(&e, AtlasSize { width: 16, height: 16 }, 1.0);
         // Outer rows (0/3) sample v3; inner rows (1/2) sample v0.
@@ -2343,7 +2329,7 @@ mod tests {
         e.border = crate::tpsheet::Border { left: 0, bottom: 0, right: 4, top: 4 };
         let m = atlas_sprite_mesh(
             &e, Method::MyR2c2, Some((8.0, 8.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, (0.0, 0.0),
         );
         assert_eq!(m.verts.len(), 9);
         assert_eq!(m.tris.len(), 24, "4 quads × 6 indices");
@@ -2355,7 +2341,7 @@ mod tests {
         e.border = crate::tpsheet::Border { left: 0, bottom: 0, right: 4, top: 4 };
         let m = atlas_sprite_mesh(
             &e, Method::MyR2c2, Some((8.0, 8.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, (0.0, 0.0),
         );
         let grid = UvGrid::for_entry(&e, AtlasSize { width: 16, height: 16 }, 1.0);
         for row in 0..3 {
@@ -2372,7 +2358,7 @@ mod tests {
         e.border = crate::tpsheet::Border { left: 1, bottom: 0, right: 3, top: 4 };
         let m = atlas_sprite_mesh(
             &e, Method::MyR2c3, Some((8.0, 4.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, (0.0, 0.0),
         );
         assert_eq!(m.verts.len(), 12);
         assert_eq!(m.tris.len(), 36, "6 quads × 6 indices");
@@ -2384,7 +2370,7 @@ mod tests {
         e.border = crate::tpsheet::Border { left: 0, bottom: 0, right: 4, top: 4 };
         let m = atlas_sprite_mesh(
             &e, Method::MyR3c2, Some((8.0, 8.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, (0.0, 0.0),
         );
         assert_eq!(m.verts.len(), 12);
         assert_eq!(m.tris.len(), 36);
@@ -2397,9 +2383,9 @@ mod tests {
         e.border = crate::tpsheet::Border { left: 1, bottom: 0, right: 0, top: 4 };
         let combined = make_combined("BX", vec![Part::AtlasSprite {
             sprite: "A".into(), method: Method::MyR3c1,
-            size: Some((4.0, 8.0)), part_pivot: [0.5, 0.5],
+            size: Some((4.0, 8.0)), part_pivot: Some([0.5, 0.5]),
             border_mult: 1.0, affine: Affine::default(),
-            ui_scale: 1.0, offset: [0.0, 0.0],
+            offset: [0.0, 0.0],
         }]);
         let err = build_combined(&combined, |_| Some((e.clone(), 1.0)),
             AtlasSize { width: 16, height: 16 }, 1.0).unwrap_err();
@@ -2422,9 +2408,9 @@ mod tests {
         e.border.bottom = 1;
         let combined = make_combined("BX", vec![Part::AtlasSprite {
             sprite: "A".into(), method: Method::MyR3c3,
-            size: Some((8.0, 8.0)), part_pivot: [0.5, 0.5],
+            size: Some((8.0, 8.0)), part_pivot: Some([0.5, 0.5]),
             border_mult: 1.0, affine: Affine::default(),
-            ui_scale: 1.0, offset: [0.0, 0.0],
+            offset: [0.0, 0.0],
         }]);
         let err = build_combined(&combined, |_| Some((e.clone(), 1.0)),
             AtlasSize { width: 16, height: 16 }, 1.0).unwrap_err();
@@ -2436,7 +2422,7 @@ mod tests {
         let e = my_satisfying_entry(4);
         let m = atlas_sprite_mesh(
             &e, Method::MyR3c3, Some((8.0, 8.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, (0.0, 0.0),
         );
         assert_eq!(m.verts.len(), 16);
         assert_eq!(m.tris.len(), 54);
@@ -2447,7 +2433,7 @@ mod tests {
         let e = my_satisfying_entry(4);
         let m = atlas_sprite_mesh(
             &e, Method::MyR3c3, Some((8.0, 8.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, (0.0, 0.0),
         );
         let grid = UvGrid::for_entry(&e, AtlasSize { width: 16, height: 16 }, 1.0);
         // Row 0 (bottom-of-target) samples v3 (atlas-top); same for row 3 (top).
@@ -2482,9 +2468,9 @@ mod tests {
         e.border.left = 1;
         let combined = make_combined("BX", vec![Part::AtlasSprite {
             sprite: "A".into(), method: Method::MxR1c3,
-            size: Some((8.0, 2.0)), part_pivot: [0.5, 0.5],
+            size: Some((8.0, 2.0)), part_pivot: Some([0.5, 0.5]),
             border_mult: 1.0, affine: Affine::default(),
-            ui_scale: 1.0, offset: [0.0, 0.0],
+            offset: [0.0, 0.0],
         }]);
         let err = build_combined(&combined, |_| Some((e.clone(), 1.0)),
             AtlasSize { width: 16, height: 16 }, 1.0).unwrap_err();
@@ -2496,7 +2482,7 @@ mod tests {
         let e = mx_satisfying_entry(4);
         let m = atlas_sprite_mesh(
             &e, Method::MxR1c3, Some((8.0, 2.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, (0.0, 0.0),
         );
         let grid = UvGrid::for_entry(&e, AtlasSize { width: 16, height: 16 }, 1.0);
         // Bottom row: outer-cols 0,3 → u3; inner-cols 1,2 → u0.
@@ -2514,7 +2500,7 @@ mod tests {
         let e = mx_satisfying_entry(4);
         let m = atlas_sprite_mesh(
             &e, Method::MxR3c3, Some((8.0, 4.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, (0.0, 0.0),
         );
         assert_eq!(m.verts.len(), 16);
         assert_eq!(m.tris.len(), 54);
@@ -2525,7 +2511,7 @@ mod tests {
         let e = mx_satisfying_entry(4);
         let m = atlas_sprite_mesh(
             &e, Method::MxR3c3, Some((8.0, 4.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, (0.0, 0.0),
         );
         let grid = UvGrid::for_entry(&e, AtlasSize { width: 16, height: 16 }, 1.0);
         // Each row's UVs: outer cols → u3, inner cols → u0.
@@ -2556,7 +2542,7 @@ mod tests {
         };
         let m = atlas_sprite_mesh(
             &entry, Method::R3c3, Some((16.0, 16.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, (0.0, 0.0),
         );
         assert_eq!(m.verts.len(), 16, "4×4 grid");
         // 3×3 = 9 quads, 54 indices.
@@ -2573,7 +2559,7 @@ mod tests {
         };
         let m = atlas_sprite_mesh(
             &entry, Method::R3c3, Some((16.0, 16.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, (0.0, 0.0),
         );
         // Bottom-left corner of grid (index 0) = target rect BL = (-8, -8).
         assert_eq!(m.verts[0], [-8.0, -8.0]);
@@ -2596,7 +2582,7 @@ mod tests {
         };
         let m = atlas_sprite_mesh(
             &entry, Method::R3c3, Some((16.0, 16.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, (0.0, 0.0),
         );
         // (col=0, row=0) outer-min, outer-min
         assert_eq!(m.uvs[0], [0.0, 0.0]);
@@ -2615,7 +2601,7 @@ mod tests {
         };
         let m = atlas_sprite_mesh(
             &entry, Method::R3c3Nf, Some((16.0, 16.0)), [0.5, 0.5], 1.0,
-            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            Affine::default(), AtlasSize { width: 16, height: 16 }, 1.0, 1.0, (0.0, 0.0),
         );
         // 8 quads * 6 indices = 48 (vs R3C3's 54).
         assert_eq!(m.tris.len(), 48);
@@ -2641,7 +2627,7 @@ mod tests {
         let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
             &entry, Method::Mx, None, [0.5, 0.5], 1.0, Affine::default(),
-            AtlasSize { width: 8, height: 8 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            AtlasSize { width: 8, height: 8 }, 1.0, 1.0, (0.0, 0.0),
         );
         assert_eq!(m.verts.len(), 8);
         assert_eq!(m.tris.len(), 12);
@@ -2658,7 +2644,7 @@ mod tests {
         let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
             &entry, Method::My, None, [0.5, 0.5], 1.0, Affine::default(),
-            AtlasSize { width: 8, height: 8 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            AtlasSize { width: 8, height: 8 }, 1.0, 1.0, (0.0, 0.0),
         );
         assert_eq!(m.verts.len(), 8);
         assert_eq!(m.verts[4..], [[-1.0, 1.0], [1.0, 1.0], [-1.0, -1.0], [1.0, -1.0]]);
@@ -2669,7 +2655,7 @@ mod tests {
         let entry = quad_entry(0, 0, 2, 2, (0.5, 0.5));
         let m = atlas_sprite_mesh(
             &entry, Method::Mxy, None, [0.5, 0.5], 1.0, Affine::default(),
-            AtlasSize { width: 8, height: 8 }, 1.0, 1.0, 1.0, (0.0, 0.0), 1.0,
+            AtlasSize { width: 8, height: 8 }, 1.0, 1.0, (0.0, 0.0),
         );
         assert_eq!(m.verts.len(), 16);
         assert_eq!(m.tris.len(), 24);
@@ -2680,7 +2666,7 @@ mod tests {
     fn make_combined(name: &str, parts: Vec<Part>) -> fab::Combined {
         fab::Combined {
             name: name.into(), pivot: [0.5, 0.5], border: [0.0; 4],
-            canvas_scale: 1.0, parts,
+            parts,
         }
     }
 
@@ -2689,10 +2675,9 @@ mod tests {
             sprite: sprite.into(),
             method: Method::Id,
             size: None,
-            part_pivot: [0.5, 0.5],
+            part_pivot: Some([0.5, 0.5]),
             border_mult: 1.0,
             affine,
-            ui_scale: 1.0,
             offset: [0.0, 0.0],
         }
     }
@@ -2775,7 +2760,7 @@ mod tests {
         //   scale  → (2, 0)
         //   rotate → (0, 2)
         //   trans  → (10, 2)
-        let a = Affine { tx: 10.0, ty: 0.0, sx: 2.0, sy: 1.0, rot_deg: 90.0 };
+        let a = Affine { tx: 10.0, ty: 0.0, sx: 2.0, sy: 1.0, rot_deg_ccw: 90.0 };
         let out = apply_affine([1.0, 0.0], a);
         assert!((out[0] - 10.0).abs() < 1e-5, "{out:?}");
         assert!((out[1] - 2.0).abs() < 1e-5, "{out:?}");
@@ -2784,34 +2769,25 @@ mod tests {
     // --- apply_transform op-order regression guards ---
 
     // Builds a SliceCtx for apply_transform-only tests; the slice/mirror
-    // fields are unread on that code path so they get filler values. The
-    // helper precomputes `offset_scaled = offset × canvas_scale` to mirror
-    // how `build_combined` feeds the per-vert chain.
-    fn ctx_for_transform(
-        affine: Affine,
-        ui_scale: f32,
-        offset: (f32, f32),
-        canvas_scale: f32,
-    ) -> SliceCtx {
+    // fields are unread on that code path so they get filler values.
+    fn ctx_for_transform(affine: Affine, offset: (f32, f32)) -> SliceCtx {
         SliceCtx {
             sprite_pivot_norm: (0.5, 0.5),
             sprite_bound_size: (1.0, 1.0),
             part_pivot: (0.5, 0.5),
             border_mult: 1.0,
             affine,
-            ui_scale,
-            offset_scaled: (offset.0 * canvas_scale, offset.1 * canvas_scale),
-            canvas_scale,
+            offset,
         }
     }
 
     #[test]
-    fn apply_transform_identity_defaults_collapse_to_apply_affine() {
-        // ui_scale=1, offset=(0,0), canvas_scale=1 collapses the canvas chain
-        // to `v * 1 + 0 * 1 = v` — exactly representable, so the result is
-        // byte-identical to apply_affine across non-trivial affine values.
-        let affine = Affine { tx: 1.5, ty: -2.25, sx: 1.25, sy: -0.75, rot_deg: 30.0 };
-        let ctx = ctx_for_transform(affine, 1.0, (0.0, 0.0), 1.0);
+    fn apply_transform_identity_offset_collapses_to_apply_affine() {
+        // offset=(0,0) collapses apply_transform to apply_affine, byte-exact
+        // across non-trivial affine values. Pins the SpriteRenderer / Box-prefab
+        // identity path that bypasses CSA-style offsets.
+        let affine = Affine { tx: 1.5, ty: -2.25, sx: 1.25, sy: -0.75, rot_deg_ccw: 30.0 };
+        let ctx = ctx_for_transform(affine, (0.0, 0.0));
         let v = [3.5, 4.5];
         let from_transform = apply_transform(v, &ctx);
         let from_affine = apply_affine(v, affine);
@@ -2820,55 +2796,38 @@ mod tests {
     }
 
     #[test]
-    fn apply_transform_ui_scale_only_post_multiplies() {
-        // 0.725 × 100 = 72.5 (exactly representable f32).
-        let ctx = ctx_for_transform(Affine::default(), 100.0, (0.0, 0.0), 1.0);
-        let out = apply_transform([0.725, 0.0], &ctx);
-        assert_eq!(out[0].to_bits(), 72.5_f32.to_bits());
-        assert_eq!(out[1], 0.0);
-    }
-
-    #[test]
-    fn apply_transform_matrix_op_order_diverges_from_naive_by_one_ulp() {
-        // v=0.1, offset=-300, canvas_scale=0.01 — algebraically -2.999.
-        // Matrix order (v × cs + off × cs)     → 0xc03fef9e
-        // Naive order ((v + off) × cs)         → 0xc03fef9d (1 ULP lower)
-        // The Silloutte1 byte-exact match requires the matrix order; this
-        // test pins that op order at the unit level so any regression is
-        // caught before the full pipeline test runs.
-        let ctx = ctx_for_transform(Affine::default(), 1.0, (-300.0, 0.0), 0.01);
-        let out = apply_transform([0.1, 0.0], &ctx);
-        assert_eq!(
-            out[0].to_bits(),
-            0xc03fef9e,
-            "expected matrix-style op order (0xc03fef9e), got 0x{:08x} — \
-             apply_transform may have regressed to naive `(v + off) * cs`",
-            out[0].to_bits()
+    fn apply_transform_offset_added_after_scale() {
+        // Composed leaf scale folded into affine.sx, offset pre-scaled by
+        // the mode-implicit canvas factor: e.g. CSA leaf at pos=[100,-50]
+        // gives offset=[1.0,-0.5], magnitude scale 1.0. v=2 → ×1 → 2 → +1.0 → 3.0.
+        let ctx = ctx_for_transform(
+            Affine { sx: 1.0, sy: 1.0, ..Affine::default() },
+            (1.0, -0.5),
         );
+        let out = apply_transform([2.0, 4.0], &ctx);
+        assert_eq!(out, [3.0, 3.5]);
     }
 
     #[test]
-    fn apply_transform_affine_translate_applied_last_in_world_units() {
-        // After the canvas chain, affine.tx/ty add in world units (not
-        // canvas pixels). Sanity: v=0, ui=100, offset=50, cs=0.01, tx=7
-        // → canvas: 0*100=0, then 0*0.01 + 50*0.01 = 0.5, then +tx=7.5.
+    fn apply_transform_affine_translate_applied_last() {
+        // tx/ty add in world units AFTER the per-part scale + offset.
         let ctx = ctx_for_transform(
             Affine { tx: 7.0, ty: 0.0, ..Affine::default() },
-            100.0, (50.0, 0.0), 0.01,
+            (0.5, 0.0),
         );
         let out = apply_transform([0.0, 0.0], &ctx);
-        assert!((out[0] - 7.5).abs() < 1e-6, "{out:?}");
+        assert_eq!(out, [7.5, 0.0]);
     }
 
     #[test]
-    fn apply_transform_affine_scale_runs_before_canvas_chain() {
-        // sx=-1 (the only non-1 affine scale Silloutte1 uses) flips the
-        // input before the × ui_scale step. v=0.5 → ×-1 → -0.5 → ×100 → -50.
+    fn apply_transform_affine_negative_scale_flips_first() {
+        // sx=-1 flips the input axis before the offset+translate; the
+        // leaf's flip semantics now ride entirely on affine.sx/sy sign.
         let ctx = ctx_for_transform(
             Affine { sx: -1.0, ..Affine::default() },
-            100.0, (0.0, 0.0), 1.0,
+            (0.0, 0.0),
         );
         let out = apply_transform([0.5, 0.0], &ctx);
-        assert_eq!(out[0].to_bits(), (-50.0_f32).to_bits());
+        assert_eq!(out[0].to_bits(), (-0.5_f32).to_bits());
     }
 }

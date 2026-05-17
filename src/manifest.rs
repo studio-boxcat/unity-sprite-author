@@ -1,71 +1,33 @@
 // Unified `.tps.fab.json` manifest — the single supported schema.
 //
-// Tree-shaped, mirroring pspec (`tools/pspec` in meow-tower). Each `Tree` is
-// one authored output (a CSA-published Sprite or an SMA-published Mesh);
-// children are GameObjects whose transforms compose down the tree. The
-// parser produces the internal `fab::Combined` / `mesh_manifest::MeshCombined`
-// IR via `to_fab_combined` / `to_mesh_combined`.
+// Tree-shaped, mirroring pspec (`tools/pspec` in meow-tower). Each entry in
+// `combined[]` is one authored output (a CSA-published Sprite or an SMA-
+// published Mesh); children are GameObjects whose transforms compose down
+// the tree. `parse` → `to_fab_combined` / `to_mesh_combined` lowers into
+// the runtime IR (`fab::Combined` / `mesh_manifest::MeshCombined`).
 //
-// > **Related:** [[fab.md]], [[sma-migration.md]], pspec orientation
+// Schema, field tables, and the per-part transform formula live in
+// [[fab.md]]. The "why this collapse exists" rationale is in
+// [[fab.md#per-part-transform]] — don't duplicate here.
 //
-// JSON shape:
-//
-//   {
-//     "version": 1,
-//     "trees": [
-//       {
-//         "name": "Silloutte1",
-//         "scale": 0.01,                       // root's `scaleFactor` (CSA) or 1.0 (SMA)
-//         "mode": "ui",                      // or { "type":"sma", "fileId":…, "outputPath":…, "usedInCanvas":… }
-//         "children": [
-//           {
-//             "name": "Image",
-//             "pos": [0, -22.25],
-//             "sizeDelta": [212.5, 545],
-//             "pivot": [0.5, 0.5],
-//             "type":"polygon", "color":"32264DBD", "vertices":[[…]]
-//           },
-//           {
-//             "name": "B",
-//             "pos": [0, -294.75],
-//             "sizeDelta": [212.5, 17.5],
-//             "pivot": [0.5, 1],
-//             "type":"sprite", "sprite":"Mansion_…__B", "method":"MX"
-//           },
-//           …
-//         ]
-//       }
-//     ]
-//   }
-//
-// Defaults per node:
-//   pos    = [0, 0]
-//   sizeDelta = [0, 0]   (only matters for size-fitted methods; SMA leaves it 0)
-//   pivot  = [0.5, 0.5]
-//   scale  = 1.0         (uniform; per-axis `[x, y]` for X/Y flip)
-//   children = []
-//   graphic = none (interior nodes carry only a transform)
-//
-// Defaults per graphic:
-//   sprite:  method = "ID", uiScale = 100, drawMode = "simple"
-//   polygon: triangles = ear-clip
-//   sprite-renderer (SMA): drawMode = "simple", flipX/flipY = false
-
-#![allow(dead_code)]
+// > **Related:** [[fab.md]], [[sma-migration.md]]
 
 use std::collections::HashSet;
 use std::fmt;
 
 #[derive(Debug, PartialEq)]
 pub struct Manifest {
+    /// One entry per authored output sprite/mesh (CSA Sprite or SMA Mesh).
+    /// Field is `combined` in JSON — each entry is a "combined" of multiple
+    /// atlas parts. The in-memory `Combined` name doubles as the runtime IR
+    /// type elsewhere (`fab::Combined`), so the manifest layer wraps it in
+    /// `manifest::Tree` to stay focused on the authoring shape.
     pub trees: Vec<Tree>,
 }
 
 #[derive(Debug, PartialEq)]
 pub struct Tree {
     pub name: String,
-    /// CSA `_scaleFactor` (0.01 typical) or SMA world-unit (1.0 typical).
-    pub scale: f32,
     pub output: Output,
     pub root: Node,
 }
@@ -86,15 +48,39 @@ pub enum Output {
     },
 }
 
+impl Output {
+    /// Mode-implicit canvas factor applied at the bridge seam (`to_fab_combined`
+    /// / `to_mesh_combined`) to translate canvas-pixel `pos` into world units.
+    /// Single source of truth — keeps the c23474b2 "silent default" class of
+    /// regressions impossible (no scattered `match mode { … 0.01 … }` literals).
+    pub fn canvas_scale_implicit(&self) -> f32 {
+        match self {
+            Output::Csa => 0.01,
+            Output::Sma { .. } => 1.0,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub struct Node {
     pub name: String,
     pub pos: [f32; 2],
-    pub size_delta: [f32; 2],
-    pub pivot: [f32; 2],
+    /// `None` for non-size-respecting leaves. For sprite leaves with a
+    /// size-fitted method, `None` ⇒ default to the sprite's natural rect
+    /// size at `combine::build_combined`. SpriteRenderer + tiled draw mode
+    /// also stores its world-unit draw rect here.
+    pub size: Option<[f32; 2]>,
+    /// `None` ⇒ defer to the runtime default. For sprite leaves the bridge
+    /// passes this through as `Part::AtlasSprite.part_pivot = None`, which
+    /// `combine::build_combined` resolves against the sprite's tps `pivotPoint`.
+    /// For container nodes (no graphic) and the synthesized root the cascade
+    /// uses `[0.5, 0.5]` as the cascade default.
+    pub pivot: Option<[f32; 2]>,
     /// Per-axis uniform/non-uniform scale. `[1, 1]` = identity.
     pub scale: [f32; 2],
-    pub rot_deg: f32,
+    /// Counter-clockwise rotation around Z in degrees (Unity UI canvas
+    /// convention, Y-up). Matches `apply_transform`'s 2D rotation matrix.
+    pub rot_deg_ccw: f32,
     pub graphic: Option<Graphic>,
     pub children: Vec<Node>,
 }
@@ -102,10 +88,11 @@ pub struct Node {
 #[derive(Debug, PartialEq)]
 pub enum Graphic {
     /// UIIcon / UISlice (CSA hierarchy) or atlas-sprite under SMA.
+    /// The historical UIIcon `_scaleFactor` (× CSA `_scaleFactor`) is folded
+    /// into the node's `scale` magnitude — there is no per-leaf scale knob.
     Sprite {
         sprite: String,
         method: SpriteMethod,
-        ui_scale: f32,
         border_mult: f32,
         flip_x: bool,
         flip_y: bool,
@@ -119,10 +106,10 @@ pub enum Graphic {
         triangles: Option<Vec<u16>>,
     },
     /// SMA SpriteRenderer leaf — different VBO layout, tile mode option.
+    /// World-unit draw rect lives in `Node.size` (tiled mode only).
     SpriteRenderer {
         sprite: String,
         draw_mode: DrawMode,
-        size: Option<[f32; 2]>,
     },
 }
 
@@ -215,20 +202,15 @@ pub fn parse(json: &str) -> Result<Manifest, ManifestError> {
         let root = Node {
             name: String::new(),
             pos: [0.0, 0.0],
-            size_delta: [0.0, 0.0],
-            pivot: [0.5, 0.5],
+            size: None,
+            pivot: None,
             scale: [1.0, 1.0],
-            rot_deg: 0.0,
+            rot_deg_ccw: 0.0,
             graphic: None,
             children,
         };
-        // Default tree-level scale is 1.0 across modes. CSA prefabs that
-        // need the historical 0.01 canvas factor declare `scale: 0.01`
-        // explicitly. (Earlier mode-dependent default was confusing —
-        // unify to a single neutral default.)
         trees.push(Tree {
             name: t.name,
-            scale: t.scale.unwrap_or(1.0),
             output,
             root,
         });
@@ -292,10 +274,10 @@ fn translate_node(tree: &str, raw: raw::Node) -> Result<Node, ManifestError> {
     Ok(Node {
         name: raw.name.unwrap_or_default(),
         pos: raw.pos.unwrap_or([0.0, 0.0]),
-        size_delta: raw.size_delta.unwrap_or([0.0, 0.0]),
-        pivot: raw.pivot.unwrap_or([0.5, 0.5]),
+        size: raw.size,
+        pivot: raw.pivot,
         scale,
-        rot_deg: raw.rot_deg.unwrap_or(0.0),
+        rot_deg_ccw: raw.rot_deg_ccw.unwrap_or(0.0),
         graphic,
         children,
     })
@@ -319,7 +301,6 @@ fn translate_graphic_flat(tree: &str, kind: &str, raw: &raw::Node) -> Result<Gra
             Ok(Graphic::Sprite {
                 sprite,
                 method,
-                ui_scale: raw.ui_scale.unwrap_or(100.0),
                 border_mult: raw.border_mult.unwrap_or(1.0),
                 flip_x: raw.flip_x.unwrap_or(false),
                 flip_y: raw.flip_y.unwrap_or(false),
@@ -365,7 +346,6 @@ fn translate_graphic_flat(tree: &str, kind: &str, raw: &raw::Node) -> Result<Gra
             Ok(Graphic::SpriteRenderer {
                 sprite,
                 draw_mode,
-                size: raw.size,
             })
         }
         _ => Err(ManifestError::GraphicShape {
@@ -430,19 +410,21 @@ mod raw {
     pub struct Manifest {
         pub version: u32,
         #[serde(default)]
+        // JSON key is `combined` (each entry IS a fabricated combined sprite).
+        // Internal Rust name stays `trees` to avoid colliding with `fab::Combined`,
+        // the lowered runtime IR — see `manifest::Manifest.trees` docs.
+        #[serde(rename = "combined")]
         pub trees: Vec<Tree>,
     }
 
-    /// Per-tree input. Replaces the old `{ output, root: { children } }`
-    /// shape with flat `{ mode, children }` plus optional SMA fields at
-    /// the tree level. `scale` is in 0..1 range (CSA canvasScale: 0.01;
-    /// SMA worldScale: 1.0).
+    /// Per-tree input. Flat `{ mode, children }` with optional SMA fields at
+    /// the tree level. There is no tree-level `scale` — the canvas factor
+    /// is mode-implicit (see `Output::canvas_scale_implicit`).
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
     pub struct Tree {
         pub name: String,
         pub mode: String, // "ui" | "sma-canvas" | "sma-renderer"
-        pub scale: Option<f32>,
         // SMA fields — required when mode starts with "sma-", rejected otherwise.
         pub file_id: Option<i64>,
         pub output_path: Option<String>,
@@ -461,10 +443,13 @@ mod raw {
         // Transform fields:
         pub name: Option<String>,
         pub pos: Option<[f32; 2]>,
-        pub size_delta: Option<[f32; 2]>,
+        pub size: Option<[f32; 2]>,
         pub pivot: Option<[f32; 2]>,
         pub scale: Option<ScaleSpec>,
-        pub rot_deg: Option<f32>,
+        // Force `rotDegCCW` (all-caps CCW) — serde's camelCase would lower
+        // the second C, giving `rotDegCcw` which buries the abbreviation.
+        #[serde(rename = "rotDegCCW")]
+        pub rot_deg_ccw: Option<f32>,
 
         // Graphic discriminator + fields:
         #[serde(rename = "type")]
@@ -473,7 +458,6 @@ mod raw {
         pub sprite: Option<String>,
         // sprite only
         pub method: Option<String>,
-        pub ui_scale: Option<f32>,
         pub border_mult: Option<f32>,
         pub flip_x: Option<bool>,
         pub flip_y: Option<bool>,
@@ -481,9 +465,8 @@ mod raw {
         pub color: Option<String>,
         pub vertices: Option<Vec<[f32; 2]>>,
         pub triangles: Option<Vec<u16>>,
-        // sprite-renderer
+        // sprite-renderer (consumes `size` above when drawMode=tiled)
         pub draw_mode: Option<String>,
-        pub size: Option<[f32; 2]>,
 
         #[serde(default)]
         pub children: Vec<Node>,
@@ -515,13 +498,16 @@ pub struct ResolvedLeaf<'a> {
     pub world_pos: [f32; 2],
     /// Composed per-axis scale (sign carries flip).
     pub world_scale: [f32; 2],
-    /// Composed rotation in degrees (sum of node `rot_deg` along the path).
-    pub world_rot_deg: f32,
-    /// The leaf node's `size_delta` (untransformed). Size-fitted methods
-    /// (`R*`, `MX_R*`, `MY_R*`, tilers) consume this directly.
-    pub size_delta: [f32; 2],
-    /// The leaf node's `pivot` (untransformed).
-    pub pivot: [f32; 2],
+    /// Composed rotation in degrees (sum of node `rot_deg_ccw` along the path).
+    pub world_rot_deg_ccw: f32,
+    /// The leaf node's authored `size` (untransformed). `None` ⇒ runtime
+    /// uses the sprite's natural rect (sprite leaves, size-fitted methods)
+    /// or the field is irrelevant (native-scale sprite, polygon).
+    pub size: Option<[f32; 2]>,
+    /// The leaf node's authored `pivot` (untransformed). `None` ⇒ runtime
+    /// uses the sprite's tps pivotPoint (sprite leaves) or `(0.5, 0.5)`
+    /// (polygon hardcode); see `Part::AtlasSprite.part_pivot`.
+    pub pivot: Option<[f32; 2]>,
     pub graphic: &'a Graphic,
 }
 
@@ -529,7 +515,7 @@ pub struct ResolvedLeaf<'a> {
 /// leaves end up with root-local coords. Mirrors Unity's RectTransform
 /// cascade for the common center-anchored case — each child's world pos is
 /// its parent's world pos plus a center-of-rect offset
-/// `(0.5 − parent.pivot) × parent.size_delta` (the "Body shift" seen on
+/// `(0.5 − parent.pivot) × parent.size` (the "Body shift" seen on
 /// AlbumSticker_Ghost1), plus the child's own anchored `pos`. Returns
 /// leaves in DFS order — same order the previous flat `parts: [...]`
 /// schema declared.
@@ -552,16 +538,17 @@ fn walk_node<'a>(
     parent_world_pos: [f32; 2],
     parent_world_scale: [f32; 2],
     parent_world_rot: f32,
-    parent_size_delta: [f32; 2],
+    parent_size: [f32; 2],
     parent_pivot: [f32; 2],
     out: &mut Vec<ResolvedLeaf<'a>>,
 ) {
     // Center offset: where parent's rect-center sits, relative to parent's
     // local origin (which is the pivot point in Unity's RectTransform). Only
-    // applies when the node has a parent with a meaningful size_delta.
+    // applies when the parent has a meaningful size; absent size = (0, 0)
+    // collapses the offset to zero (correct for pure-transform containers).
     let parent_center_offset = [
-        (0.5 - parent_pivot[0]) * parent_size_delta[0],
-        (0.5 - parent_pivot[1]) * parent_size_delta[1],
+        (0.5 - parent_pivot[0]) * parent_size[0],
+        (0.5 - parent_pivot[1]) * parent_size[1],
     ];
     let world_pos = [
         parent_world_pos[0] + parent_center_offset[0] + node.pos[0],
@@ -571,26 +558,32 @@ fn walk_node<'a>(
         parent_world_scale[0] * node.scale[0],
         parent_world_scale[1] * node.scale[1],
     ];
-    let world_rot = parent_world_rot + node.rot_deg;
+    let world_rot = parent_world_rot + node.rot_deg_ccw;
 
     if let Some(g) = &node.graphic {
         out.push(ResolvedLeaf {
             world_pos,
             world_scale,
-            world_rot_deg: world_rot,
-            size_delta: node.size_delta,
+            world_rot_deg_ccw: world_rot,
+            size: node.size,
             pivot: node.pivot,
             graphic: g,
         });
     }
+    // Cascade-default container pivots to (0.5, 0.5) — there's no
+    // sprite-pivot fallback at the GameObject level for pure-transform
+    // nodes. (Sprite-leaf children get their own pivot resolved
+    // downstream from the tps entry.)
+    let cascade_pivot = node.pivot.unwrap_or([0.5, 0.5]);
+    let cascade_size = node.size.unwrap_or([0.0, 0.0]);
     for c in &node.children {
         walk_node(
             c,
             world_pos,
             world_scale,
             world_rot,
-            node.size_delta,
-            node.pivot,
+            cascade_size,
+            cascade_pivot,
             out,
         );
     }
@@ -610,8 +603,8 @@ pub enum BridgeError {
     /// under SMA, or sprite-renderer under CSA).
     GraphicMismatch { tree: String, reason: &'static str },
     /// Method requires `size` (R*/MX_R*/MY_R*/MXY_R*/TX*/TY*) but the
-    /// node's `size_delta` is zero. Manifests must declare `sizeDelta`
-    /// on size-fitted UISlice leaves.
+    /// node's `size` is zero. Either omit `size` (defaults to the
+    /// sprite's natural rect) or pass a non-zero `[w, h]`.
     ZeroSizeForSliceMethod { tree: String, sprite: String },
 }
 
@@ -627,7 +620,7 @@ impl fmt::Display for BridgeError {
             }
             Self::ZeroSizeForSliceMethod { tree, sprite } => write!(
                 f,
-                "tree {tree:?} sprite {sprite:?}: size-fitted method requires non-zero size_delta"
+                "tree {tree:?} sprite {sprite:?}: size-fitted method requires non-zero size"
             ),
         }
     }
@@ -637,6 +630,11 @@ impl std::error::Error for BridgeError {}
 
 /// Convert a `Tree` with `output: "csa"` into a `fab::Combined`, the
 /// flat-shape struct the existing `combine::build_combined` consumes.
+///
+/// The mode-implicit canvas factor (`Output::canvas_scale_implicit`) is
+/// applied here at one seam: each leaf's anchored `pos` (canvas-pixel
+/// units) is pre-multiplied so `Part.offset` lands in world units. The
+/// runtime per-vert chain therefore drops `× canvas_scale` entirely.
 pub fn to_fab_combined(tree: &Tree) -> Result<crate::fab::Combined, BridgeError> {
     use crate::fab;
 
@@ -646,46 +644,57 @@ pub fn to_fab_combined(tree: &Tree) -> Result<crate::fab::Combined, BridgeError>
             expected: "csa",
         });
     }
+    let cs = tree.output.canvas_scale_implicit();
 
     let leaves = walk(tree);
     let mut parts: Vec<fab::Part> = Vec::with_capacity(leaves.len());
     for leaf in leaves {
+        let offset = [leaf.world_pos[0] * cs, leaf.world_pos[1] * cs];
+        let affine = fab::Affine {
+            tx: 0.0,
+            ty: 0.0,
+            sx: leaf.world_scale[0],
+            sy: leaf.world_scale[1],
+            rot_deg_ccw: leaf.world_rot_deg_ccw,
+        };
         match leaf.graphic {
             Graphic::Sprite {
                 sprite,
                 method,
-                ui_scale,
                 border_mult,
                 ..
             } => {
                 let fab_method = map_method(*method);
-                let size = if fab_method.requires_size() {
-                    let sd = leaf.size_delta;
-                    if sd[0] == 0.0 || sd[1] == 0.0 {
+                // Pre-scale `size` by canvas_scale_implicit, mirroring the
+                // `offset` pattern. The slice/tile mesh-gen math in
+                // `combine::slice_*` divides by sprite_bound_size (already
+                // in world units), so target_size must be in world units
+                // too — without pre-scaling, CSA leaves emit verts 100×
+                // too big (the regression class this refactor is fixing).
+                //
+                // Strictly-size-fitted methods (R*, MX_R*, MY_R*, MXY_R*,
+                // TX, TY, TX_MC3) reject explicit zero — slice math would
+                // divide by zero. MX/MY/MXY tolerate a zero axis: CSA-era
+                // prefabs used `[0, h]` with stretch anchors that the rlib
+                // doesn't resolve, but the value is a faithful echo.
+                let size = match leaf.size {
+                    Some([w, h]) if fab_method.requires_size() && (w == 0.0 || h == 0.0) => {
                         return Err(BridgeError::ZeroSizeForSliceMethod {
                             tree: tree.name.clone(),
                             sprite: sprite.clone(),
                         });
                     }
-                    Some((sd[0], sd[1]))
-                } else {
-                    None
+                    Some([w, h]) => Some((w * cs, h * cs)),
+                    None => None,
                 };
                 parts.push(fab::Part::AtlasSprite {
                     sprite: sprite.clone(),
                     method: fab_method,
                     size,
-                    part_pivot: leaf.pivot,
+                    part_pivot: leaf.pivot,  // None ⇒ default to tps pivotPoint at build_combined
                     border_mult: *border_mult,
-                    affine: fab::Affine {
-                        tx: 0.0,
-                        ty: 0.0,
-                        sx: leaf.world_scale[0],
-                        sy: leaf.world_scale[1],
-                        rot_deg: leaf.world_rot_deg,
-                    },
-                    ui_scale: *ui_scale,
-                    offset: leaf.world_pos,
+                    affine,
+                    offset,
                 });
             }
             Graphic::Polygon {
@@ -697,18 +706,8 @@ pub fn to_fab_combined(tree: &Tree) -> Result<crate::fab::Combined, BridgeError>
                     polygon_sprite: polygon_sprite.clone(),
                     vertices: vertices.clone(),
                     triangles: triangles.clone(),
-                    affine: fab::Affine {
-                        tx: 0.0,
-                        ty: 0.0,
-                        sx: leaf.world_scale[0],
-                        sy: leaf.world_scale[1],
-                        rot_deg: leaf.world_rot_deg,
-                    },
-                    // UISolid under CanvasSpriteAuthor takes no per-part
-                    // scale-factor; ui_scale = 1.0 keeps the canvas-chain
-                    // op order matching the matrix-style emit.
-                    ui_scale: 1.0,
-                    offset: leaf.world_pos,
+                    affine,
+                    offset,
                 });
             }
             Graphic::SpriteRenderer { .. } => {
@@ -724,7 +723,6 @@ pub fn to_fab_combined(tree: &Tree) -> Result<crate::fab::Combined, BridgeError>
         name: tree.name.clone(),
         pivot: [0.5, 0.5],
         border: [0.0; 4],
-        canvas_scale: tree.scale,
         parts,
     })
 }
@@ -786,15 +784,20 @@ pub fn to_mesh_combined(
         }
     };
 
+    // Mode-implicit canvas factor — required to be 1.0 for SMA today
+    // (SpriteRenderer.size is already in world units). Asserted to keep the
+    // single-seam invariant honest: a future SMA mode introducing cs ≠ 1.0
+    // would have to thread it through here too.
+    debug_assert_eq!(
+        tree.output.canvas_scale_implicit(), 1.0,
+        "to_mesh_combined assumes SMA canvas_scale_implicit == 1.0",
+    );
+
     let leaves = walk(tree);
     let mut renderers: Vec<mm::MeshRenderer> = Vec::with_capacity(leaves.len());
     for leaf in leaves {
-        let g = match leaf.graphic {
-            Graphic::SpriteRenderer {
-                sprite,
-                draw_mode,
-                size,
-            } => (sprite, draw_mode, size),
+        let (sprite, draw_mode) = match leaf.graphic {
+            Graphic::SpriteRenderer { sprite, draw_mode } => (sprite, draw_mode),
             _ => {
                 return Err(BridgeError::GraphicMismatch {
                     tree: tree.name.clone(),
@@ -802,16 +805,18 @@ pub fn to_mesh_combined(
                 })
             }
         };
-        let (sprite, draw_mode, size) = g;
+        // SpriteRenderer.size lives on the node (`leaf.size`) — tiled mode
+        // consumes a world-unit draw rect; simple mode leaves it unset.
+        let size = leaf.size;
         let dm = match draw_mode {
             DrawMode::Simple => mm::DrawMode::Simple,
             DrawMode::Tiled => mm::DrawMode::Tiled,
         };
         // localToRoot = composed 2D affine row-major [m00, m01, m02, m03, m10, m11, m12, m13].
         // The walker gives us world_scale (composed across ancestors), world_pos
-        // (composed translation), and world_rot_deg (composed rotation). Build
+        // (composed translation), and world_rot_deg_ccw (composed rotation). Build
         // the matrix accordingly. Flip is folded into world_scale's sign.
-        let (sin_t, cos_t) = leaf.world_rot_deg.to_radians().sin_cos();
+        let (sin_t, cos_t) = leaf.world_rot_deg_ccw.to_radians().sin_cos();
         let m00 = cos_t * leaf.world_scale[0];
         let m01 = -sin_t * leaf.world_scale[1];
         let m10 = sin_t * leaf.world_scale[0];
@@ -829,7 +834,7 @@ pub fn to_mesh_combined(
             flip_x: false,
             flip_y: false,
             draw_mode: dm,
-            size: *size,
+            size,
             local_to_root: l2r,
         });
     }
@@ -854,7 +859,7 @@ mod tests {
         let m = parse(
             r#"{
               "version": 1,
-              "trees": [{
+              "combined": [{
                 "name": "X",
                 "mode": "ui",
                 "children": [
@@ -867,14 +872,11 @@ mod tests {
         assert_eq!(m.trees.len(), 1);
         let t = &m.trees[0];
         assert_eq!(t.output, Output::Csa);
-        // Tree-level scale defaults to 1.0 across modes; CSA prefabs that
-        // need the historical canvasScale declare `scale: 0.01` explicitly.
-        assert_eq!(t.scale, 1.0);
+        assert_eq!(t.output.canvas_scale_implicit(), 0.01);
         assert_eq!(t.root.children.len(), 1);
         match &t.root.children[0].graphic.as_ref().unwrap() {
-            Graphic::Sprite { method, ui_scale, .. } => {
+            Graphic::Sprite { method, .. } => {
                 assert_eq!(*method, SpriteMethod::Id);
-                assert_eq!(*ui_scale, 100.0);
             }
             _ => panic!(),
         }
@@ -883,7 +885,7 @@ mod tests {
     #[test]
     fn parse_polygon_color_6_hex() {
         let m = parse(
-            r#"{ "version": 1, "trees": [{
+            r#"{ "version": 1, "combined": [{
               "name": "X", "mode": "ui",
               "children": [{
                 "type":"polygon", "color":"32264D", "vertices":[[0,0],[1,0],[1,1]]
@@ -900,7 +902,7 @@ mod tests {
     #[test]
     fn parse_polygon_color_8_hex() {
         let m = parse(
-            r#"{ "version": 1, "trees": [{
+            r#"{ "version": 1, "combined": [{
               "name": "X", "mode": "ui",
               "children": [{
                 "type":"polygon", "color":"DEADBEEF", "vertices":[[0,0],[1,0],[1,1]]
@@ -917,7 +919,7 @@ mod tests {
     #[test]
     fn parse_sma_output() {
         let m = parse(
-            r#"{ "version": 1, "trees": [{
+            r#"{ "version": 1, "combined": [{
               "name": "X",
               "mode":"sma-renderer", "fileId":-1234, "outputPath":"!Output/X.asset",
               "children": [{
@@ -936,10 +938,10 @@ mod tests {
             _ => panic!(),
         }
         match &m.trees[0].root.children[0].graphic.as_ref().unwrap() {
-            Graphic::SpriteRenderer { sprite, draw_mode, size } => {
+            Graphic::SpriteRenderer { sprite, draw_mode } => {
                 assert_eq!(sprite, "foo");
                 assert_eq!(*draw_mode, DrawMode::Simple);
-                assert!(size.is_none());
+                assert!(m.trees[0].root.children[0].size.is_none());
             }
             _ => panic!(),
         }
@@ -948,7 +950,7 @@ mod tests {
     #[test]
     fn parse_scale_uniform_and_per_axis() {
         let m = parse(
-            r#"{ "version": 1, "trees": [{
+            r#"{ "version": 1, "combined": [{
               "name": "X", "mode": "ui",
               "children": [
                 { "scale": 2.5, "type":"sprite","sprite":"a" },
@@ -965,12 +967,12 @@ mod tests {
     #[test]
     fn parse_nested_children() {
         let m = parse(
-            r#"{ "version": 1, "trees": [{
+            r#"{ "version": 1, "combined": [{
               "name": "X", "mode": "ui",
               "children": [{
                 "name": "Body",
                 "pivot": [0.5, 0.4515571],
-                "sizeDelta": [154, 181],
+                "size": [154, 181],
                 "type":"sprite","sprite":"body",
                 "children": [{
                   "name": "SP",
@@ -983,7 +985,7 @@ mod tests {
         .unwrap();
         let body = &m.trees[0].root.children[0];
         assert_eq!(body.name, "Body");
-        assert_eq!(body.pivot, [0.5, 0.4515571]);
+        assert_eq!(body.pivot, Some([0.5, 0.4515571]));
         assert_eq!(body.children.len(), 1);
         let sp = &body.children[0];
         assert_eq!(sp.pos, [-69.8, -36.7]);
@@ -991,14 +993,14 @@ mod tests {
 
     #[test]
     fn parse_rejects_unknown_top_level_field() {
-        let m = parse(r#"{ "version": 1, "trees": [], "extra": 0 }"#);
+        let m = parse(r#"{ "version": 1, "combined": [], "extra": 0 }"#);
         assert!(matches!(m, Err(ManifestError::Json(_))));
     }
 
     #[test]
     fn parse_rejects_bad_color() {
         let m = parse(
-            r#"{ "version":1, "trees":[{
+            r#"{ "version":1, "combined":[{
               "name":"X", "mode": "ui",
               "children": [{
                 "type":"polygon","color":"NOPE","vertices":[[0,0],[1,0],[1,1]]
@@ -1011,7 +1013,7 @@ mod tests {
     #[test]
     fn parse_rejects_unknown_method() {
         let m = parse(
-            r#"{ "version":1, "trees":[{
+            r#"{ "version":1, "combined":[{
               "name":"X", "mode": "ui",
               "children": [{
                 "type":"sprite","sprite":"a","method":"BOGUS"
@@ -1024,7 +1026,7 @@ mod tests {
     #[test]
     fn parse_rejects_sma_as_tag() {
         let m = parse(
-            r#"{ "version":1, "trees":[{
+            r#"{ "version":1, "combined":[{
               "name":"X", "mode": "sma-tag",
               "children": [{ "type":"spriteRenderer","sprite":"a" }]
             }]}"#,
@@ -1039,7 +1041,7 @@ mod tests {
     #[test]
     fn walk_single_root_child_at_origin() {
         let m = parse_single(
-            r#"{ "version":1, "trees":[{
+            r#"{ "version":1, "combined":[{
               "name":"X", "mode": "ui",
               "children":[{"type":"sprite","sprite":"a"}]
             }]}"#,
@@ -1053,7 +1055,7 @@ mod tests {
     #[test]
     fn walk_child_translated() {
         let m = parse_single(
-            r#"{ "version":1, "trees":[{
+            r#"{ "version":1, "combined":[{
               "name":"X", "mode": "ui",
               "children":[
                 {"pos":[10,20],"type":"sprite","sprite":"a"}
@@ -1075,12 +1077,12 @@ mod tests {
         //                     = 8.768165 - 36.7
         //                     ≈ -27.931835
         let m = parse_single(
-            r#"{ "version":1, "trees":[{
+            r#"{ "version":1, "combined":[{
               "name":"X", "mode": "ui",
               "children":[{
                 "name":"Body",
                 "pivot":[0.5, 0.4515571],
-                "sizeDelta":[154, 181],
+                "size":[154, 181],
                 "type":"sprite","sprite":"body",
                 "children":[{
                   "name":"SP",
@@ -1110,7 +1112,7 @@ mod tests {
     #[test]
     fn walk_composes_scale_through_descendants() {
         let m = parse_single(
-            r#"{ "version":1, "trees":[{
+            r#"{ "version":1, "combined":[{
               "name":"X", "mode": "ui",
               "children":[{
                 "scale":[-1, 1],
@@ -1132,7 +1134,7 @@ mod tests {
         // A pure-transform "group" node with no `graphic` doesn't produce
         // a leaf; only its descendants with graphics do.
         let m = parse_single(
-            r#"{ "version":1, "trees":[{
+            r#"{ "version":1, "combined":[{
               "name":"X", "mode": "ui",
               "children":[{
                 "pos":[5, 10],
@@ -1151,7 +1153,7 @@ mod tests {
     #[test]
     fn bridge_to_fab_csa_minimal() {
         let m = parse_single(
-            r#"{ "version":1, "trees":[{
+            r#"{ "version":1, "combined":[{
               "name":"X","mode": "ui",
               "children":[
                 {"type":"sprite","sprite":"foo"}
@@ -1160,15 +1162,13 @@ mod tests {
         );
         let c = to_fab_combined(&m.trees[0]).unwrap();
         assert_eq!(c.name, "X");
-        // Default canvas_scale is 1.0 — CSA prefabs set 0.01 explicitly.
-        assert_eq!(c.canvas_scale, 1.0);
         assert_eq!(c.parts.len(), 1);
         match &c.parts[0] {
-            crate::fab::Part::AtlasSprite { sprite, method, ui_scale, size, offset, .. } => {
+            crate::fab::Part::AtlasSprite { sprite, method, size, offset, .. } => {
                 assert_eq!(sprite, "foo");
                 assert_eq!(*method, crate::fab::Method::Id);
-                assert_eq!(*ui_scale, 100.0);
                 assert!(size.is_none());
+                // Origin leaf under CSA: pos×0.01 = (0,0) regardless.
                 assert_eq!(*offset, [0.0, 0.0]);
             }
             _ => panic!(),
@@ -1178,8 +1178,8 @@ mod tests {
     #[test]
     fn bridge_to_fab_polygon_with_offset() {
         let m = parse_single(
-            r#"{ "version":1, "trees":[{
-              "name":"X","mode": "ui","scale":0.01,
+            r#"{ "version":1, "combined":[{
+              "name":"X","mode": "ui",
               "children":[{
                 "pos":[10, 20],
                 "type":"polygon","color":"32264D","vertices":[[0,0],[1,0],[1,1]]
@@ -1187,11 +1187,13 @@ mod tests {
             }]}"#,
         );
         let c = to_fab_combined(&m.trees[0]).unwrap();
-        assert_eq!(c.canvas_scale, 0.01);
         match &c.parts[0] {
             crate::fab::Part::Polygon { polygon_sprite, offset, .. } => {
                 assert_eq!(polygon_sprite, "Color_32264D");
-                assert_eq!(*offset, [10.0, 20.0]);
+                // Mode-implicit canvas_scale (CSA=0.01) pre-applied: 10×0.01 ≈ 0.1
+                // (one ULP off in f32; 0.01 is non-representable binary fraction).
+                assert!((offset[0] - 0.1).abs() < 1e-6, "{:?}", offset);
+                assert!((offset[1] - 0.2).abs() < 1e-6, "{:?}", offset);
             }
             _ => panic!(),
         }
@@ -1201,7 +1203,7 @@ mod tests {
     fn bridge_propagates_scale_as_sx_sy() {
         // scale: [-1, 1] should flow into Affine.sx/sy.
         let m = parse_single(
-            r#"{ "version":1, "trees":[{
+            r#"{ "version":1, "combined":[{
               "name":"X","mode": "ui",
               "children":[
                 {"scale":[-1,1],"type":"sprite","sprite":"a"}
@@ -1219,12 +1221,15 @@ mod tests {
     }
 
     #[test]
-    fn bridge_size_fitted_method_takes_size_delta() {
+    fn bridge_size_fitted_method_takes_size_delta_world_units() {
+        // CSA mode pre-scales canvas-pixel `size` by canvas_scale_implicit
+        // (= 0.01) so the slice mesh-gen math runs in world units. JSON
+        // `[200, 150]` lands on the Part as `(2.0, 1.5)`.
         let m = parse_single(
-            r#"{ "version":1, "trees":[{
+            r#"{ "version":1, "combined":[{
               "name":"X","mode": "ui",
               "children":[{
-                "sizeDelta":[200, 150],
+                "size":[200, 150],
                 "type":"sprite","sprite":"a","method":"R3C3"
               }]
             }]}"#,
@@ -1233,19 +1238,22 @@ mod tests {
         match &c.parts[0] {
             crate::fab::Part::AtlasSprite { method, size, .. } => {
                 assert_eq!(*method, crate::fab::Method::R3c3);
-                assert_eq!(*size, Some((200.0, 150.0)));
+                assert_eq!(*size, Some((2.0, 1.5)));
             }
             _ => panic!(),
         }
     }
 
     #[test]
-    fn bridge_rejects_size_fitted_with_zero_size() {
+    fn bridge_rejects_size_fitted_with_explicit_zero_size() {
+        // Explicit [0, 0] is still rejected (slice methods would divide by
+        // zero). Missing size defaults to the sprite's natural rect in
+        // build_combined — see the v2_schema integration test.
         let m = parse_single(
-            r#"{ "version":1, "trees":[{
+            r#"{ "version":1, "combined":[{
               "name":"X","mode": "ui",
               "children":[
-                {"type":"sprite","sprite":"a","method":"R3C3"}
+                {"type":"sprite","sprite":"a","method":"R3C3","size":[0,0]}
               ]
             }]}"#,
         );
@@ -1256,7 +1264,7 @@ mod tests {
     #[test]
     fn bridge_rejects_sprite_renderer_in_csa() {
         let m = parse_single(
-            r#"{ "version":1, "trees":[{
+            r#"{ "version":1, "combined":[{
               "name":"X","mode": "ui",
               "children":[
                 {"type":"spriteRenderer","sprite":"a"}
@@ -1270,7 +1278,7 @@ mod tests {
     #[test]
     fn bridge_rejects_sma_tree_into_fab_adapter() {
         let m = parse_single(
-            r#"{ "version":1, "trees":[{
+            r#"{ "version":1, "combined":[{
               "name":"X",
               "mode":"sma-canvas", "fileId":1,"outputPath":"o.asset",
               "children":[{"type":"spriteRenderer","sprite":"a"}]
@@ -1283,7 +1291,7 @@ mod tests {
     #[test]
     fn bridge_to_mesh_minimal_simple() {
         let m = parse_single(
-            r#"{ "version":1, "trees":[{
+            r#"{ "version":1, "combined":[{
               "name":"X",
               "mode":"sma-canvas", "fileId":-1234,"outputPath":"o.asset",
               "children":[
@@ -1307,7 +1315,7 @@ mod tests {
     #[test]
     fn bridge_to_mesh_translation_into_l2r() {
         let m = parse_single(
-            r#"{ "version":1, "trees":[{
+            r#"{ "version":1, "combined":[{
               "name":"X",
               "mode":"sma-renderer", "fileId":1,"outputPath":"o.asset",
               "children":[
@@ -1327,7 +1335,7 @@ mod tests {
         // The bridge folds it into matrix m00 = -1, m11 = 1, and clears the
         // separate flip_x/flip_y bits so mesh_emit doesn't double-apply.
         let m = parse_single(
-            r#"{ "version":1, "trees":[{
+            r#"{ "version":1, "combined":[{
               "name":"X",
               "mode":"sma-renderer", "fileId":1,"outputPath":"o.asset",
               "children":[
@@ -1346,7 +1354,7 @@ mod tests {
     #[test]
     fn bridge_to_mesh_tiled_threads_size() {
         let m = parse_single(
-            r#"{ "version":1, "trees":[{
+            r#"{ "version":1, "combined":[{
               "name":"X",
               "mode":"sma-renderer", "fileId":1,"outputPath":"o.asset",
               "children":[
@@ -1363,7 +1371,7 @@ mod tests {
     #[test]
     fn bridge_to_mesh_rejects_csa_tree() {
         let m = parse_single(
-            r#"{ "version":1, "trees":[{
+            r#"{ "version":1, "combined":[{
               "name":"X","mode": "ui",
               "children":[{"type":"sprite","sprite":"a"}]
             }]}"#,
@@ -1375,7 +1383,7 @@ mod tests {
     #[test]
     fn bridge_to_mesh_rejects_polygon_in_sma() {
         let m = parse_single(
-            r#"{ "version":1, "trees":[{
+            r#"{ "version":1, "combined":[{
               "name":"X",
               "mode":"sma-canvas", "fileId":1,"outputPath":"o.asset",
               "children":[
@@ -1390,7 +1398,7 @@ mod tests {
     #[test]
     fn parse_rejects_duplicate_tree_name() {
         let m = parse(
-            r#"{ "version":1, "trees":[
+            r#"{ "version":1, "combined":[
               {"name":"X","mode": "ui","children":[{"type":"sprite","sprite":"a"}]},
               {"name":"X","mode": "ui","children":[{"type":"sprite","sprite":"b"}]}
             ]}"#,

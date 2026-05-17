@@ -24,17 +24,20 @@ non-origin CSA roots). With `rootAnchored` gone, any CSA tree whose root
 sits at non-`(0, 0)` drifts ~1 ULP per vertex from Unity's emit. Future
 fixtures should pin their root at origin in the prefab.
 
-## Manifest authoring recipe (v3)
+## Manifest authoring recipe
 
-- One `trees[]` entry per published sprite. `mode: "ui"` for CSA.
-- Set `scale: 0.01` to mirror `CanvasSpriteAuthor._scaleFactor`. Default
-  is `1.0` (SpriteRenderer / Box prefab path).
-- Each `children[]` node carries `pos`, `sizeDelta`, `pivot`, optional
-  `scale` (per-axis flip via `[-1, 1]`), and a `type` discriminator.
-- UIIcon → `{ "type": "sprite", "sprite": "...", "method": "ID|MX|MY|MXY|..." }`.
+- One `combined[]` entry per published sprite. `mode: "ui"` for CSA
+  (canvas factor 0.01 is mode-implicit); `mode: "sma-canvas"` / `"sma-renderer"`
+  for SMA (factor 1.0). No tree-level scale field — see [[fab.md]].
+- Each `children[]` node carries `pos`, optional `size` / `pivot` (default to
+  the sprite's tps natural values), optional `scale` (uniform or per-axis;
+  sign carries flip — `[-1, 1]` for X-flip), `rotDegCCW`, and a `type`
+  discriminator.
+- Atlas sprite → `{ "type": "sprite", "sprite": "...", "method": "ID|MX|MY|MXY|..." }`.
   Geometric flips: negative `scale` (per-axis), not `FX`/`FY`/`FXY` methods.
-- UISolid → `{ "type": "polygon", "color": "RRGGBB", "vertices": [...],
-  "triangles": [0, 2, 3, 3, 1, 0] }`. Color maps to the tpsheet entry
-  `Color_<UPPER>`.
-- Resolve sprite GUIDs in the prefab against the atlas's per-sprite
+- Solid-color polygon → `{ "type": "polygon", "color": "RRGGBB", "vertices": [...],
+  "triangles": [0, 2, 3, 3, 1, 0], "scale": 0.01 }`. Color maps to the tpsheet entry
+  `Color_<UPPER>`. The `scale: 0.01` carries the polygon's old `1 × canvasScale`
+  composed factor (polygons have no per-leaf `uiScale`).
+- Resolve sprite GUIDs in the source prefab against the atlas's per-sprite
   `.asset.meta` files to recover tpsheet entry names.
