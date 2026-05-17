@@ -151,6 +151,15 @@ multiplied by every ancestor's `scale`. Because magnitude is
 front-loaded into the leaf, container nodes typically declare just
 `[±1, ±1]` for flips and identity scaling.
 
+`rotDegCCW` cascades the same way and *also* rotates child anchored
+positions, not just the per-vert R. A child at local `pos (-28.4, -16)`
+under a parent rotated `-45°` in Z lands at world `(-31.4, +8.8)`, not
+at the unrotated `(-28.4, -16)`. Pre-walker-rotation fix, container
+rotations only affected the leaf's own per-vert R and broke composites
+like the Spider Ghost sticker (4 child verts shifted by `(+2.97,
+-24.76)` world units when the `-45°` Body parent's rot wasn't applied
+to its child position).
+
 ### Polygon UV sampling
 
 All polygon vertices sample the **center pixel** of the polygon's atlas
@@ -163,6 +172,13 @@ Any sprite referenced by any tree is excluded from per-tpsheet emission;
 pre-existing `.asset`s for excluded parts are preserved on disk (external
 prefabs may reference the part GUID directly), but the part is not
 emitted as a standalone sprite.
+
+A combined tree's `name` may equal one of its own part sprite names —
+the combined emit owns the `.asset` for that name and inherits the
+preserved GUID via the staged `.asset.meta` (see `PB_PiggyBank_Open`,
+which composites itself with sibling sprites). The per-tpsheet loop
+skips name pre-registration in this case so the combined loop can
+register and emit without tripping `DuplicateSpriteName`.
 
 ## Combined Sprite emission
 

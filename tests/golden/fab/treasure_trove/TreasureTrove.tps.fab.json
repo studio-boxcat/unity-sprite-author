@@ -1,0 +1,274 @@
+{
+  "version": 1,
+  "combined": [
+    {
+      "name": "TT_Cabinet_Top",
+      "mode": "ui",
+      "children": [
+        {
+          "type": "sprite",
+          "sprite": "Color_E39E52",
+          "size": [1076, 1000],
+          "pivot": [0.5, 0]
+        },
+        {
+          "type": "sprite",
+          "sprite": "Color_E39E52",
+          "pos": [0, -223.75],
+          "size": [1002, 50],
+          "pivot": [0.5, 1]
+        },
+        {
+          "type": "sprite",
+          "sprite": "TT_CabinetTop",
+          "method": "MX"
+        },
+        {
+          "pos": [502.38, -249],
+          "children": [
+            {
+              "type": "sprite",
+              "sprite": "TT_CabinetSide",
+              "pos": [0, 10]
+            },
+            {
+              "type": "sprite",
+              "sprite": "TT_CabinetSide",
+              "pos": [0, -10]
+            }
+          ]
+        },
+        {
+          "pos": [-502.38, -249],
+          "scale": [-1, 1],
+          "children": [
+            {
+              "type": "sprite",
+              "sprite": "TT_CabinetSide",
+              "pos": [0, -10]
+            },
+            {
+              "type": "sprite",
+              "sprite": "TT_CabinetSide",
+              "pos": [0, 10]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "TT_LobbyCell_BG",
+      "mode": "ui",
+      "children": [
+        {
+          "type": "sprite",
+          "sprite": "TT_CellWall",
+          "pos": [0, 62.6],
+          "size": [930, 367.17]
+        },
+        {
+          "pos": [0, -121.22999],
+          "children": [
+            {
+              "type": "sprite",
+              "sprite": "Color_CC844B",
+              "pos": [0, -40.85],
+              "size": [948.09, 83.28]
+            },
+            {
+              "type": "sprite",
+              "sprite": "TT_CellFloor_B"
+            },
+            {
+              "type": "sprite",
+              "sprite": "TT_CellFloor_B",
+              "pos": [200, 0]
+            },
+            {
+              "type": "sprite",
+              "sprite": "TT_CellFloor_B",
+              "pos": [-200, 0]
+            },
+            {
+              "type": "sprite",
+              "sprite": "TT_CellFloor_B",
+              "pos": [-400, 0]
+            },
+            {
+              "type": "sprite",
+              "sprite": "TT_CellFloor_B",
+              "pos": [-475, 0]
+            },
+            {
+              "type": "sprite",
+              "sprite": "TT_CellFloor_B",
+              "pos": [274, 0]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "TT_LobbyCell_Floor",
+      "mode": "ui",
+      "children": [
+        {
+          "type": "sprite",
+          "sprite": "TT_CellFloor",
+          "pos": [0, -121.23]
+        },
+        {
+          "type": "sprite",
+          "sprite": "TT_CellFloor",
+          "pos": [200, -121.23]
+        },
+        {
+          "type": "sprite",
+          "sprite": "TT_CellFloor",
+          "pos": [-200, -121.23]
+        },
+        {
+          "type": "sprite",
+          "sprite": "TT_CellFloor",
+          "pos": [-400, -121.23]
+        },
+        {
+          "type": "sprite",
+          "sprite": "TT_CellFloor",
+          "pos": [-475, -121.23]
+        },
+        {
+          "type": "sprite",
+          "sprite": "TT_CellFloor",
+          "pos": [274, -121.23]
+        },
+        {
+          "type": "polygon",
+          "color": "FFFFFF",
+          "pos": [0, -162.08],
+          "scale": 0.01,
+          "vertices": [
+            [-474.045, -41.64],
+            [474.045, -41.64],
+            [-474.045, 41.64],
+            [474.045, 41.64]
+          ],
+          "triangles": [0, 2, 3, 3, 1, 0]
+        }
+      ]
+    },
+    {
+      "name": "TT_LobbyCell_Frame",
+      "mode": "ui",
+      "children": [
+        {
+          "type": "sprite",
+          "sprite": "Color_E39E52",
+          "pos": [0, 257.34],
+          "size": [1000, 24]
+        },
+        {
+          "type": "sprite",
+          "sprite": "Color_E39E52",
+          "pos": [0, -236.72792],
+          "size": [1000, 65.224]
+        },
+        {
+          "children": [
+            {
+              "type": "sprite",
+              "sprite": "TT_CellFrame1",
+              "pos": [0, 247.77002]
+            },
+            {
+              "type": "sprite",
+              "sprite": "TT_CellFrame2",
+              "pos": [-504, 247.77002]
+            },
+            {
+              "type": "sprite",
+              "sprite": "TT_CellFrame3",
+              "pos": [-481.9, 4.7],
+              "scale": [1, 1.15]
+            },
+            {
+              "type": "sprite",
+              "sprite": "TT_CellFrame4",
+              "pos": [-504, -204.82999]
+            },
+            {
+              "type": "sprite",
+              "sprite": "TT_CellFrame5",
+              "pos": [-406.4, -204.82999]
+            },
+            {
+              "type": "sprite",
+              "sprite": "TT_CabinetSide",
+              "pos": [-501.9, -236.6],
+              "scale": [-1, 2.2]
+            },
+            {
+              "type": "sprite",
+              "sprite": "TT_CabinetSide",
+              "pos": [-501.9, 254.35],
+              "scale": [-1, 1]
+            },
+            {
+              "type": "sprite",
+              "sprite": "TT_Decor",
+              "pos": [-467.2, -221.22997]
+            }
+          ]
+        },
+        {
+          "scale": [-1, 1],
+          "children": [
+            {
+              "type": "sprite",
+              "sprite": "TT_CellFrame1",
+              "pos": [0, 247.77002]
+            },
+            {
+              "type": "sprite",
+              "sprite": "TT_CellFrame2",
+              "pos": [-504, 247.77002]
+            },
+            {
+              "type": "sprite",
+              "sprite": "TT_CellFrame3",
+              "pos": [-481.9, 4.7],
+              "scale": [1, 1.15]
+            },
+            {
+              "type": "sprite",
+              "sprite": "TT_CellFrame4",
+              "pos": [-504, -204.82999]
+            },
+            {
+              "type": "sprite",
+              "sprite": "TT_CellFrame5",
+              "pos": [-406.4, -204.82999]
+            },
+            {
+              "type": "sprite",
+              "sprite": "TT_CabinetSide",
+              "pos": [-501.9, -236.6],
+              "scale": [-1, 2.2]
+            },
+            {
+              "type": "sprite",
+              "sprite": "TT_CabinetSide",
+              "pos": [-501.9, 254.35],
+              "scale": [-1, 1]
+            },
+            {
+              "type": "sprite",
+              "sprite": "TT_Decor",
+              "pos": [-467.2, -221.22997]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

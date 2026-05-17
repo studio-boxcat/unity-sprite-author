@@ -218,6 +218,7 @@ unity-sprite-author/
 ├── tests/
 │   ├── golden_parity.rs              # byte-equality on the Orgel corpus
 │   ├── golden_fab_silloutte.rs       # fab manifest → byte-exact Silloutte{1,2}.asset
+│   ├── golden_fab_treasure_trove.rs  # fab manifest → ULP-tolerance rect/pivot/offset/vert diff vs pre-c23474b2 TreasureTrove goldens (4 sprites)
 │   ├── golden_sma_mesh.rs            # Mesh .asset byte-exact (Box_29_Ghost, 32 meshes)
 │   ├── e2e_meow_tower.rs             # opt-in walk of the meow-tower checkout
 │   └── golden/                       # committed .tpsheet + .tps + .png.meta + expected .asset
@@ -228,6 +229,7 @@ unity-sprite-author/
 ├── examples/
 │   ├── drift_report.rs              # diagnostic — runs across meow-tower, prints first diff per atlas
 │   ├── sma_dumper.cs                # Unity scratch — dump SMA SpriteRenderer tree
+│   ├── regen_offline.rs             # single-atlas runner over staged tps/tpsheet/png.meta/fab.json (no TexturePackerCLI)
 │   └── migrate_corpus.rs            # offline corpus migration runner (no Unity Editor)
 ├── benches/
 │   └── pipeline.rs         # criterion harness — full pipeline + per-stage hot paths

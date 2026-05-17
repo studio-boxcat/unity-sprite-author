@@ -157,6 +157,15 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
         .as_ref()
         .map(collect_part_names)
         .unwrap_or_default();
+    // Names of combined trees themselves. When a tree's name == an atlas
+    // sprite's name (legitimate when the combined tree consumes the
+    // per-tpsheet sprite as one of its parts — see PB_PiggyBank_Open),
+    // the per-tpsheet loop below must not pre-register the name; the
+    // combined emit loop owns the .asset for that name.
+    let combined_names: HashSet<&str> = manifest
+        .as_ref()
+        .map(|m| m.combined.iter().map(|c| c.name.as_str()).collect())
+        .unwrap_or_default();
 
     // For each sprite, gather (asset_path, asset_bytes, meta_path, meta_bytes).
     let mut writes: Vec<(PathBuf, Vec<u8>)> = Vec::with_capacity(sheet.sprites.len() * 2);
@@ -197,7 +206,11 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
         // unchanged.
         let asset_name = format!("{}{}", input.prefix, sprite.name);
         if part_names.contains(&sprite.name) {
-            current_asset_names_ci.insert(asset_name.to_ascii_lowercase());
+            // Don't pre-register names that a combined tree will own,
+            // or the combined emit loop will misfire DuplicateSpriteName.
+            if !combined_names.contains(sprite.name.as_str()) {
+                current_asset_names_ci.insert(asset_name.to_ascii_lowercase());
+            }
             continue;
         }
 

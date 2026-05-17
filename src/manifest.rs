@@ -516,7 +516,9 @@ pub struct ResolvedLeaf<'a> {
 /// cascade for the common center-anchored case — each child's world pos is
 /// its parent's world pos plus a center-of-rect offset
 /// `(0.5 − parent.pivot) × parent.size` (the "Body shift" seen on
-/// AlbumSticker_Ghost1), plus the child's own anchored `pos`. Returns
+/// AlbumSticker_Ghost1), plus the child's own anchored `pos`, with the
+/// composed (offset + pos) rotated by the parent's world rotation
+/// (Spider's `-45°` Body propagates into child SP world pos). Returns
 /// leaves in DFS order — same order the previous flat `parts: [...]`
 /// schema declared.
 pub fn walk<'a>(tree: &'a Tree) -> Vec<ResolvedLeaf<'a>> {
@@ -550,15 +552,23 @@ fn walk_node<'a>(
         (0.5 - parent_pivot[0]) * parent_size[0],
         (0.5 - parent_pivot[1]) * parent_size[1],
     ];
-    // Apply parent's composed world_scale to the child's local pos. This
-    // matches Unity's RectTransform/Transform cascade: a child at local
-    // pos (-504, 0) under a parent with localScale (-1, 1) lands at world
-    // (+504, 0). Without this multiply, mirror containers (R sibling of L)
-    // collapse onto the L side — see TT_LobbyCell_Frame regression where
-    // golden pivot.x=0.5 went to 0.77 because L and R overlapped.
+    // Apply parent's composed world_scale + world_rot to the child's local
+    // pos. Matches Unity's RectTransform/Transform cascade:
+    //   - localScale: a child at local pos (-504, 0) under parent
+    //     localScale (-1, 1) lands at world (+504, 0). Without this
+    //     multiply, mirror containers (R sibling of L) collapse onto L.
+    //   - localRotation: a child at local pos (-28.4, -16) under parent
+    //     rotated -45° in Z lands at world (-31.4, 8.8). Without the
+    //     rotate, child positions are off by the rotation delta — see
+    //     Spider golden where 4 verts shift by (+2.97, -24.76) world
+    //     units when the -45° Body parent's rot isn't propagated.
+    let p = (parent_center_offset[0] + node.pos[0]) * parent_world_scale[0];
+    let q = (parent_center_offset[1] + node.pos[1]) * parent_world_scale[1];
+    let r = parent_world_rot.to_radians();
+    let (sin_r, cos_r) = r.sin_cos();
     let world_pos = [
-        parent_world_pos[0] + (parent_center_offset[0] + node.pos[0]) * parent_world_scale[0],
-        parent_world_pos[1] + (parent_center_offset[1] + node.pos[1]) * parent_world_scale[1],
+        parent_world_pos[0] + p * cos_r - q * sin_r,
+        parent_world_pos[1] + p * sin_r + q * cos_r,
     ];
     let world_scale = [
         parent_world_scale[0] * node.scale[0],
