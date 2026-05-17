@@ -369,10 +369,19 @@ pub fn atlas_sprite_mesh(
         offset,
     };
     match method {
-        Method::Id => {
-            let verts = src.verts.iter().map(|v| apply_transform(*v, &ctx)).collect();
-            PartMesh { verts, uvs: src.uvs, tris: src.tris }
-        }
+        // ID:
+        //   - size=None  → native-scale (UIIconMeshGen.Identity): src.verts
+        //                  pass through unmodified.
+        //   - size=Some  → stretch-to-rect (UISliceMeshGen.Identity): src.verts
+        //                  scaled to fill the target rect, anchored at the
+        //                  part_pivot. Used by Color_* solid bars in CSA.
+        Method::Id => match size {
+            Some(sz) => slice_identity(&src, &ctx, sz),
+            None     => {
+                let verts = src.verts.iter().map(|v| apply_transform(*v, &ctx)).collect();
+                PartMesh { verts, uvs: src.uvs, tris: src.tris }
+            }
+        },
         // MX/MY/MXY: with size → slice-fitted (UISliceMeshGen).
         //            without size → native-scale duplicate (UIIconMeshGen).
         Method::Mx  => match size {
@@ -1486,6 +1495,29 @@ fn icon_mirror(src: &SrcMesh, ctx: &SliceCtx, axis: MirrorAxis) -> PartMesh {
 //   MY  : 2 copies [Y+, Y-], slice = (1, 0.5)  , mirror_pivot = (0, 0.5)
 //   MXY : 4 copies clockwise from X+Y+,
 //         slice = (0.5, 0.5), mirror_pivot = (0.5, 0.5)
+// UISliceMeshGen.Identity (UISliceMethod=9): stretch the full source sprite
+// to the target rect, anchored at part_pivot. No mirror, no border. Used by
+// CSA "Color_*" 1×1 color sprites under UISlice to render solid-color bars.
+fn slice_identity(src: &SrcMesh, ctx: &SliceCtx, target_size: (f32, f32)) -> PartMesh {
+    // slice=(1.0, 1.0) — full sprite covers the target rect (no fractional
+    // slicing). mirror_pivot=(0.5, 0.5) — rect-center anchor for the
+    // (mirror_pivot - rect_pivot) offset term.
+    let x = slice_vertex_translation(
+        target_size, ctx.part_pivot, ctx.sprite_pivot_norm, ctx.sprite_bound_size,
+        (1.0, 1.0), (0.5, 0.5),
+    );
+    let verts: Vec<[f32; 2]> = src.verts.iter()
+        .map(|v| {
+            let p = [
+                v[0] * x.scale.0 + x.translation.0 + x.offset.0,
+                v[1] * x.scale.1 + x.translation.1 + x.offset.1,
+            ];
+            apply_transform(p, ctx)
+        })
+        .collect();
+    PartMesh { verts, uvs: src.uvs.clone(), tris: src.tris.clone() }
+}
+
 fn slice_mirror(src: &SrcMesh, ctx: &SliceCtx, target_size: (f32, f32), axis: MirrorAxis) -> PartMesh {
     let (slice, mirror_pivot, signs) = match axis {
         MirrorAxis::X  => ((0.5, 1.0), (0.5, 0.0), &[(1.0, 1.0), (-1.0, 1.0)][..]),

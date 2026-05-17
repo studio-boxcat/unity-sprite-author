@@ -144,6 +144,80 @@ fn leaf_scale_magnitude_flows_into_affine_unmodified() {
 }
 
 #[test]
+fn uislice_id_method_stretches_source_to_target_size() {
+    // UISlice's Identity method (UISliceMethod::Identity = 9) renders the
+    // sprite stretched to fill the target rect. UIIcon's ID renders at
+    // native scale, ignoring rect. Our runtime currently has only ONE
+    // `Method::Id` arm (native scale) — which is correct for UIIcon but
+    // wrong for UISlice ID.
+    //
+    // Failing case in the corpus: `TT_LobbyCell_Frame` top/bottom bars
+    // (UISlice + Color_E39E52 1×1 color sprite at sizeDelta=1000×24).
+    // Unity stretches the 1×1 to fill 1000×24; our runtime emits a 1×1
+    // native mesh (vert spread = ±0.005, not ±5.0).
+    //
+    // The fix: when a Method::Id leaf has `size: Some(...)`, dispatch to
+    // a stretch-to-size path that scales src.verts by (size / sprite_bound).
+    // Without size, ID remains the existing native-scale path.
+    use unity_sprite_author::combine::{self, AtlasSize};
+    use unity_sprite_author::fab::{Affine, Combined, Method, Part};
+    use unity_sprite_author::tpsheet::{Geometry, Pivot, Rect, SpriteAlignment, SpriteEntry, Vertex};
+
+    // 1×1 px source sprite, pivot centered.
+    let entry = SpriteEntry {
+        name: "color".into(),
+        rect: Rect { x: 0, y: 0, w: 1, h: 1 },
+        border: Default::default(),
+        pivot: Pivot { x: 0.5, y: 0.5 },
+        alignment: SpriteAlignment::Center,
+        geometry: Geometry {
+            vertices: vec![
+                Vertex { x: 0.0, y: 0.0 },
+                Vertex { x: 1.0, y: 0.0 },
+                Vertex { x: 1.0, y: 1.0 },
+                Vertex { x: 0.0, y: 1.0 },
+            ],
+            triangles: vec![0, 1, 2, 0, 2, 3],
+        },
+    };
+    let entry_arc = std::sync::Arc::new(entry);
+
+    // ID + size=Some(10, 5) world units: should stretch to fill.
+    let combined = Combined {
+        name: "X".into(), pivot: [0.5, 0.5], border: [0.0; 4],
+        parts: vec![Part::AtlasSprite {
+            sprite: "color".into(),
+            method: Method::Id,
+            size: Some((10.0, 5.0)),         // ← stretch target
+            part_pivot: None,
+            border_mult: 1.0,
+            affine: Affine::default(),
+            offset: [0.0, 0.0],
+        }],
+    };
+    let m = combine::build_combined(
+        &combined,
+        |_| Some(((*entry_arc).clone(), 1.0)),
+        AtlasSize { width: 8, height: 8 },
+        100.0,
+    ).unwrap();
+
+    // Vert AABB should be the target rect (10×5), centered around origin
+    // because part_pivot=None defaults to (0.5, 0.5).
+    let (min_x, max_x, min_y, max_y) = m.verts.iter().fold(
+        (f32::MAX, f32::MIN, f32::MAX, f32::MIN),
+        |(mnx, mxx, mny, mxy), v| (mnx.min(v[0]), mxx.max(v[0]), mny.min(v[1]), mxy.max(v[1])),
+    );
+    let aabb_w = max_x - min_x;
+    let aabb_h = max_y - min_y;
+    assert!(
+        (aabb_w - 10.0).abs() < 1e-4 && (aabb_h - 5.0).abs() < 1e-4,
+        "ID + size should stretch sprite to fill target rect (10×5), got \
+         {aabb_w}×{aabb_h} from x:[{min_x}, {max_x}] y:[{min_y}, {max_y}]",
+    );
+}
+
+#[test]
 fn parent_world_scale_flips_child_pos_through_walker() {
     // Mirror trick: a container with `scale: [-1, 1]` should X-flip ALL
     // descendants — their meshes AND their positions. Unity's
