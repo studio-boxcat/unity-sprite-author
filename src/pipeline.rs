@@ -205,12 +205,15 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
         // below doesn't auto-delete it; the on-disk bytes remain
         // unchanged.
         let asset_name = format!("{}{}", input.prefix, sprite.name);
+        // A combined tree always owns the .asset for its name — whether
+        // or not the sprite is also a part. Skip the per-tpsheet emit
+        // entirely in that case (suppression + don't pre-register the
+        // name).
+        if combined_names.contains(sprite.name.as_str()) {
+            continue;
+        }
         if part_names.contains(&sprite.name) {
-            // Don't pre-register names that a combined tree will own,
-            // or the combined emit loop will misfire DuplicateSpriteName.
-            if !combined_names.contains(sprite.name.as_str()) {
-                current_asset_names_ci.insert(asset_name.to_ascii_lowercase());
-            }
+            current_asset_names_ci.insert(asset_name.to_ascii_lowercase());
             continue;
         }
 
