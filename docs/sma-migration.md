@@ -50,15 +50,15 @@ Position uses `Vector3` (z = 0); UV uses `Vector2`. Triangles are u16.
 
 | Concern | Module |
 |---|---|
-| Mesh `.asset` emit (both VBO layouts) | `src/mesh_emit.rs` |
+| Mesh `.asset` emit (both VBO layouts) | `crates/core/src/mesh_emit.rs` |
 | `Mathf.FloatToHalf` byte-port (round-to-nearest-even) | `mesh_emit::float_to_half` |
 | Tiled mesh (`GetMesh_Tiled` port) | `mesh_emit::tiled_mesh` |
 | Per-renderer matrix application | `mesh_emit::build_mesh` |
-| Manifest (v3 unified tree, CSA + SMA) | `src/manifest.rs` |
-| Manifest (legacy flat SMA-only) | `src/mesh_manifest.rs` |
+| Manifest (v3 unified tree, CSA + SMA) | `crates/core/src/manifest.rs` |
+| Manifest (legacy flat SMA-only) | `crates/core/src/mesh_manifest.rs` |
 | Pipeline dispatch | `pipeline::load_mesh_manifest` |
-| Golden fixture | `tests/golden_sma_mesh.rs` (Box_29_Ghost, 32 meshes) |
-| SMA dumper | `examples/sma_dumper.cs` → `examples/sma_dump_to_mesh_manifest.rs` |
+| Golden fixture | `crates/core/tests/golden_sma_mesh.rs` (Box_29_Ghost, 32 meshes) |
+| SMA dumper | `crates/core/examples/sma_dumper.cs` → `crates/core/examples/sma_dump_to_mesh_manifest.rs` |
 
 ## Resolved design choices
 

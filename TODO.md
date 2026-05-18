@@ -48,14 +48,14 @@ tpsheet. To unblock the polygon path on SMA:
   branch lands, declare polygon leaves under SMA trees the same way the
   CSA side does. (The CSA-prefab migration tool that previously seeded
   these is gone — CSA prefabs were retired in meow-tower c23474b2ab40.)
-- **Manifest schema** (`src/manifest.rs` Node): add polygon-leaf
+- **Manifest schema** (`crates/core/src/manifest.rs` Node): add polygon-leaf
   fields to `spriteRenderer` mode (mirrors the existing UISolid path on
   CSA trees).
-- **Emit extension** (`src/mesh_emit::build_mesh`): for polygon
+- **Emit extension** (`crates/core/src/mesh_emit::build_mesh`): for polygon
   renderers, synthesize verts directly + sample UVs from a
   `Color_RRGGBB` entry in the same tpsheet (mirrors
   `combine::polygon_mesh_with_tris` on the CSA side).
-- **Golden coverage**: extend `tests/golden/sma/box_29_ghost/` to
+- **Golden coverage**: extend `crates/core/tests/golden/sma/box_29_ghost/` to
   exercise the polygon branch.
 
 `Tower.tps` is the other Phase 2b miss — its atlas outputs to

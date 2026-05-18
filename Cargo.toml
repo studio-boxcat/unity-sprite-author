@@ -1,34 +1,6 @@
-[package]
-name = "unity-sprite-author"
-version = "0.1.0"
-edition = "2024"
-publish = false
-
-[lib]
-name = "unity_sprite_author"
-crate-type = ["rlib"]
-
-[[bin]]
-name = "unity-sprite-author"
-path = "src/bin/unity-sprite-author.rs"
-
-# Library deps held to serde for the .tps.fab.json manifest (see docs/fab.md).
-# Everything else is hand-rolled: custom YAML emitter, custom hex, std-only
-# entropy. Criterion is dev-only. unity-assetdb is used by the bin only for
-# minting `.tps.meta` / `.png.meta` when the user first packs a new atlas
-# outside the Unity Editor — `default-features = false` skips its `cli`
-# feature so we don't transitively pull clap.
-[dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-unity-assetdb = { path = "../unity-assetdb", default-features = false }
-
-[dev-dependencies]
-criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
-
-[[bench]]
-name = "pipeline"
-harness = false
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/cli"]
 
 [profile.release]
 panic = "unwind"

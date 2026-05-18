@@ -196,43 +196,52 @@ One-shot rollout shipped (meow-tower commits `0d9143ec…668fd2eb`). The `.tpshe
 
 ## Layout
 
+Cargo workspace. `crates/core` is the rlib consumed by the BoxcatBridge cdylib
+in meow-tower; `crates/cli` is the offline `unity-sprite-author` binary that
+shells out to TexturePackerCLI and threads the result into `core`. The bridge
+crate in meow-tower points its `path = "..."` at `crates/core/`.
+
 ```
 unity-sprite-author/
-├── src/
-│   ├── lib.rs              # module declarations
-│   ├── bin/
-│   │   └── unity-sprite-author.rs  # offline CLI: pack .tps + author sprites
-│   ├── pipeline.rs         # orchestrate: parse → build → write → prune → delete
-│   ├── tpsheet.rs          # parser (mirrors SheetLoader.cs)
-│   ├── tps.rs              # minimal parser (spriteScale lookup)
-│   ├── meta.rs             # .png.meta GUID read + alphaIsTransparency rewrite; .asset.meta read/write
-│   ├── render_data.rs      # _typelessdata, m_IndexBuffer, uvTransform
-│   ├── emit.rs             # SpriteAsset → bytes
-│   ├── yaml.rs             # Unity-flavor YAML + yaml::float (C# ToString("R"))
-│   ├── triangulator.rs     # ear-clipping triangulator for fab polygon parts
-│   ├── combine.rs          # fab combined-sprite mesh stitching
-│   ├── manifest.rs         # .tps.fab.json unified tree (CSA + SMA) → fab/mesh bridge
-│   ├── fab.rs              # typed IR for fabricated combined sprites (consumed by combine.rs)
-│   ├── mesh_emit.rs        # Mesh .asset emit (SpriteRenderer half2 UVs + CanvasRenderer f32 UVs)
-│   └── mesh_manifest.rs    # Mesh IR consumed by `mesh_emit`; v3 manifest bridges into it
-├── tests/
-│   ├── golden_parity.rs              # byte-equality on the Orgel corpus
-│   ├── golden_fab_silloutte.rs       # fab manifest → byte-exact Silloutte{1,2}.asset
-│   ├── golden_fab_treasure_trove.rs  # fab manifest → ULP-tolerance rect/pivot/offset/vert diff vs pre-c23474b2 TreasureTrove goldens (4 sprites)
-│   ├── golden_sma_mesh.rs            # Mesh .asset byte-exact (Box_29_Ghost, 32 meshes)
-│   ├── e2e_meow_tower.rs             # opt-in walk of the meow-tower checkout
-│   └── golden/                       # committed .tpsheet + .tps + .png.meta + expected .asset
+├── Cargo.toml              # [workspace] root — members: crates/core, crates/cli
+├── crates/
+│   ├── core/                       # rlib (package: unity-sprite-author, lib: unity_sprite_author)
+│   │   ├── src/
+│   │   │   ├── lib.rs              # module declarations
+│   │   │   ├── pipeline.rs         # orchestrate: parse → build → write → prune → delete
+│   │   │   ├── tpsheet.rs          # parser (mirrors SheetLoader.cs)
+│   │   │   ├── tps.rs              # minimal parser (spriteScale lookup)
+│   │   │   ├── meta.rs             # .png.meta GUID read + alphaIsTransparency rewrite; .asset.meta read/write
+│   │   │   ├── render_data.rs      # _typelessdata, m_IndexBuffer, uvTransform
+│   │   │   ├── emit.rs             # SpriteAsset → bytes
+│   │   │   ├── yaml.rs             # Unity-flavor YAML + yaml::float (C# ToString("R"))
+│   │   │   ├── triangulator.rs     # ear-clipping triangulator for fab polygon parts
+│   │   │   ├── combine.rs          # fab combined-sprite mesh stitching
+│   │   │   ├── manifest.rs         # .tps.fab.json unified tree (CSA + SMA) → fab/mesh bridge
+│   │   │   ├── fab.rs              # typed IR for fabricated combined sprites (consumed by combine.rs)
+│   │   │   ├── mesh_emit.rs        # Mesh .asset emit (SpriteRenderer half2 UVs + CanvasRenderer f32 UVs)
+│   │   │   └── mesh_manifest.rs    # Mesh IR consumed by `mesh_emit`; v3 manifest bridges into it
+│   │   ├── tests/
+│   │   │   ├── golden_parity.rs              # byte-equality on the Orgel corpus
+│   │   │   ├── golden_fab_silloutte.rs       # fab manifest → byte-exact Silloutte{1,2}.asset
+│   │   │   ├── golden_fab_treasure_trove.rs  # fab manifest → ULP-tolerance rect/pivot/offset/vert diff vs pre-c23474b2 TreasureTrove goldens (4 sprites)
+│   │   │   ├── golden_sma_mesh.rs            # Mesh .asset byte-exact (Box_29_Ghost, 32 meshes)
+│   │   │   ├── e2e_meow_tower.rs             # opt-in walk of the meow-tower checkout
+│   │   │   └── golden/                       # committed .tpsheet + .tps + .png.meta + expected .asset
+│   │   ├── examples/
+│   │   │   ├── drift_report.rs              # diagnostic — runs across meow-tower, prints first diff per atlas
+│   │   │   ├── sma_dumper.cs                # Unity scratch — dump SMA SpriteRenderer tree
+│   │   │   ├── regen_offline.rs             # single-atlas runner over staged tps/tpsheet/png.meta/fab.json (no TexturePackerCLI)
+│   │   │   └── migrate_corpus.rs            # offline corpus migration runner (no Unity Editor)
+│   │   └── benches/
+│   │       └── pipeline.rs         # criterion harness — full pipeline + per-stage hot paths
+│   └── cli/                        # `unity-sprite-author` binary (package: unity-sprite-author-cli)
+│       └── src/
+│           └── main.rs             # offline CLI: pack .tps + author sprites
 ├── docs/
 │   ├── fab.md              # .tps.fab.json schema + per-part transform math
 │   ├── sma-migration.md    # SpriteMeshAuthor → mesh_emit migration map
 │   └── unity-probes.md     # in-Editor procedures for the four blocked TODOs
-├── examples/
-│   ├── drift_report.rs              # diagnostic — runs across meow-tower, prints first diff per atlas
-│   ├── sma_dumper.cs                # Unity scratch — dump SMA SpriteRenderer tree
-│   ├── regen_offline.rs             # single-atlas runner over staged tps/tpsheet/png.meta/fab.json (no TexturePackerCLI)
-│   └── migrate_corpus.rs            # offline corpus migration runner (no Unity Editor)
-├── benches/
-│   └── pipeline.rs         # criterion harness — full pipeline + per-stage hot paths
 ├── scripts/
 │   ├── migrate-tpsheet-meta.sh  # --dry-run; .tpsheet.meta → .tps.meta
 │   ├── regen-corpus.sh          # TexturePackerCLI sweep over $MEOW_CLIENT/Assets

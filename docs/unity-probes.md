@@ -178,16 +178,16 @@ need a consistent `(.tps, .tpsheet, .asset)` triple.
    ```
 3. From the rust repo, copy the regenerated triple back into the fixture:
    ```sh
-   cp $MEOW_CLIENT/Assets/21_Collections/OrgelContents/1204/Orgel.tps        tests/golden/orgel/
-   cp $MEOW_CLIENT/Assets/21_Collections/OrgelContents/1204/Orgel.tpsheet    tests/golden/orgel/
-   cp $MEOW_CLIENT/Assets/21_Collections/OrgelContents/1204/Orgel/*.asset    tests/golden/orgel/sprites/
-   cp $MEOW_CLIENT/Assets/21_Collections/OrgelContents/1204/Orgel/*.asset.meta tests/golden/orgel/sprites/
+   cp $MEOW_CLIENT/Assets/21_Collections/OrgelContents/1204/Orgel.tps        crates/core/tests/golden/orgel/
+   cp $MEOW_CLIENT/Assets/21_Collections/OrgelContents/1204/Orgel.tpsheet    crates/core/tests/golden/orgel/
+   cp $MEOW_CLIENT/Assets/21_Collections/OrgelContents/1204/Orgel/*.asset    crates/core/tests/golden/orgel/sprites/
+   cp $MEOW_CLIENT/Assets/21_Collections/OrgelContents/1204/Orgel/*.asset.meta crates/core/tests/golden/orgel/sprites/
    ```
 4. Run `cargo test golden_parity` and `MEOW_TOWER_PATH=$MEOW_CLIENT cargo test --test e2e_meow_tower`.
    The e2e byte-exact rate for Orgel should jump from "skipped (drift)" to
    100% byte-exact.
 
-**Result format.** A diff in `tests/golden/orgel/` plus an entry in the
+**Result format.** A diff in `crates/core/tests/golden/orgel/` plus an entry in the
 commit message noting the byte-exact rate before/after.
 
 ## Archive

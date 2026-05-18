@@ -1,0 +1,24 @@
+[package]
+name = "unity-sprite-author"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "unity_sprite_author"
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+# Library deps held to serde for the .tps.fab.json manifest (see docs/fab.md).
+# Everything else is hand-rolled: custom YAML emitter, custom hex, std-only
+# entropy. `unity-assetdb` is NOT a library dep — it's a CLI-only concern.
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "pipeline"
+harness = false

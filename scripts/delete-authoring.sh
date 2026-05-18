@@ -6,7 +6,7 @@
 #   1. `scripts/regen-corpus.sh` has been executed and Unity has emitted
 #      the new sprite `.asset` corpus through `pipeline::generate`.
 #   2. Every SMA prefab has had its `.tps.mesh.json` authored (via
-#      `examples/sma_dumper.cs` + the companion converter) and Unity
+#      `crates/core/examples/sma_dumper.cs` + the companion converter) and Unity
 #      has emitted the new Mesh `.asset` corpus through the same
 #      pipeline.
 #   3. The resulting meow-tower diff has been reviewed + committed.

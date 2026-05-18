@@ -1,0 +1,16 @@
+[package]
+name = "unity-sprite-author-cli"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "unity-sprite-author"
+path = "src/main.rs"
+
+# `unity-assetdb` mints `.tps.meta` / `.png.meta` on first-time packs outside
+# the Unity Editor. `default-features = false` skips its `cli` feature so we
+# don't transitively pull clap.
+[dependencies]
+unity-sprite-author = { path = "../core" }
+unity-assetdb = { path = "../../../unity-assetdb", default-features = false }
