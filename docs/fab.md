@@ -8,10 +8,11 @@ authored as a unified prefab-style tree. The crate emits the declared
 outputs *instead of* their constituent parts; parts referenced inside any
 tree are excluded from per-tpsheet emission.
 
-Authoring is hand-written and/or LLM-assisted today. The historical
-`CanvasSpriteAuthor` and `SpriteMeshAuthor` Unity prefabs that seeded the
-corpus have been retired (meow-tower c23474b2ab40); new trees are
-declared directly in the sidecar JSON.
+Authoring paths: hand-edit the JSON, LLM-assist, or open it in the GUI
+editor (`cargo run -p unity-sprite-author-editor`, see `crates/editor/`).
+The historical `CanvasSpriteAuthor` and `SpriteMeshAuthor` Unity prefabs
+that seeded the corpus have been retired (meow-tower c23474b2ab40); new
+trees are declared directly in the sidecar JSON.
 
 ## Location
 

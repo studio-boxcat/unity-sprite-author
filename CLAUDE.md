@@ -64,6 +64,8 @@ let result = pipeline::generate(&pipeline::GenerateInputs {
 // result.deleted_paths — pruned .asset paths + the consumed .tpsheet(.meta)
 ```
 
+For non-pipeline consumers (the GUI editor today), `combine::build_combined_with_ranges` returns the same `CombinedMesh` plus per-part `[start, end)` index ranges into the merged vertex arrays — useful for picking, outlining, and vertex-color overrides without re-running the build per part. `build_combined` is a one-line wrapper that discards the ranges.
+
 ### Invariants
 
 - **No panics in normal control flow.** `pipeline::generate` returns `Result<GenerateOutput, Error>`. `unwrap`/`expect` reserved for genuine bugs. The bridge wraps the call in `catch_unwind` and surfaces panics as `rc=2` with the panic message.
@@ -198,8 +200,10 @@ One-shot rollout shipped (meow-tower commits `0d9143ec…668fd2eb`). The `.tpshe
 
 Cargo workspace. `crates/core` is the rlib consumed by the BoxcatBridge cdylib
 in meow-tower; `crates/cli` is the offline `unity-sprite-author` binary that
-shells out to TexturePackerCLI and threads the result into `core`. The bridge
-crate in meow-tower points its `path = "..."` at `crates/core/`.
+shells out to TexturePackerCLI and threads the result into `core`;
+`crates/editor` is a standalone GUI tool (`eframe` + `egui`) for authoring
+`.tps.fab.json` files. The bridge crate in meow-tower points its
+`path = "..."` at `crates/core/` — editor and CLI never leak into the rlib.
 
 ```
 unity-sprite-author/
@@ -235,9 +239,23 @@ unity-sprite-author/
 │   │   │   └── migrate_corpus.rs            # offline corpus migration runner (no Unity Editor)
 │   │   └── benches/
 │   │       └── pipeline.rs         # criterion harness — full pipeline + per-stage hot paths
-│   └── cli/                        # `unity-sprite-author` binary (package: unity-sprite-author-cli)
-│       └── src/
-│           └── main.rs             # offline CLI: pack .tps + author sprites
+│   ├── cli/                        # `unity-sprite-author` binary (package: unity-sprite-author-cli)
+│   │   └── src/
+│   │       └── main.rs             # offline CLI: pack .tps + author sprites
+│   └── editor/                     # GUI editor for `.tps.fab.json` (package: unity-sprite-author-editor)
+│       ├── src/
+│       │   ├── main.rs              # eframe entry
+│       │   ├── app.rs               # App, ops + undo/redo, keymap
+│       │   ├── doc.rs               # Doc + NodePath
+│       │   ├── selection.rs         # multi-select state w/ click-modifier semantics
+│       │   ├── atlas.rs             # sibling .tpsheet/.png/.tps load, auto-pack
+│       │   ├── tree_panel.rs        # left panel: tree edit + drag-reorder
+│       │   ├── inspector.rs         # right panel: per-node editor
+│       │   ├── preview.rs           # center canvas: composed mesh + interactions
+│       │   ├── picker.rs            # sprite / color modals
+│       │   └── serialize.rs         # manifest → fab.json round-trip
+│       └── tests/
+│           └── round_trip_goldens.rs # parse → serialize → parse against fixtures
 ├── docs/
 │   ├── fab.md              # .tps.fab.json schema + per-part transform math
 │   ├── sma-migration.md    # SpriteMeshAuthor → mesh_emit migration map

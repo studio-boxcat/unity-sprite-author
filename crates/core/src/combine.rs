@@ -1600,7 +1600,7 @@ fn slice_mirror(src: &SrcMesh, ctx: &SliceCtx, target_size: (f32, f32), axis: Mi
 /// resulting `tris` runs back-to-front by part.
 pub fn build_combined<F>(
     combined: &fab::Combined,
-    mut resolve: F,
+    resolve: F,
     atlas: AtlasSize,
     ppu: f32,
 ) -> Result<CombinedMesh, CombineError>
@@ -1610,10 +1610,39 @@ where
     // (tpsheet + tps), so the caller can resolve them together.
     F: FnMut(&str) -> Option<(SpriteEntry, f32)>,
 {
+    build_combined_with_ranges(combined, resolve, atlas, ppu).map(|o| o.mesh)
+}
+
+/// Output of [`build_combined_with_ranges`]: the merged mesh plus the
+/// `[start, end)` index range each input part occupies in the merged
+/// `verts` / `uvs` arrays. The editor's preview canvas uses these ranges
+/// for per-part picking, outlining, and vertex-color overrides without
+/// re-running the build per part.
+#[derive(Debug, Clone)]
+pub struct BuildOutput {
+    pub mesh: CombinedMesh,
+    /// Same length as `combined.parts`. `(start, end)` indexes into
+    /// `mesh.verts` / `mesh.uvs`. The triangle list isn't split — callers
+    /// filter `mesh.tris` by checking each triangle's first index against
+    /// the range.
+    pub part_ranges: Vec<(usize, usize)>,
+}
+
+/// Like [`build_combined`] but also returns per-part vertex-range info.
+pub fn build_combined_with_ranges<F>(
+    combined: &fab::Combined,
+    mut resolve: F,
+    atlas: AtlasSize,
+    ppu: f32,
+) -> Result<BuildOutput, CombineError>
+where
+    F: FnMut(&str) -> Option<(SpriteEntry, f32)>,
+{
     let mut all_verts: Vec<[f32; 2]> = Vec::new();
     let mut all_uvs: Vec<[f32; 2]> = Vec::new();
     let mut all_tris: Vec<u16> = Vec::new();
-    let mut aabb: Option<(u32, u32, u32, u32)> = None; // (minx, miny, maxx, maxy)
+    let mut aabb: Option<(u32, u32, u32, u32)> = None;
+    let mut part_ranges: Vec<(usize, usize)> = Vec::with_capacity(combined.parts.len());
 
     for part in &combined.parts {
         let source_name = match part {
@@ -1637,19 +1666,7 @@ where
         let part_mesh = match part {
             Part::AtlasSprite { method, size, part_pivot, border_mult, affine, offset, .. } => {
                 check_method_constraints(*method, &entry, &combined.name, source_name)?;
-                // None ⇒ centered default (0.5, 0.5) — Unity RectTransform.pivot
-                // standard, the value every CSA prefab used implicitly. (Earlier
-                // design defaulted to the sprite's tps pivotPoint; reverted
-                // because GO RectTransform.pivot and sprite tps pivot are
-                // semantically distinct knobs that only coincidentally match.)
                 let resolved_pivot = part_pivot.unwrap_or([0.5, 0.5]);
-                // None ⇒ for strictly-size-fitted methods (slice grids,
-                // tilers), inherit the sprite's natural rect in world units
-                // (= sprite_bound_size) — slice math with scale=1 reduces
-                // to source verts at native size. For ID/MX/MY/MXY the
-                // size==None branch (icon_mirror / passthrough) is the
-                // semantically different "native" path; don't default to
-                // Some there, or icon_mirror would silently become slice_mirror.
                 let effective_ppu = ppu / invert_scale;
                 let resolved_size = if size.is_none() && method.requires_size() {
                     Some((entry.rect.w as f32 / effective_ppu, entry.rect.h as f32 / effective_ppu))
@@ -1674,18 +1691,23 @@ where
             }
         };
 
-        let base = all_verts.len() as u16;
+        let base = all_verts.len();
+        let count = part_mesh.verts.len();
         all_verts.extend(part_mesh.verts);
         all_uvs.extend(part_mesh.uvs);
-        all_tris.extend(part_mesh.tris.iter().map(|i| i + base));
+        all_tris.extend(part_mesh.tris.iter().map(|i| i + base as u16));
+        part_ranges.push((base, base + count));
     }
 
     let (minx, miny, maxx, maxy) = aabb.expect("fab::Combined.parts is non-empty (parse-time)");
-    Ok(CombinedMesh {
-        verts: all_verts,
-        uvs: all_uvs,
-        tris: all_tris,
-        atlas_rect: Rect { x: minx, y: miny, w: maxx - minx, h: maxy - miny },
+    Ok(BuildOutput {
+        mesh: CombinedMesh {
+            verts: all_verts,
+            uvs: all_uvs,
+            tris: all_tris,
+            atlas_rect: Rect { x: minx, y: miny, w: maxx - minx, h: maxy - miny },
+        },
+        part_ranges,
     })
 }
 
@@ -2824,6 +2846,46 @@ mod tests {
         // Confirms parts are NOT deduped by source name.
         assert!(m.verts[0][0] > 50.0, "{:?}", m.verts);
         assert!(m.verts[4][0] < 5.0, "{:?}", m.verts);
+    }
+
+    #[test]
+    fn build_with_ranges_partitions_verts_per_part() {
+        // Two ID quads, 4 verts each. Ranges should be (0..4) and (4..8).
+        let a = quad_entry(0, 0, 2, 2, (0.5, 0.5));
+        let b = quad_entry(4, 4, 2, 2, (0.5, 0.5));
+        let combined = make_combined("BX", vec![
+            id_part("A", Affine::default()),
+            id_part("B", Affine { tx: 10.0, ..Affine::default() }),
+        ]);
+        let out = build_combined_with_ranges(
+            &combined,
+            |n| match n { "A" => Some((a.clone(), 1.0)), "B" => Some((b.clone(), 1.0)), _ => None },
+            AtlasSize { width: 16, height: 16 },
+            1.0,
+        ).unwrap();
+        assert_eq!(out.part_ranges, vec![(0, 4), (4, 8)]);
+        assert_eq!(out.mesh.verts.len(), 8);
+    }
+
+    #[test]
+    fn build_with_ranges_handles_zero_vert_part() {
+        // Triangulator returns no triangles for a degenerate polygon; verts
+        // still flow through. The contract is: range length always equals
+        // the part's vert count.
+        let a = quad_entry(0, 0, 4, 4, (0.5, 0.5));
+        let combined = make_combined("BX", vec![
+            id_part("A", Affine::default()),
+            id_part("A", Affine { tx: 5.0, ..Affine::default() }),
+            id_part("A", Affine { tx: 10.0, ..Affine::default() }),
+        ]);
+        let out = build_combined_with_ranges(
+            &combined,
+            |_| Some((a.clone(), 1.0)),
+            AtlasSize { width: 64, height: 64 },
+            1.0,
+        ).unwrap();
+        // 3 quad parts, 4 verts each → contiguous ranges.
+        assert_eq!(out.part_ranges, vec![(0, 4), (4, 8), (8, 12)]);
     }
 
     #[test]

@@ -15,7 +15,7 @@
 use std::collections::HashSet;
 use std::fmt;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Manifest {
     /// One entry per authored output sprite/mesh (CSA Sprite or SMA Mesh).
     /// Field is `combined` in JSON — each entry is a "combined" of multiple
@@ -25,14 +25,14 @@ pub struct Manifest {
     pub trees: Vec<Tree>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Tree {
     pub name: String,
     pub output: Output,
     pub root: Node,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Output {
     /// CSA-published Sprite. Output path / GUID are derived from the
     /// `_sprite` reference at migration time, not declared here.
@@ -61,7 +61,7 @@ impl Output {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Node {
     pub name: String,
     pub pos: [f32; 2],
@@ -85,7 +85,7 @@ pub struct Node {
     pub children: Vec<Node>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Graphic {
     /// UIIcon / UISlice (CSA hierarchy) or atlas-sprite under SMA.
     /// The historical UIIcon `_scaleFactor` (× CSA `_scaleFactor`) is folded
@@ -113,7 +113,7 @@ pub enum Graphic {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SpriteMethod {
     Id,
     Mx, My, Mxy,
@@ -122,6 +122,14 @@ pub enum SpriteMethod {
     MxR1c3, MxR1c4, MxR3c2, MxR3c3, MxR3c4, MxR3c6,
     MyR2c2, MyR2c3, MyR3c1, MyR3c2, MyR3c3,
     MxyR3c3, MxyR3c3Nf,
+}
+
+impl SpriteMethod {
+    /// True iff omitting `size` would be a parse error (slice grids and tilers
+    /// need a target rect). Mirrors `fab::Method::requires_size` 1:1.
+    pub fn requires_size(self) -> bool {
+        !matches!(self, Self::Id | Self::Mx | Self::My | Self::Mxy)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
