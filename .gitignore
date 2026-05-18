@@ -1,2 +1,4 @@
 /target
 /.claude
+# single-dev team — lockfile churn isn't worth tracking
+/Cargo.lock
