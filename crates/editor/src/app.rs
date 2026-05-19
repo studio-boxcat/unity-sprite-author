@@ -2,14 +2,17 @@
 //! tree panel + inspector + preview canvas. Holds the per-doc undo / redo
 //! stacks, pending-op queue, selection, and per-tab view (pan/zoom) state.
 
+use crate::action::Action;
+use crate::command_palette::PaletteState;
 use crate::doc::{Doc, LoadError, NodePath, SaveError};
 use crate::inspector;
 use crate::menubar::{MenuAction, Menubar};
+use crate::ops::{self, NewGraphic, NodeEdit, TreeOp};
 use crate::picker::Picker;
 use crate::preferences::Preferences;
 use crate::selection::Selection;
 use crate::tree_panel;
-use unity_sprite_author::manifest::{DrawMode, Graphic, Node, Output, SpriteMethod};
+use unity_sprite_author::manifest::{Graphic, Node, Output};
 
 #[derive(Default)]
 pub struct App {
@@ -59,6 +62,8 @@ pub struct App {
     /// this is a no-op stub and the egui menu_bar at the top of the window
     /// remains the source of truth.
     pub menubar: Option<Menubar>,
+    /// Command palette state. `Some` while the palette modal is open.
+    pub palette: Option<PaletteState>,
     /// Undo / redo snapshot stacks per doc index. Snapshots are entire
     /// `Manifest` clones; cheap for the manifests we see (≤ a few hundred
     /// nodes per file). Coalescing logic in `record_undo_for_op` keeps drag
@@ -118,24 +123,8 @@ pub struct TabId {
 /// its own pan/zoom, since their mesh AABBs differ.
 pub type ViewKey = (usize, usize);
 
-/// Edits emitted by the tree panel / inspector / pickers during a frame, then
-/// applied at the end of `update` so we don't mutate during iteration.
-#[derive(Debug, Clone)]
-pub enum TreeOp {
-    /// Append a new child under `parent` (empty container by default).
-    AddChild { parent: NodePath, graphic: NewGraphic },
-    Duplicate(NodePath),
-    Delete(NodePath),
-    /// Reorder a node within its parent's `children`.
-    MoveSibling { path: NodePath, delta: i32 },
-    /// Move `src` to land at `dst_parent.children[dst_idx]` (covers both
-    /// in-parent reorder and reparenting). Tree-panel drag-and-drop uses this.
-    MoveTo { src: NodePath, dst_parent: NodePath, dst_idx: usize },
-    /// Replace the entire node's graphic discriminator (preserves transform).
-    SetGraphic { path: NodePath, graphic: Option<NewGraphic> },
-    /// Mutate the node via a closure. Used by inspector for inline edits.
-    Edit { path: NodePath, edit: NodeEdit },
-}
+// TreeOp / NodeEdit / NewGraphic live in `ops.rs`. The App's pending-op queue
+// holds them; `apply_op` consumes them at end-of-frame.
 
 /// Per-click rotation state for "click again at same spot to advance through
 /// overlapping parts". The `parts` vector is the z-order-stacked list of part
@@ -160,45 +149,6 @@ pub struct TreeDropTarget {
     pub line_y: f32,
 }
 
-#[derive(Debug, Clone)]
-pub enum NewGraphic {
-    Container,
-    Sprite,
-    /// Convenience: a Polygon with 4 verts + explicit quad indices, edited
-    /// as a width × height rectangle. Serializes identically to a free
-    /// polygon, but the inspector exposes a different UI for it.
-    Rect,
-    Polygon,
-    SpriteRenderer,
-}
-
-#[derive(Debug, Clone)]
-pub enum NodeEdit {
-    Name(String),
-    Pos([f32; 2]),
-    Size(Option<[f32; 2]>),
-    Pivot(Option<[f32; 2]>),
-    Scale([f32; 2]),
-    Rot(f32),
-    SpriteRef(String),
-    SpriteMethod(SpriteMethod),
-    SpriteBorderMult(f32),
-    SpriteFlipX(bool),
-    SpriteFlipY(bool),
-    PolygonColor(String),
-    PolygonVertex { idx: usize, value: [f32; 2] },
-    PolygonAddVertex,
-    /// Insert a vertex at `idx` (shifts existing vertices [idx..] up by 1).
-    /// Used by shift-click vertex insertion in the canvas.
-    PolygonInsertVertex { idx: usize, value: [f32; 2] },
-    PolygonRemoveVertex(usize),
-    PolygonTriangles(Option<Vec<u16>>),
-    /// Update a rect-shape polygon's 4 vertices from width/height (centered).
-    /// Used by the 9-way handles in the preview canvas.
-    PolygonRectSize { width: f32, height: f32 },
-    SpriteRendererSprite(String),
-    SpriteRendererDrawMode(DrawMode),
-}
 
 impl App {
     /// eframe creation hook — pulls persisted `Preferences` out of storage
@@ -221,34 +171,79 @@ impl App {
         app
     }
 
-    /// Dispatch a native-menu action through the same code paths the
-    /// in-window egui menu uses, so behavior stays consistent across the
-    /// two surfaces.
+    /// Translate native menubar events through the unified action dispatcher.
     pub fn dispatch_menu_action(&mut self, action: MenuAction) {
+        let a = match action {
+            MenuAction::Open => Action::OpenDialog,
+            MenuAction::Save => Action::SaveActive,
+            MenuAction::SaveAll => Action::SaveAll,
+            MenuAction::CloseTab => Action::CloseActiveTab,
+            MenuAction::Undo => Action::Undo,
+            MenuAction::Redo => Action::Redo,
+            MenuAction::NewSprite => Action::AddUnderSelection(NewGraphic::Sprite),
+            MenuAction::NewContainer => Action::AddUnderSelection(NewGraphic::Container),
+            MenuAction::Duplicate => Action::DuplicateSelection,
+            MenuAction::ToggleShowPolygon => Action::ToggleShowPolygon,
+            MenuAction::ToggleShowPivot => Action::ToggleShowPivot,
+            MenuAction::ToggleShowOutlines => Action::ToggleShowOutlines,
+            MenuAction::ToggleShowAABB => Action::ToggleShowAABB,
+        };
+        self.dispatch(a);
+    }
+
+    /// Central action dispatcher. Every user-facing command goes through
+    /// here — menus, keyboard shortcuts, command palette, right-click ops.
+    /// Add a new feature: extend `Action`, add one `match` arm, optionally
+    /// register a `CommandEntry` in `action::commands()`.
+    pub fn dispatch(&mut self, action: Action) {
         match action {
-            MenuAction::Open => self.open_dialog(),
-            MenuAction::Save => self.save_active(),
-            MenuAction::SaveAll => self.save_all(),
-            MenuAction::CloseTab => {
+            Action::OpenDialog => self.open_dialog(),
+            Action::OpenPath(p) => self.open_path(p),
+            Action::SaveActive => self.save_active(),
+            Action::SaveAll => self.save_all(),
+            Action::CloseActiveTab => {
                 if let Some(i) = self.active_tab {
                     self.close_tab(i);
                 }
             }
-            MenuAction::Undo => self.undo(),
-            MenuAction::Redo => self.redo(),
-            MenuAction::NewSprite => self.add_under_selection(NewGraphic::Sprite),
-            MenuAction::NewContainer => self.add_under_selection(NewGraphic::Container),
-            MenuAction::Duplicate => {
+            Action::Undo => self.undo(),
+            Action::Redo => self.redo(),
+            Action::AddUnderSelection(g) => self.add_under_selection(g),
+            Action::DuplicateSelection => {
                 for sel in self.selection.without_descendants_of_selected() {
                     if !sel.child_chain.is_empty() {
                         self.pending_ops.push(TreeOp::Duplicate(sel));
                     }
                 }
             }
-            MenuAction::ToggleShowPolygon => self.prefs.show_polygon = !self.prefs.show_polygon,
-            MenuAction::ToggleShowPivot => self.prefs.show_pivot_markers = !self.prefs.show_pivot_markers,
-            MenuAction::ToggleShowOutlines => self.prefs.show_part_outlines = !self.prefs.show_part_outlines,
-            MenuAction::ToggleShowAABB => self.prefs.show_atlas_aabb = !self.prefs.show_atlas_aabb,
+            Action::DeleteSelection => {
+                for sel in self.selection.without_descendants_of_selected() {
+                    if !sel.child_chain.is_empty() {
+                        self.pending_ops.push(TreeOp::Delete(sel));
+                    }
+                }
+            }
+            Action::Tree(op) => self.pending_ops.push(op),
+            Action::Fit => {
+                if let Some(tab) = self.active_tab() {
+                    let primary_tree = self.selection.primary()
+                        .filter(|p| p.doc == tab.doc)
+                        .map(|p| p.tree)
+                        .unwrap_or(0);
+                    if let Some(v) = self.views.get_mut(&(tab.doc, primary_tree)) {
+                        v.needs_fit = true;
+                    }
+                }
+            }
+            Action::ToggleShowPolygon => self.prefs.show_polygon = !self.prefs.show_polygon,
+            Action::ToggleShowPivot => self.prefs.show_pivot_markers = !self.prefs.show_pivot_markers,
+            Action::ToggleShowOutlines => self.prefs.show_part_outlines = !self.prefs.show_part_outlines,
+            Action::ToggleShowAABB => self.prefs.show_atlas_aabb = !self.prefs.show_atlas_aabb,
+            Action::NextTab => self.cycle_tab(1),
+            Action::PrevTab => self.cycle_tab(-1),
+            Action::OpenPalette => {
+                self.palette = Some(PaletteState::default());
+            }
         }
     }
 
@@ -519,6 +514,14 @@ impl eframe::App for App {
         }
         } // end cfg(not(target_os = "macos")) keyboard shortcuts
 
+        // Cmd+Shift+P — open the command palette. Cross-platform because the
+        // native menubar doesn't claim this combo (and the in-window egui
+        // menu doesn't define it). Single binding for all platforms.
+        let cmd_shift_p = ctx.input(|i| i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::P));
+        if cmd_shift_p {
+            self.dispatch(Action::OpenPalette);
+        }
+
         // Tree arrow-key nav (only when no text widget has focus). Not a Cmd
         // accelerator, so it stays cross-platform.
         if !ctx.wants_keyboard_input() {
@@ -651,6 +654,11 @@ impl eframe::App for App {
             crate::picker::show_modal(ctx, self);
         }
 
+        // ----- Modal: command palette -----
+        if self.palette.is_some() {
+            crate::command_palette::show(ctx, self);
+        }
+
         // ----- Apply deferred ops -----
         self.apply_pending();
     }
@@ -776,7 +784,7 @@ impl App {
             TreeOp::AddChild { parent, graphic } => {
                 let Some(doc) = self.docs.get_mut(parent.doc) else { return; };
                 let Some(parent_node) = parent.resolve_mut(&mut doc.manifest) else { return; };
-                parent_node.children.push(new_node(graphic));
+                parent_node.children.push(ops::new_node(graphic));
                 doc.dirty = true;
             }
             TreeOp::Duplicate(path) => {
@@ -840,156 +848,20 @@ impl App {
             TreeOp::SetGraphic { path, graphic } => {
                 let Some(doc) = self.docs.get_mut(path.doc) else { return; };
                 let Some(node) = path.resolve_mut(&mut doc.manifest) else { return; };
-                node.graphic = graphic.and_then(default_graphic);
+                node.graphic = graphic.and_then(ops::default_graphic);
                 doc.dirty = true;
             }
             TreeOp::Edit { path, edit } => {
                 let Some(doc) = self.docs.get_mut(path.doc) else { return; };
                 let Some(node) = path.resolve_mut(&mut doc.manifest) else { return; };
-                apply_edit(node, edit);
+                ops::apply_edit(node, edit);
                 doc.dirty = true;
             }
         }
     }
 }
 
-fn default_graphic(g: NewGraphic) -> Option<Graphic> {
-    match g {
-        NewGraphic::Container => None,
-        NewGraphic::Sprite => Some(Graphic::Sprite {
-            sprite: String::new(),
-            method: SpriteMethod::Id,
-            border_mult: 1.0,
-            flip_x: false,
-            flip_y: false,
-        }),
-        NewGraphic::Rect => Some(Graphic::Polygon {
-            polygon_sprite: "Color_FFFFFF".into(),
-            // Default 2×2 (canvas-pixel) rect centered at origin. Quad index
-            // layout matches `combine::polygon_mesh_with_tris`'s expected
-            // CCW ordering for an axis-aligned rect.
-            vertices: vec![[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]],
-            triangles: Some(vec![0, 2, 3, 3, 1, 0]),
-        }),
-        NewGraphic::Polygon => Some(Graphic::Polygon {
-            polygon_sprite: "Color_FFFFFF".into(),
-            // Start as a free triangle so it's visibly distinct from a rect.
-            vertices: vec![[0.0, 1.0], [-1.0, -1.0], [1.0, -1.0]],
-            triangles: None,
-        }),
-        NewGraphic::SpriteRenderer => Some(Graphic::SpriteRenderer {
-            sprite: String::new(),
-            draw_mode: DrawMode::Simple,
-        }),
-    }
-}
-
-fn new_node(g: NewGraphic) -> Node {
-    let graphic = default_graphic(g);
-    Node {
-        name: String::new(),
-        pos: [0.0, 0.0],
-        size: None,
-        pivot: None,
-        scale: [1.0, 1.0],
-        rot_deg_ccw: 0.0,
-        graphic,
-        children: Vec::new(),
-    }
-}
-
-fn apply_edit(node: &mut Node, edit: NodeEdit) {
-    match edit {
-        NodeEdit::Name(s) => node.name = s,
-        NodeEdit::Pos(v) => node.pos = v,
-        NodeEdit::Size(v) => node.size = v,
-        NodeEdit::Pivot(v) => node.pivot = v,
-        NodeEdit::Scale(v) => node.scale = v,
-        NodeEdit::Rot(v) => node.rot_deg_ccw = v,
-        NodeEdit::SpriteRef(name) => {
-            if let Some(Graphic::Sprite { sprite, .. }) = &mut node.graphic {
-                *sprite = name;
-            }
-        }
-        NodeEdit::SpriteMethod(m) => {
-            if let Some(Graphic::Sprite { method, .. }) = &mut node.graphic {
-                *method = m;
-            }
-        }
-        NodeEdit::SpriteBorderMult(b) => {
-            if let Some(Graphic::Sprite { border_mult, .. }) = &mut node.graphic {
-                *border_mult = b;
-            }
-        }
-        NodeEdit::SpriteFlipX(b) => {
-            if let Some(Graphic::Sprite { flip_x, .. }) = &mut node.graphic {
-                *flip_x = b;
-            }
-        }
-        NodeEdit::SpriteFlipY(b) => {
-            if let Some(Graphic::Sprite { flip_y, .. }) = &mut node.graphic {
-                *flip_y = b;
-            }
-        }
-        NodeEdit::PolygonColor(name) => {
-            if let Some(Graphic::Polygon { polygon_sprite, .. }) = &mut node.graphic {
-                *polygon_sprite = name;
-            }
-        }
-        NodeEdit::PolygonVertex { idx, value } => {
-            if let Some(Graphic::Polygon { vertices, .. }) = &mut node.graphic {
-                if let Some(v) = vertices.get_mut(idx) {
-                    *v = value;
-                }
-            }
-        }
-        NodeEdit::PolygonAddVertex => {
-            if let Some(Graphic::Polygon { vertices, .. }) = &mut node.graphic {
-                let last = vertices.last().copied().unwrap_or([0.0, 0.0]);
-                vertices.push(last);
-            }
-        }
-        NodeEdit::PolygonInsertVertex { idx, value } => {
-            if let Some(Graphic::Polygon { vertices, triangles, .. }) = &mut node.graphic {
-                let i = idx.min(vertices.len());
-                vertices.insert(i, value);
-                // Adding a vertex invalidates explicit triangle indices —
-                // the inspector / runtime can fall back to ear-clip.
-                *triangles = None;
-            }
-        }
-        NodeEdit::PolygonRemoveVertex(idx) => {
-            if let Some(Graphic::Polygon { vertices, .. }) = &mut node.graphic {
-                if idx < vertices.len() && vertices.len() > 3 {
-                    vertices.remove(idx);
-                }
-            }
-        }
-        NodeEdit::PolygonRectSize { width, height } => {
-            if let Some(Graphic::Polygon { vertices, triangles, .. }) = &mut node.graphic {
-                let hw = width * 0.5;
-                let hh = height * 0.5;
-                *vertices = vec![[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]];
-                *triangles = Some(vec![0, 2, 3, 3, 1, 0]);
-            }
-        }
-        NodeEdit::PolygonTriangles(t) => {
-            if let Some(Graphic::Polygon { triangles, .. }) = &mut node.graphic {
-                *triangles = t;
-            }
-        }
-        NodeEdit::SpriteRendererSprite(name) => {
-            if let Some(Graphic::SpriteRenderer { sprite, .. }) = &mut node.graphic {
-                *sprite = name;
-            }
-        }
-        NodeEdit::SpriteRendererDrawMode(m) => {
-            if let Some(Graphic::SpriteRenderer { draw_mode, .. }) = &mut node.graphic {
-                *draw_mode = m;
-            }
-        }
-    }
-}
+// `default_graphic`, `new_node`, and `apply_edit` moved to `ops.rs`.
 
 pub fn mode_label(o: &Output) -> &'static str {
     match o {
@@ -1009,7 +881,7 @@ pub fn node_label(node: &Node) -> String {
             else { format!("{name} · {sprite}") }
         }
         Some(Graphic::Polygon { polygon_sprite, .. }) => {
-            let hex = polygon_sprite.strip_prefix("Color_").unwrap_or(polygon_sprite);
+            let hex = polygon_sprite.strip_prefix("Color_").unwrap_or(polygon_sprite.as_str());
             if node.name.is_empty() { format!("polygon #{hex}") }
             else { format!("{name} · #{hex}") }
         }

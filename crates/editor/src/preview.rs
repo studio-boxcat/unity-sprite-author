@@ -8,7 +8,8 @@
 //!
 //! Persistent pan/zoom in `App.views`; rebuilt only when needed.
 
-use crate::app::{App, GuideDrag, NodeEdit, TreeOp, ViewState};
+use crate::app::{App, GuideDrag, ViewState};
+use crate::ops::{NodeEdit, TreeOp};
 use crate::doc::NodePath;
 use crate::tree_panel;
 use unity_sprite_author::combine::{self, AtlasSize, BuildOutput, CombinedMesh};

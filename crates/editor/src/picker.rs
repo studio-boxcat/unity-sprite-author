@@ -1,7 +1,8 @@
 //! Modal sprite + color pickers. Driven by `App.picker`; closed when the user
 //! selects something or hits Esc.
 
-use crate::app::{App, NodeEdit, TreeOp};
+use crate::app::App;
+use crate::ops::{NewGraphic, NodeEdit, TreeOp};
 use crate::doc::NodePath;
 use crate::inspector::parse_color_hex;
 
@@ -191,7 +192,7 @@ pub fn show_modal(ctx: &egui::Context, app: &mut App) {
                 | (true, Some(unity_sprite_author::manifest::Graphic::SpriteRenderer { .. }), PickerKind::Sprite) => {
                     app.pending_ops.push(TreeOp::SetGraphic {
                         path: p.target.clone(),
-                        graphic: Some(crate::app::NewGraphic::Rect),
+                        graphic: Some(NewGraphic::Rect),
                     });
                     app.pending_ops.push(TreeOp::Edit {
                         path: p.target,

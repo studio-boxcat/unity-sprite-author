@@ -3,19 +3,24 @@
 //! without needing eframe::App::update / a GPU context. Covers add/duplicate/
 //! delete/move-to plus selection round-trip across these mutations.
 
+#[path = "../src/action.rs"] mod action;
 #[path = "../src/app.rs"] mod app;
 #[path = "../src/atlas.rs"] mod atlas;
+#[path = "../src/command_palette.rs"] mod command_palette;
 #[path = "../src/doc.rs"] mod doc;
 #[path = "../src/inspector.rs"] mod inspector;
 #[path = "../src/menubar.rs"] mod menubar;
+#[path = "../src/ops.rs"] mod ops;
 #[path = "../src/picker.rs"] mod picker;
 #[path = "../src/preferences.rs"] mod preferences;
 #[path = "../src/preview.rs"] mod preview;
 #[path = "../src/selection.rs"] mod selection;
 #[path = "../src/serialize.rs"] mod serialize;
+#[path = "../src/theme.rs"] mod theme;
 #[path = "../src/tree_panel.rs"] mod tree_panel;
 
-use crate::app::{App, NewGraphic, NodeEdit, TreeOp};
+use crate::app::App;
+use crate::ops::{NewGraphic, NodeEdit, TreeOp};
 use crate::doc::{Doc, NodePath};
 use std::path::PathBuf;
 use unity_sprite_author::manifest::{Graphic, Manifest};

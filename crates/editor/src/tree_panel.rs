@@ -4,7 +4,8 @@
 //! containers show a folder-style glyph). Right-click context menu + mouse
 //! drag-to-reorder unchanged.
 
-use crate::app::{App, NewGraphic, TreeDropTarget, TreeOp};
+use crate::app::{App, TreeDropTarget};
+use crate::ops::{NewGraphic, TreeOp};
 use crate::doc::NodePath;
 use std::collections::HashMap;
 use unity_sprite_author::manifest::{Graphic, Node};

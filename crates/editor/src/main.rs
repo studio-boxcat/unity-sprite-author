@@ -2,16 +2,20 @@
 //! (one per combined-sprite tree), tree + inspector panels, atlas-backed
 //! sprite/color pickers, live composed-mesh preview canvas.
 
+mod action;
 mod app;
 mod atlas;
+mod command_palette;
 mod doc;
 mod inspector;
 mod menubar;
+mod ops;
 mod picker;
 mod preferences;
 mod preview;
 mod selection;
 mod serialize;
+mod theme;
 mod tree_panel;
 
 fn main() -> eframe::Result<()> {

@@ -2,7 +2,8 @@
 //! Mutations are enqueued as `TreeOp::Edit` so we don't borrow the doc mutably
 //! while the inspector runs.
 
-use crate::app::{App, NewGraphic, TreeOp, NodeEdit};
+use crate::app::App;
+use crate::ops::{NewGraphic, NodeEdit, TreeOp};
 use crate::doc::NodePath;
 use crate::picker::{Picker, PickerKind};
 use crate::serialize;
