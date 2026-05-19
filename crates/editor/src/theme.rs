@@ -26,6 +26,16 @@ pub const VERTEX_HANDLE_ACTIVE: Color32 = Color32::from_rgb(0, 220, 255);
 pub const DROP_INDICATOR: Color32 = Color32::from_rgb(0, 180, 255);
 pub const MARQUEE_STROKE: Color32 = Color32::from_rgb(0, 180, 255);
 
+// ---- Modal tile chrome (sprite picker, color picker, tree thumbnails) ----
+pub const TILE_BG: Color32 = Color32::from_gray(40);
+pub const TILE_BG_DARK: Color32 = Color32::from_gray(30);
+pub const TILE_LABEL_SUBTLE: Color32 = Color32::from_gray(150);
+pub const TILE_STROKE: Color32 = Color32::from_gray(80);
+
+// ---- Tree + canvas line accents ----
+pub const CONTAINER_GLYPH: Color32 = Color32::from_gray(140);
+pub const HANDLE_TETHER: Color32 = Color32::from_gray(120);
+
 // ---- Warnings ----
 pub const WARN_TEXT: Color32 = Color32::YELLOW;
 
@@ -37,3 +47,5 @@ pub fn guide_preview() -> Color32 { Color32::from_rgba_unmultiplied(0, 230, 255,
 pub fn row_alt_bg() -> Color32 { Color32::from_rgba_unmultiplied(255, 255, 255, 6) }
 pub fn marquee_fill() -> Color32 { Color32::from_rgba_unmultiplied(0, 180, 255, 30) }
 pub fn placeholder_sprite() -> Color32 { Color32::from_rgba_unmultiplied(255, 0, 220, 200) }
+/// Faint vertical line per indent level in the tree panel.
+pub fn indent_guide() -> Color32 { Color32::from_rgba_unmultiplied(255, 255, 255, 24) }

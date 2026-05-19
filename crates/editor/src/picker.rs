@@ -242,7 +242,7 @@ fn show_sprite_tile(
     let resp = ui.allocate_response(egui::vec2(96.0, 96.0), egui::Sense::click());
     let rect = resp.rect;
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 2.0, egui::Color32::from_gray(40));
+    painter.rect_filled(rect, 2.0, crate::theme::TILE_BG);
     if let Some(tex) = tex {
         let img_size = tex.size_vec2();
         let max = 70.0;
@@ -264,7 +264,7 @@ fn show_sprite_tile(
         egui::Align2::CENTER_CENTER,
         format!("{}×{}", size.0, size.1),
         egui::FontId::monospace(9.0),
-        egui::Color32::from_gray(150),
+        crate::theme::TILE_LABEL_SUBTLE,
     );
     if resp.hovered() {
         painter.rect_stroke(rect, 2.0, egui::Stroke::new(2.0, egui::Color32::WHITE));
@@ -286,14 +286,14 @@ fn show_color_swatch_tile(
     let resp = ui.allocate_response(egui::vec2(96.0, 96.0), egui::Sense::click());
     let rect = resp.rect;
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 2.0, egui::Color32::from_gray(30));
+    painter.rect_filled(rect, 2.0, crate::theme::TILE_BG_DARK);
     // Swatch area takes the top ~60% of the tile.
     let swatch = egui::Rect::from_min_max(
         rect.left_top() + egui::vec2(8.0, 8.0),
         rect.right_top() + egui::vec2(-8.0, 56.0),
     );
     painter.rect_filled(swatch, 2.0, color.unwrap_or(egui::Color32::DARK_GRAY));
-    painter.rect_stroke(swatch, 2.0, egui::Stroke::new(0.5, egui::Color32::from_gray(80)));
+    painter.rect_stroke(swatch, 2.0, egui::Stroke::new(0.5, crate::theme::TILE_STROKE));
     painter.text(
         egui::pos2(rect.center().x, rect.bottom() - 18.0),
         egui::Align2::CENTER_CENTER,
@@ -306,7 +306,7 @@ fn show_color_swatch_tile(
         egui::Align2::CENTER_CENTER,
         format!("{}×{}", size.0, size.1),
         egui::FontId::monospace(9.0),
-        egui::Color32::from_gray(150),
+        crate::theme::TILE_LABEL_SUBTLE,
     );
     if resp.hovered() {
         painter.rect_stroke(rect, 2.0, egui::Stroke::new(2.0, egui::Color32::WHITE));

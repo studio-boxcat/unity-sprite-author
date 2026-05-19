@@ -10,6 +10,9 @@ tree are excluded from per-tpsheet emission.
 
 Authoring paths: hand-edit the JSON, LLM-assist, or open it in the GUI
 editor (`cargo run -p unity-sprite-author-editor`, see `crates/editor/`).
+The editor opens your most-recently-used fab.json on launch, exposes
+every command through a Cmd+Shift+P palette, and auto-converts
+`type: "sprite", sprite: "Color_*"` leaves into rect polygons on load.
 The historical `CanvasSpriteAuthor` and `SpriteMeshAuthor` Unity prefabs
 that seeded the corpus have been retired (meow-tower c23474b2ab40); new
 trees are declared directly in the sidecar JSON.

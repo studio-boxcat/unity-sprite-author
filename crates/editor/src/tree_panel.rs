@@ -152,6 +152,7 @@ fn show_node(
     let row_idx = tcx.row;
     tcx.row += 1;
     let bg_rect = paint_row_background(ui, row_idx);
+    paint_indent_guides(ui, bg_rect, depth);
     let selected = app.selection.is_selected(&path);
 
     let row_resp = if node.children.is_empty() {
@@ -161,7 +162,7 @@ fn show_node(
         let mut header_resp_opt: Option<egui::Response> = None;
         egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true)
             .show_header(ui, |ui| {
-                ui.add_space((depth as f32) * 12.0);
+                ui.add_space((depth as f32) * INDENT_UNIT_PX);
                 header_resp_opt = Some(inline_row(ui, app, node, &label_for(node), selected, tcx));
             })
             .body(|ui| {
@@ -193,7 +194,7 @@ fn leaf_row(
 ) -> egui::Response {
     let mut row_resp = None;
     ui.horizontal(|ui| {
-        ui.add_space((depth as f32) * 12.0);
+        ui.add_space((depth as f32) * INDENT_UNIT_PX);
         let r = inline_row(ui, app, node, label, selected, tcx);
         row_resp = Some(r);
     });
@@ -223,7 +224,7 @@ fn paint_leaf_icon(ui: &mut egui::Ui, node: &Node, tcx: &TreeCtx) {
     match &node.graphic {
         None => paint_container_stack(node, tcx, &painter, rect, full_uv),
         Some(Graphic::Sprite { sprite, .. }) | Some(Graphic::SpriteRenderer { sprite, .. }) => {
-            painter.rect_filled(rect, 1.0, egui::Color32::from_gray(40));
+            painter.rect_filled(rect, 1.0, crate::theme::TILE_BG);
             if let Some(tex) = tcx.thumbs.get(sprite) {
                 let img = tex.size_vec2();
                 let s = (THUMB_PX / img.x.max(img.y)).min(1.0);
@@ -251,7 +252,7 @@ fn paint_container_stack(node: &Node, tcx: &TreeCtx, painter: &egui::Painter, re
     let mut samples: Vec<DescendantSample> = Vec::with_capacity(3);
     collect_descendant_samples(node, &mut samples, 3);
     if samples.is_empty() {
-        painter.rect_stroke(rect.shrink(2.0), 1.0, egui::Stroke::new(0.8, egui::Color32::from_gray(140)));
+        painter.rect_stroke(rect.shrink(2.0), 1.0, egui::Stroke::new(0.8, crate::theme::CONTAINER_GLYPH));
         return;
     }
     // Draw back-to-front so the most-relevant first sample lands on top.
@@ -264,17 +265,17 @@ fn paint_container_stack(node: &Node, tcx: &TreeCtx, painter: &egui::Painter, re
                     let img = tex.size_vec2();
                     let s = (tile.width() / img.x.max(img.y)).min(1.0);
                     let img_rect = egui::Rect::from_center_size(tile.center(), img * s);
-                    painter.rect_filled(tile, 1.0, egui::Color32::from_gray(50));
+                    painter.rect_filled(tile, 1.0, crate::theme::TILE_BG);
                     painter.image(tex.id(), img_rect, full_uv, egui::Color32::WHITE);
                 } else {
-                    painter.rect_filled(tile, 1.0, egui::Color32::from_gray(50));
+                    painter.rect_filled(tile, 1.0, crate::theme::TILE_BG);
                 }
             }
             DescendantSample::Color(c) => {
                 painter.rect_filled(tile, 1.0, *c);
             }
         }
-        painter.rect_stroke(tile, 1.0, egui::Stroke::new(0.4, egui::Color32::from_gray(110)));
+        painter.rect_stroke(tile, 1.0, egui::Stroke::new(0.4, crate::theme::TILE_STROKE));
     }
 }
 
@@ -315,6 +316,55 @@ fn paint_row_background(ui: &mut egui::Ui, row_idx: usize) -> egui::Rect {
         ui.painter().rect_filled(rect, 0.0, crate::theme::row_alt_bg());
     }
     rect
+}
+
+/// Indent unit (px) shared between row-content indent and guide-line
+/// placement. Picking one constant keeps the two in lockstep.
+pub const INDENT_UNIT_PX: f32 = 12.0;
+
+/// Paint vertical guide lines at each ancestor's indent column for a row at
+/// `depth`. Skips depth 0 (tree-root rows have no ancestor column) and the
+/// row's own column (the line would land where the content starts).
+fn paint_indent_guides(ui: &egui::Ui, rect: egui::Rect, depth: usize) {
+    if depth < 2 { return; }
+    let painter = ui.painter();
+    let stroke = egui::Stroke::new(0.6, crate::theme::indent_guide());
+    // Guide for ancestor depth `a` (1..depth) sits centered in its 12px slot.
+    for a in 1..depth {
+        let x = rect.left() + (a as f32 - 1.0) * INDENT_UNIT_PX + INDENT_UNIT_PX * 0.5;
+        painter.line_segment(
+            [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+            stroke,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// For depth `d`, expected guide-column x-offsets from the row's left.
+    fn expected_guide_offsets(depth: usize) -> Vec<f32> {
+        (1..depth).map(|a| (a as f32 - 1.0) * INDENT_UNIT_PX + INDENT_UNIT_PX * 0.5).collect()
+    }
+
+    #[test]
+    fn depth_1_has_no_guides() {
+        assert!(expected_guide_offsets(1).is_empty());
+    }
+
+    #[test]
+    fn depth_2_paints_one_guide_in_first_indent_column() {
+        let offsets = expected_guide_offsets(2);
+        assert_eq!(offsets.len(), 1);
+        assert!((offsets[0] - 6.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn each_extra_depth_adds_one_more_guide_offset() {
+        let offsets = expected_guide_offsets(5);
+        assert_eq!(offsets, vec![6.0, 18.0, 30.0, 42.0]);
+    }
 }
 
 fn label_for(node: &Node) -> String {

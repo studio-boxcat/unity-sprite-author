@@ -617,7 +617,7 @@ fn paint_size_handles(
         // recognizes its origin.
         if handle == SizeHandle::Rotate {
             let top_center_screen = xform.world_to_screen(positions[1]);
-            painter.line_segment([top_center_screen, p], egui::Stroke::new(0.5, egui::Color32::from_gray(120)));
+            painter.line_segment([top_center_screen, p], egui::Stroke::new(0.5, crate::theme::HANDLE_TETHER));
         }
     }
 }
