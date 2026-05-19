@@ -674,7 +674,7 @@ pub fn to_fab_combined(tree: &Tree) -> Result<crate::fab::Combined, BridgeError>
     let mut parts: Vec<fab::Part> = Vec::with_capacity(leaves.len());
     for leaf in leaves {
         let offset = [leaf.world_pos[0] * cs, leaf.world_pos[1] * cs];
-        let affine = fab::Affine {
+        let base_affine = fab::Affine {
             tx: 0.0,
             ty: 0.0,
             sx: leaf.world_scale[0],
@@ -686,8 +686,16 @@ pub fn to_fab_combined(tree: &Tree) -> Result<crate::fab::Combined, BridgeError>
                 sprite,
                 method,
                 border_mult,
-                ..
+                flip_x,
+                flip_y,
             } => {
+                // flipX/Y folds into the affine sign — matches the SMA path
+                // and the doc spec on `Graphic::Sprite`. Doing it here keeps
+                // the runtime per-vert chain `affine · v + offset` correct
+                // (no separate flip stage needed downstream).
+                let mut affine = base_affine;
+                if *flip_x { affine.sx = -affine.sx; }
+                if *flip_y { affine.sy = -affine.sy; }
                 let fab_method = map_method(*method);
                 // Pre-scale `size` by canvas_scale_implicit, mirroring the
                 // `offset` pattern. The slice/tile mesh-gen math in
@@ -730,7 +738,7 @@ pub fn to_fab_combined(tree: &Tree) -> Result<crate::fab::Combined, BridgeError>
                     polygon_sprite: polygon_sprite.clone(),
                     vertices: vertices.clone(),
                     triangles: triangles.clone(),
-                    affine,
+                    affine: base_affine,
                     offset,
                 });
             }
@@ -1218,6 +1226,69 @@ mod tests {
                 // (one ULP off in f32; 0.01 is non-representable binary fraction).
                 assert!((offset[0] - 0.1).abs() < 1e-6, "{:?}", offset);
                 assert!((offset[1] - 0.2).abs() < 1e-6, "{:?}", offset);
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn bridge_flipx_folds_into_negative_sx() {
+        // The doc spec (line 686-687) and the SMA path both say flipX/flipY
+        // fold into the affine sign. CSA's `to_fab_combined` historically
+        // dropped them — guard against the regression.
+        let m = parse_single(
+            r#"{ "version":1, "combined":[{
+              "name":"X","mode": "ui",
+              "children":[
+                {"type":"sprite","sprite":"a","flipX":true}
+              ]
+            }]}"#,
+        );
+        let c = to_fab_combined(&m.trees[0]).unwrap();
+        match &c.parts[0] {
+            crate::fab::Part::AtlasSprite { affine, .. } => {
+                assert!(affine.sx < 0.0, "flipX should negate sx, got {}", affine.sx);
+                assert!(affine.sy > 0.0, "sy unaffected by flipX, got {}", affine.sy);
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn bridge_flipy_folds_into_negative_sy() {
+        let m = parse_single(
+            r#"{ "version":1, "combined":[{
+              "name":"X","mode": "ui",
+              "children":[
+                {"type":"sprite","sprite":"a","flipY":true}
+              ]
+            }]}"#,
+        );
+        let c = to_fab_combined(&m.trees[0]).unwrap();
+        match &c.parts[0] {
+            crate::fab::Part::AtlasSprite { affine, .. } => {
+                assert!(affine.sx > 0.0);
+                assert!(affine.sy < 0.0, "flipY should negate sy, got {}", affine.sy);
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn bridge_flipxy_combines_with_scale_sign() {
+        // flipX + composed negative scale: signs cancel to positive.
+        let m = parse_single(
+            r#"{ "version":1, "combined":[{
+              "name":"X","mode": "ui",
+              "children":[
+                {"scale":[-1, 1],"type":"sprite","sprite":"a","flipX":true}
+              ]
+            }]}"#,
+        );
+        let c = to_fab_combined(&m.trees[0]).unwrap();
+        match &c.parts[0] {
+            crate::fab::Part::AtlasSprite { affine, .. } => {
+                assert!(affine.sx > 0.0, "flipX × scale -1 should restore positive sx");
             }
             _ => panic!(),
         }

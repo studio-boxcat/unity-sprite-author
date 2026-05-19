@@ -33,6 +33,13 @@ pub struct App {
     /// rotates selection through overlapping parts (Photoshop convention).
     /// Reset when the cursor moves outside `CLICK_ROTATE_TOLERANCE_PX`.
     pub click_rotate: Option<ClickRotateState>,
+    /// Photoshop-style horizontal + vertical guidelines, per `(doc, tree)`.
+    /// Session-only; not persisted (would require per-file metadata or a
+    /// sidecar). Empty on launch.
+    pub guides: std::collections::HashMap<ViewKey, GuideSet>,
+    /// Active drag of a guide line (new or existing). Owns the axis +
+    /// optional index of the guide being mutated.
+    pub guide_drag: Option<GuideDrag>,
     /// Source path of an in-flight tree-row drag (set on drag_started by the
     /// tree panel; consumed on mouse-up to emit a `MoveTo` op).
     pub tree_drag: Option<NodePath>,
@@ -62,6 +69,25 @@ pub struct App {
     /// edits). Reset by any non-drag op or by a drag_stopped signal from the
     /// preview canvas.
     pub in_drag_chain: bool,
+}
+
+/// One per `(doc, tree)`. Lines are world coords on the canvas — vertical
+/// guides snap an `x` coord; horizontal guides snap a `y` coord.
+#[derive(Debug, Clone, Default)]
+pub struct GuideSet {
+    pub vertical: Vec<f32>,   // x positions
+    pub horizontal: Vec<f32>, // y positions
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum GuideDrag {
+    /// Cursor is dragging from the top ruler (creating a vertical line).
+    AddVertical,
+    /// Cursor is dragging from the left ruler (creating a horizontal line).
+    AddHorizontal,
+    /// Re-positioning an existing vertical guide at index `0`.
+    MoveVertical(usize),
+    MoveHorizontal(usize),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -162,6 +188,9 @@ pub enum NodeEdit {
     PolygonColor(String),
     PolygonVertex { idx: usize, value: [f32; 2] },
     PolygonAddVertex,
+    /// Insert a vertex at `idx` (shifts existing vertices [idx..] up by 1).
+    /// Used by shift-click vertex insertion in the canvas.
+    PolygonInsertVertex { idx: usize, value: [f32; 2] },
     PolygonRemoveVertex(usize),
     PolygonTriangles(Option<Vec<u16>>),
     /// Update a rect-shape polygon's 4 vertices from width/height (centered).
@@ -289,6 +318,30 @@ impl App {
     fn close_tab(&mut self, tab_idx: usize) {
         if tab_idx >= self.tabs.len() {
             return;
+        }
+        // If the closing tab's doc is dirty, ask before dropping changes.
+        let tab = self.tabs[tab_idx];
+        let dirty = self.docs.get(tab.doc).map_or(false, |d| d.dirty);
+        if dirty {
+            let doc_path = self.docs[tab.doc].path.display().to_string();
+            match rfd::MessageDialog::new()
+                .set_level(rfd::MessageLevel::Warning)
+                .set_title("Unsaved changes")
+                .set_description(&format!("Save changes to {doc_path} before closing?"))
+                .set_buttons(rfd::MessageButtons::YesNoCancel)
+                .show()
+            {
+                rfd::MessageDialogResult::Yes => {
+                    if let Some(doc) = self.docs.get_mut(tab.doc) {
+                        if doc.save().is_err() {
+                            self.status = Some(format!("save failed; close cancelled"));
+                            return;
+                        }
+                    }
+                }
+                rfd::MessageDialogResult::No => { /* discard */ }
+                _ => return, // cancel
+            }
         }
         self.tabs.remove(tab_idx);
         // Adjust active_tab.
@@ -894,6 +947,15 @@ fn apply_edit(node: &mut Node, edit: NodeEdit) {
             if let Some(Graphic::Polygon { vertices, .. }) = &mut node.graphic {
                 let last = vertices.last().copied().unwrap_or([0.0, 0.0]);
                 vertices.push(last);
+            }
+        }
+        NodeEdit::PolygonInsertVertex { idx, value } => {
+            if let Some(Graphic::Polygon { vertices, triangles, .. }) = &mut node.graphic {
+                let i = idx.min(vertices.len());
+                vertices.insert(i, value);
+                // Adding a vertex invalidates explicit triangle indices —
+                // the inspector / runtime can fall back to ear-clip.
+                *triangles = None;
             }
         }
         NodeEdit::PolygonRemoveVertex(idx) => {

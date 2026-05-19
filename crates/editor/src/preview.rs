@@ -8,7 +8,7 @@
 //!
 //! Persistent pan/zoom in `App.views`; rebuilt only when needed.
 
-use crate::app::{App, NodeEdit, TreeOp, ViewState};
+use crate::app::{App, GuideDrag, NodeEdit, TreeOp, ViewState};
 use crate::doc::NodePath;
 use crate::tree_panel;
 use unity_sprite_author::combine::{self, AtlasSize, BuildOutput, CombinedMesh};
@@ -21,6 +21,9 @@ use unity_sprite_author::tpsheet::{
 const POS_SNAP: f32 = 0.25;
 const HANDLE_R: f32 = 5.0;
 const VERTEX_HANDLE_R: f32 = 5.0;
+const RULER_PX: f32 = 18.0;
+const GUIDE_HIT_PX: f32 = 4.0;
+const GUIDE_SNAP_PX: f32 = 6.0;
 
 pub fn show(ui: &mut egui::Ui, app: &mut App) {
     let Some(tab) = app.active_tab() else {
@@ -73,15 +76,35 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
         let view = app.views.entry(view_key).or_default();
         ui.label(format!("zoom: {:.1}x", view.zoom / 100.0));
         ui.label(format!("center: ({:.1}, {:.1})", view.center_world[0], view.center_world[1]));
-        ui.separator();
-        ui.label(format!("{} sel", app.selection.len()));
     });
 
     // ----- Canvas -----
     let avail = ui.available_size();
-    let (resp, painter) = ui.allocate_painter(avail, egui::Sense::click_and_drag());
-    let rect = resp.rect;
-    painter.rect_filled(rect, 0.0, egui::Color32::from_gray(28));
+    let (full_resp, painter) = ui.allocate_painter(avail, egui::Sense::click_and_drag());
+    let full_rect = full_resp.rect;
+    painter.rect_filled(full_rect, 0.0, egui::Color32::from_gray(28));
+    // Carve out ruler strips along the top + left so canvas coords don't
+    // collide with ruler hit-tests.
+    let top_ruler = egui::Rect::from_min_max(
+        full_rect.left_top() + egui::vec2(RULER_PX, 0.0),
+        egui::pos2(full_rect.right(), full_rect.top() + RULER_PX),
+    );
+    let left_ruler = egui::Rect::from_min_max(
+        full_rect.left_top() + egui::vec2(0.0, RULER_PX),
+        egui::pos2(full_rect.left() + RULER_PX, full_rect.bottom()),
+    );
+    let corner = egui::Rect::from_min_max(
+        full_rect.left_top(),
+        full_rect.left_top() + egui::vec2(RULER_PX, RULER_PX),
+    );
+    let rect = egui::Rect::from_min_max(
+        full_rect.left_top() + egui::vec2(RULER_PX, RULER_PX),
+        full_rect.max,
+    );
+    painter.rect_filled(top_ruler, 0.0, egui::Color32::from_gray(40));
+    painter.rect_filled(left_ruler, 0.0, egui::Color32::from_gray(40));
+    painter.rect_filled(corner, 0.0, egui::Color32::from_gray(48));
+    let resp = full_resp; // re-used; hit-tests below check the inset rect
 
     {
         let view = app.views.entry(view_key).or_default();
@@ -104,6 +127,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
     handle_view_input(app, view_key, &resp, rect, &ctx);
 
     let cs = tree_clone.output.canvas_scale_implicit();
+    paint_size_handles(&painter, &view_built, &xform, app, cs);
+    paint_rulers(&painter, top_ruler, left_ruler, &xform);
+    paint_guides(&painter, app, (doc_idx, tree_idx), rect, &xform);
+    handle_guide_interaction(app, &resp, &painter, (doc_idx, tree_idx), top_ruler, left_ruler, rect, &xform, &ctx);
 
     // Mouse-down selection / marquee start / click rotation through stack.
     let primary_pressed = ctx.input(|i| i.pointer.primary_pressed());
@@ -127,11 +154,19 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
     if primary_pressed && rect.contains(hover_pos.unwrap_or(egui::Pos2::ZERO)) {
         if hovered_handle.is_none() && hovered_part.is_none() {
             let (cmd, shift) = ctx.input(|i| (i.modifiers.command, i.modifiers.shift));
-            if !cmd && !shift {
-                app.selection.clear();
+            // Shift-click on empty canvas with a polygon leaf selected: if
+            // the click is close to the polygon perimeter, insert a vertex
+            // there instead of starting a marquee.
+            let inserted = if shift {
+                try_insert_polygon_vertex(app, &tree_clone, &view_built, hover_pos.unwrap(), &xform)
+            } else { false };
+            if !inserted {
+                if !cmd && !shift {
+                    app.selection.clear();
+                }
+                app.marquee_origin = hover_pos;
+                app.click_rotate = None;
             }
-            app.marquee_origin = hover_pos;
-            app.click_rotate = None;
         } else if let Some(pos) = hover_pos {
             let (cmd, shift) = ctx.input(|i| (i.modifiers.command, i.modifiers.shift));
             let path = click_rotate_pick(app, &view_built, pos, &xform, cmd, shift);
@@ -167,7 +202,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
     // Drag interactions: handles → vertex → node, in priority order.
     handle_size_handle_drag(app, &resp, &xform, &view_built, &tree_clone, cs);
     handle_polygon_vertex_drag(app, &painter, &resp, &xform, &view_built, &tree_clone);
-    handle_node_drag(app, &resp, &xform, cs);
+    handle_node_drag(app, &resp, &xform, cs, (doc_idx, tree_idx));
 
     if resp.drag_stopped() {
         app.in_drag_chain = false;
@@ -553,6 +588,279 @@ fn paint_pivot_markers(painter: &egui::Painter, view: &BuiltView, xform: &Screen
     }
 }
 
+fn paint_size_handles(
+    painter: &egui::Painter,
+    view: &BuiltView,
+    xform: &ScreenTransform,
+    app: &App,
+    _cs: f32,
+) {
+    let Some(primary) = app.selection.primary() else { return; };
+    let Some(info) = view.parts.iter().find(|p| &p.path == primary) else { return; };
+    let Some(rect_size) = info.rect_size_world else { return; };
+    let positions = handle_positions(info.pivot_world, rect_size, info.affine, 1.0);
+    let stroke = egui::Stroke::new(1.0, egui::Color32::BLACK);
+    for (i, w) in positions.iter().enumerate() {
+        let p = xform.world_to_screen(*w);
+        let handle = SizeHandle::from_idx(i);
+        if handle == SizeHandle::Mid { continue; }
+        let r = if handle == SizeHandle::Rotate { 4.5 } else { 4.0 };
+        let fill = if handle == SizeHandle::Rotate {
+            egui::Color32::from_rgb(80, 200, 120)
+        } else {
+            egui::Color32::from_rgb(255, 200, 0)
+        };
+        painter.circle_filled(p, r, fill);
+        painter.circle_stroke(p, r, stroke);
+        // Visual tether: line from top-center to rotation handle so the user
+        // recognizes its origin.
+        if handle == SizeHandle::Rotate {
+            let top_center_screen = xform.world_to_screen(positions[1]);
+            painter.line_segment([top_center_screen, p], egui::Stroke::new(0.5, egui::Color32::from_gray(120)));
+        }
+    }
+}
+
+/// Render pixel ruler ticks along the top + left edges of the canvas.
+/// Tick step in world units auto-scales so the screen-space spacing stays
+/// near the target band (`MIN_TICK_PX`..`MAX_TICK_PX`).
+fn paint_rulers(
+    painter: &egui::Painter,
+    top: egui::Rect,
+    left: egui::Rect,
+    xform: &ScreenTransform,
+) {
+    const MIN_TICK_PX: f32 = 50.0;
+    let step = nice_tick_step(MIN_TICK_PX / xform.scale.max(1e-3));
+    let tick_color = egui::Color32::from_gray(160);
+    let label_color = egui::Color32::from_gray(200);
+    let stroke = egui::Stroke::new(0.5, tick_color);
+
+    // Top ruler: ticks at world x = k*step, drawn at screen x = world_to_screen([x, 0]).x.
+    let world_left = xform.screen_to_world(top.left_top())[0];
+    let world_right = xform.screen_to_world(top.right_top())[0];
+    let first = (world_left / step).floor() as i64;
+    let last = (world_right / step).ceil() as i64;
+    for k in first..=last {
+        let x_world = k as f32 * step;
+        let sp = xform.world_to_screen([x_world, 0.0]);
+        let x = sp.x;
+        if x < top.left() || x > top.right() { continue; }
+        let major = k.rem_euclid(5) == 0;
+        let h = if major { RULER_PX * 0.7 } else { RULER_PX * 0.35 };
+        painter.line_segment([egui::pos2(x, top.bottom() - h), egui::pos2(x, top.bottom())], stroke);
+        if major {
+            painter.text(
+                egui::pos2(x + 2.0, top.top()),
+                egui::Align2::LEFT_TOP,
+                format!("{x_world:.0}"),
+                egui::FontId::monospace(9.0),
+                label_color,
+            );
+        }
+    }
+    // Left ruler.
+    let world_top = xform.screen_to_world(left.left_top())[1];
+    let world_bottom = xform.screen_to_world(left.left_bottom())[1];
+    let first = (world_bottom / step).floor() as i64;
+    let last = (world_top / step).ceil() as i64;
+    for k in first..=last {
+        let y_world = k as f32 * step;
+        let sp = xform.world_to_screen([0.0, y_world]);
+        let y = sp.y;
+        if y < left.top() || y > left.bottom() { continue; }
+        let major = k.rem_euclid(5) == 0;
+        let w = if major { RULER_PX * 0.7 } else { RULER_PX * 0.35 };
+        painter.line_segment([egui::pos2(left.right() - w, y), egui::pos2(left.right(), y)], stroke);
+        if major {
+            painter.text(
+                egui::pos2(left.left() + 1.0, y - 1.0),
+                egui::Align2::LEFT_BOTTOM,
+                format!("{y_world:.0}"),
+                egui::FontId::monospace(9.0),
+                label_color,
+            );
+        }
+    }
+}
+
+/// "Nice" tick step for the ruler — a power-of-10 multiple of {1, 2, 5}
+/// just above `min_step` so the visible numbers stay round.
+fn nice_tick_step(min_step: f32) -> f32 {
+    if !min_step.is_finite() || min_step <= 0.0 { return 1.0; }
+    let exp = min_step.log10().floor();
+    let base = 10f32.powf(exp);
+    for m in [1.0_f32, 2.0, 5.0, 10.0] {
+        if base * m >= min_step {
+            return base * m;
+        }
+    }
+    base * 10.0
+}
+
+fn paint_guides(
+    painter: &egui::Painter,
+    app: &App,
+    key: crate::app::ViewKey,
+    rect: egui::Rect,
+    xform: &ScreenTransform,
+) {
+    let Some(set) = app.guides.get(&key) else { return; };
+    let stroke = egui::Stroke::new(0.7, egui::Color32::from_rgba_unmultiplied(0, 200, 255, 200));
+    for x in &set.vertical {
+        let sx = xform.world_to_screen([*x, 0.0]).x;
+        if sx < rect.left() || sx > rect.right() { continue; }
+        painter.line_segment([egui::pos2(sx, rect.top()), egui::pos2(sx, rect.bottom())], stroke);
+    }
+    for y in &set.horizontal {
+        let sy = xform.world_to_screen([0.0, *y]).y;
+        if sy < rect.top() || sy > rect.bottom() { continue; }
+        painter.line_segment([egui::pos2(rect.left(), sy), egui::pos2(rect.right(), sy)], stroke);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_guide_interaction(
+    app: &mut App,
+    resp: &egui::Response,
+    painter: &egui::Painter,
+    key: crate::app::ViewKey,
+    top: egui::Rect,
+    left: egui::Rect,
+    canvas: egui::Rect,
+    xform: &ScreenTransform,
+    ctx: &egui::Context,
+) {
+    let Some(cursor) = ctx.input(|i| i.pointer.hover_pos()) else { return; };
+    let primary_pressed = ctx.input(|i| i.pointer.primary_pressed());
+    let primary_down = ctx.input(|i| i.pointer.primary_down());
+    let primary_released = ctx.input(|i| i.pointer.primary_released());
+
+    // Start a new drag.
+    if primary_pressed && app.guide_drag.is_none() {
+        if top.contains(cursor) {
+            app.guide_drag = Some(GuideDrag::AddVertical);
+        } else if left.contains(cursor) {
+            app.guide_drag = Some(GuideDrag::AddHorizontal);
+        } else if canvas.contains(cursor) {
+            // Hit-test existing guides.
+            if let Some((axis, idx)) = hit_test_guide(app, key, cursor, xform) {
+                app.guide_drag = Some(match axis {
+                    GuideAxis::Vertical => GuideDrag::MoveVertical(idx),
+                    GuideAxis::Horizontal => GuideDrag::MoveHorizontal(idx),
+                });
+            }
+        }
+    }
+
+    // While dragging, show a live preview line + update the position.
+    if let Some(drag) = app.guide_drag {
+        let preview_stroke = egui::Stroke::new(0.7, egui::Color32::from_rgba_unmultiplied(0, 230, 255, 220));
+        let world = xform.screen_to_world(cursor);
+        match drag {
+            GuideDrag::AddVertical | GuideDrag::MoveVertical(_) => {
+                let x = world[0];
+                let sx = xform.world_to_screen([x, 0.0]).x;
+                painter.line_segment([egui::pos2(sx, canvas.top()), egui::pos2(sx, canvas.bottom())], preview_stroke);
+            }
+            GuideDrag::AddHorizontal | GuideDrag::MoveHorizontal(_) => {
+                let y = world[1];
+                let sy = xform.world_to_screen([0.0, y]).y;
+                painter.line_segment([egui::pos2(canvas.left(), sy), egui::pos2(canvas.right(), sy)], preview_stroke);
+            }
+        }
+    }
+
+    // Commit / delete on release.
+    if primary_released {
+        if let Some(drag) = app.guide_drag.take() {
+            let world = xform.screen_to_world(cursor);
+            let set = app.guides.entry(key).or_default();
+            let out_of_canvas = !canvas.contains(cursor);
+            match drag {
+                GuideDrag::AddVertical => {
+                    if canvas.contains(cursor) { set.vertical.push(world[0]); }
+                }
+                GuideDrag::AddHorizontal => {
+                    if canvas.contains(cursor) { set.horizontal.push(world[1]); }
+                }
+                GuideDrag::MoveVertical(i) => {
+                    if out_of_canvas {
+                        if i < set.vertical.len() { set.vertical.remove(i); }
+                    } else if let Some(v) = set.vertical.get_mut(i) {
+                        *v = world[0];
+                    }
+                }
+                GuideDrag::MoveHorizontal(i) => {
+                    if out_of_canvas {
+                        if i < set.horizontal.len() { set.horizontal.remove(i); }
+                    } else if let Some(v) = set.horizontal.get_mut(i) {
+                        *v = world[1];
+                    }
+                }
+            }
+        }
+    } else if !primary_down {
+        // Mouse left the drag without a press registered (e.g. click outside).
+        // Don't leak the drag state.
+        // Note: don't clear here — pointer_released path covers normal cases.
+    }
+    let _ = resp;
+}
+
+#[derive(Copy, Clone)]
+enum GuideAxis { Vertical, Horizontal }
+
+fn hit_test_guide(
+    app: &App,
+    key: crate::app::ViewKey,
+    screen: egui::Pos2,
+    xform: &ScreenTransform,
+) -> Option<(GuideAxis, usize)> {
+    let set = app.guides.get(&key)?;
+    for (i, x) in set.vertical.iter().enumerate() {
+        let sx = xform.world_to_screen([*x, 0.0]).x;
+        if (screen.x - sx).abs() < GUIDE_HIT_PX {
+            return Some((GuideAxis::Vertical, i));
+        }
+    }
+    for (i, y) in set.horizontal.iter().enumerate() {
+        let sy = xform.world_to_screen([0.0, *y]).y;
+        if (screen.y - sy).abs() < GUIDE_HIT_PX {
+            return Some((GuideAxis::Horizontal, i));
+        }
+    }
+    None
+}
+
+/// Snap `world_pos` to the nearest guide on each axis if within
+/// `GUIDE_SNAP_PX` (screen-space). Returns the possibly-snapped pos.
+fn snap_to_guides(
+    app: &App,
+    key: crate::app::ViewKey,
+    world_pos: [f32; 2],
+    xform: &ScreenTransform,
+) -> [f32; 2] {
+    let Some(set) = app.guides.get(&key) else { return world_pos; };
+    let mut out = world_pos;
+    let screen = xform.world_to_screen(world_pos);
+    for x in &set.vertical {
+        let sx = xform.world_to_screen([*x, 0.0]).x;
+        if (screen.x - sx).abs() < GUIDE_SNAP_PX {
+            out[0] = *x;
+            break;
+        }
+    }
+    for y in &set.horizontal {
+        let sy = xform.world_to_screen([0.0, *y]).y;
+        if (screen.y - sy).abs() < GUIDE_SNAP_PX {
+            out[1] = *y;
+            break;
+        }
+    }
+    out
+}
+
 fn paint_hud(painter: &egui::Painter, rect: egui::Rect, tree: &manifest::Tree, mesh: &CombinedMesh) {
     let text = format!(
         "{} · {} parts · {} verts · {} tris",
@@ -615,6 +923,45 @@ fn zoom_around(z: &mut f32, c: &mut [f32; 2], rect: egui::Rect, hover: Option<eg
     } else {
         *z = (*z * factor).clamp(0.5, 50_000.0);
     }
+}
+
+/// Shift-click vertex insertion. Returns `true` if a vertex was inserted, so
+/// the caller can suppress the marquee that would otherwise start.
+fn try_insert_polygon_vertex(
+    app: &mut App,
+    tree: &manifest::Tree,
+    view: &BuiltView,
+    screen: egui::Pos2,
+    xform: &ScreenTransform,
+) -> bool {
+    let Some(path) = app.selection.primary().cloned() else { return false; };
+    let Some(info) = view.parts.iter().find(|p| p.path == path) else { return false; };
+    let Some(node) = resolve_in_tree(tree, &path) else { return false; };
+    let Some(Graphic::Polygon { vertices, .. }) = &node.graphic else { return false; };
+    if vertices.len() < 3 { return false; }
+
+    let world = xform.screen_to_world(screen);
+    // Convert click → polygon local frame.
+    let local_world = [world[0] - info.pivot_world[0], world[1] - info.pivot_world[1]];
+    let local = invert_affine_delta(local_world, &info.affine);
+
+    let (idx, projected) = match project_onto_polygon_perimeter(local, vertices) {
+        Some(x) => x,
+        None => return false,
+    };
+
+    // Reject inserts too far from the actual perimeter to avoid accidental
+    // adds. Tolerance scales with zoom so the threshold feels consistent.
+    let d_local = ((projected[0] - local[0]).powi(2) + (projected[1] - local[1]).powi(2)).sqrt();
+    let max_screen_px = 16.0;
+    let max_local = max_screen_px / xform.scale / info.affine.sx.abs().max(1e-3);
+    if d_local > max_local { return false; }
+
+    app.pending_ops.push(TreeOp::Edit {
+        path,
+        edit: NodeEdit::PolygonInsertVertex { idx, value: projected },
+    });
+    true
 }
 
 /// Pick the next part under `pos` using the click-rotation state in `app`.
@@ -695,16 +1042,20 @@ pub enum SizeHandle {
     Nw, N,  Ne,
     W,  Mid, E,
     Sw, S,  Se,
+    /// Sits above the top-center handle. Dragging rotates the leaf about its
+    /// pivot. Shift snaps to 15°.
+    Rotate,
 }
 
 impl SizeHandle {
     fn from_idx(i: usize) -> Self {
         use SizeHandle::*;
-        [Nw, N, Ne, W, Mid, E, Sw, S, Se][i]
+        const TABLE: [SizeHandle; 10] = [Nw, N, Ne, W, Mid, E, Sw, S, Se, Rotate];
+        TABLE[i]
     }
 
     /// (dx_left, dy_top, dx_right, dy_bottom) edge mask: which edges this
-    /// handle drags. `Mid` returns all-false (translate-only, not implemented).
+    /// handle drags. `Mid` / `Rotate` return all-false (size-unchanged).
     fn edge_mask(self) -> (bool, bool, bool, bool) {
         use SizeHandle::*;
         match self {
@@ -717,22 +1068,28 @@ impl SizeHandle {
             Sw  => (true,  false, false, true),
             S   => (false, false, false, true),
             Se  => (false, false, true,  true),
+            Rotate => (false, false, false, false),
         }
     }
 }
 
-/// World positions of the 9 handles for a part's rect, in row-major
-/// (NW, N, NE, W, MID, E, SW, S, SE) order. Center is the part's pivot; the
-/// rect extends `size` in each axis, rotated by the part's affine.
-fn handle_positions(pivot_world: [f32; 2], rect_size: [f32; 2], affine: fab::Affine, cs: f32) -> [[f32; 2]; 9] {
+/// World positions of the 10 handles for a part's rect — the 9-way grid in
+/// row-major (NW, N, NE, W, MID, E, SW, S, SE) order, plus the rotation
+/// handle at index 9, sitting above the top-center handle.
+fn handle_positions(pivot_world: [f32; 2], rect_size: [f32; 2], affine: fab::Affine, cs: f32) -> [[f32; 2]; 10] {
     let hw = rect_size[0] * 0.5 * cs;
     let hh = rect_size[1] * 0.5 * cs;
+    // Rotation handle offset in local frame: above the top-center, offset
+    // by a screen-relative-ish stub. Using local units keeps it consistent
+    // with the rest of the handle layout under rotation.
+    let rotate_offset = (hh + (rect_size[1].abs().max(rect_size[0].abs()) * cs * 0.25).max(0.5)).max(hh + 0.5);
     let local = [
         [-hw,  hh], [0.0,  hh], [hw,  hh],
         [-hw, 0.0], [0.0, 0.0], [hw, 0.0],
         [-hw, -hh], [0.0, -hh], [hw, -hh],
+        [0.0, rotate_offset],
     ];
-    let mut out = [[0.0; 2]; 9];
+    let mut out = [[0.0; 2]; 10];
     let r = affine.rot_deg_ccw.to_radians();
     let (s, c) = r.sin_cos();
     for (i, p) in local.iter().enumerate() {
@@ -769,6 +1126,30 @@ fn handle_size_handle_drag(
 
     let Some(path) = app.selection.primary().cloned() else { return; };
     let Some(info) = view.parts.iter().find(|p| p.path == path) else { return; };
+
+    // Rotation handle drives `rot_deg_ccw` directly, not size.
+    if handle == SizeHandle::Rotate {
+        let Some(cursor) = resp.hover_pos() else { return; };
+        let cursor_world = xform.screen_to_world(cursor);
+        let dx = cursor_world[0] - info.pivot_world[0];
+        let dy = cursor_world[1] - info.pivot_world[1];
+        if dx.abs() < 1e-6 && dy.abs() < 1e-6 { return; }
+        // Handle's local frame is "up" (+Y). After rot of θ, up maps to
+        // (-sin θ, cos θ). We want that to point at the cursor → sin θ = -dx_n,
+        // cos θ = dy_n  ⇒  θ = atan2(-dx, dy).
+        let mut new_rot = (-dx).atan2(dy).to_degrees();
+        let shift = resp.ctx.input(|i| i.modifiers.shift);
+        if shift {
+            // Snap to 15° increments.
+            new_rot = (new_rot / 15.0).round() * 15.0;
+        }
+        app.pending_ops.push(TreeOp::Edit {
+            path,
+            edit: NodeEdit::Rot(new_rot),
+        });
+        return;
+    }
+
     let Some(cur_size) = info.rect_size_world else { return; };
     // Drag delta in unrotated local frame (un-rotate then scale-canvas back).
     let world_d = xform.screen_delta_to_world(delta);
@@ -923,6 +1304,7 @@ fn handle_node_drag(
     resp: &egui::Response,
     xform: &ScreenTransform,
     cs: f32,
+    guide_key: crate::app::ViewKey,
 ) {
     if !resp.dragged() { return; }
     if app.dragging_polygon_vertex.is_some() || app.dragging_size_handle.is_some() { return; }
@@ -947,6 +1329,14 @@ fn handle_node_drag(
             new_pos[0] = snap_to(new_pos[0], POS_SNAP);
             new_pos[1] = snap_to(new_pos[1], POS_SNAP);
         }
+        // Guide snap operates in world units; pos is in canvas-pixel units
+        // for CSA. Convert, snap, convert back. Skip when Shift is held
+        // (Shift already opts out of snapping).
+        if snap {
+            let world_pos = [new_pos[0] * cs, new_pos[1] * cs];
+            let snapped = snap_to_guides(app, guide_key, world_pos, xform);
+            new_pos = [snapped[0] / cs, snapped[1] / cs];
+        }
         app.pending_ops.push(TreeOp::Edit { path, edit: NodeEdit::Pos(new_pos) });
     }
 }
@@ -957,6 +1347,37 @@ fn handle_node_drag(
 
 pub fn snap_to(v: f32, step: f32) -> f32 {
     (v / step).round() * step
+}
+
+/// Project a point onto the polygon's perimeter, returning the insertion
+/// index + the projected vertex in local coordinates. The insertion index
+/// is the position where the new vertex slots in to lie between
+/// vertices[idx-1] and vertices[idx] (or at the end when the closest
+/// edge wraps from `n-1` back to `0`, in which case `idx == n`).
+/// Returns `None` for polygons with < 3 vertices.
+pub fn project_onto_polygon_perimeter(point: [f32; 2], vertices: &[[f32; 2]]) -> Option<(usize, [f32; 2])> {
+    if vertices.len() < 3 { return None; }
+    let n = vertices.len();
+    let mut best: Option<(f32, usize, [f32; 2])> = None;
+    for i in 0..n {
+        let a = vertices[i];
+        let b = vertices[(i + 1) % n];
+        let proj = project_onto_segment(point, a, b);
+        let d2 = (proj[0] - point[0]).powi(2) + (proj[1] - point[1]).powi(2);
+        if best.map_or(true, |(bd2, _, _)| d2 < bd2) {
+            best = Some((d2, i + 1, proj));
+        }
+    }
+    best.map(|(_, idx, p)| (idx, p))
+}
+
+fn project_onto_segment(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
+    let ab = [b[0] - a[0], b[1] - a[1]];
+    let denom = ab[0] * ab[0] + ab[1] * ab[1];
+    if denom < 1e-12 { return a; }
+    let ap = [p[0] - a[0], p[1] - a[1]];
+    let t = ((ap[0] * ab[0] + ap[1] * ab[1]) / denom).clamp(0.0, 1.0);
+    [a[0] + ab[0] * t, a[1] + ab[1] * t]
 }
 
 fn apply_affine(v: [f32; 2], a: &fab::Affine, offset: [f32; 2]) -> [f32; 2] {
@@ -1094,12 +1515,70 @@ mod tests {
     #[test]
     fn handle_positions_centered_unrotated() {
         let pos = handle_positions([0.0, 0.0], [4.0, 2.0], fab::Affine::default(), 1.0);
-        // Index layout: NW, N, NE, W, MID, E, SW, S, SE.
+        // Index layout: NW, N, NE, W, MID, E, SW, S, SE, ROTATE.
         assert_eq!(pos[0], [-2.0, 1.0]); // NW
         assert_eq!(pos[2], [2.0, 1.0]);  // NE
         assert_eq!(pos[4], [0.0, 0.0]);  // MID
         assert_eq!(pos[6], [-2.0, -1.0]); // SW
         assert_eq!(pos[8], [2.0, -1.0]); // SE
+        // Rotation handle sits above the top-center handle.
+        assert!(pos[9][0].abs() < 1e-4 && pos[9][1] > 1.0, "rotate at {:?}", pos[9]);
+    }
+
+    #[test]
+    fn nice_tick_step_picks_125_pattern() {
+        // min_step in [1, 2) → step = 2.
+        assert_eq!(nice_tick_step(1.5), 2.0);
+        // [2, 5) → 5.
+        assert_eq!(nice_tick_step(3.0), 5.0);
+        // [5, 10) → 10.
+        assert_eq!(nice_tick_step(7.0), 10.0);
+        // Sub-1 inputs.
+        assert!((nice_tick_step(0.07) - 0.1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn rotation_handle_drag_math_matches_atan2() {
+        // Sanity: dragging the rotation handle to a cursor at (1, 0) world
+        // (right of pivot) should set rot such that local up → right, i.e.
+        // -90° (clockwise quarter turn).
+        let dx: f32 = 1.0;
+        let dy: f32 = 0.0;
+        let rot = (-dx).atan2(dy).to_degrees();
+        assert!((rot - -90.0).abs() < 1e-4, "{rot}");
+        // Cursor at (0, 1) → no rotation.
+        let rot = (-(0.0_f32)).atan2(1.0).to_degrees();
+        assert!(rot.abs() < 1e-4);
+        // Cursor at (-1, 0) → +90°.
+        let rot = (-(-1.0_f32)).atan2(0.0).to_degrees();
+        assert!((rot - 90.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn polygon_projection_finds_nearest_edge() {
+        // Square at (±1, ±1). Click at (0.95, 0.0) — closest is right edge.
+        let verts = [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]];
+        let (idx, projected) = project_onto_polygon_perimeter([0.95, 0.0], &verts).unwrap();
+        // Right edge is from verts[1] → verts[2]; insertion idx = 2.
+        assert_eq!(idx, 2);
+        assert!((projected[0] - 1.0).abs() < 1e-4);
+        assert!(projected[1].abs() < 1e-4);
+    }
+
+    #[test]
+    fn polygon_projection_clamps_to_segment_ends() {
+        // Click beyond the right edge's end → project to the corner, not
+        // past it. Tie-broken by iteration order (top edge wins on equal
+        // distance from (2, 1) — it goes verts[2] → verts[3]).
+        let verts = [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]];
+        let (_, projected) = project_onto_polygon_perimeter([2.0, 1.0], &verts).unwrap();
+        assert_eq!(projected, [1.0, 1.0]);
+    }
+
+    #[test]
+    fn polygon_projection_returns_none_for_degenerate() {
+        let verts = [[0.0, 0.0], [1.0, 0.0]];
+        assert!(project_onto_polygon_perimeter([0.5, 0.5], &verts).is_none());
     }
 
     #[test]

@@ -10,6 +10,9 @@ pub struct Picker {
     pub target: NodePath,
     pub filter: String,
     pub hex_buf: String,
+    /// Currently-displayed color in the color picker (kept in sync with the
+    /// hex_buf — egui's color widget mutates RGBA, the buf mirrors it).
+    pub live_color: egui::Color32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -25,7 +28,19 @@ impl Picker {
             target,
             filter: String::new(),
             hex_buf: String::new(),
+            live_color: egui::Color32::WHITE,
         }
+    }
+}
+
+/// Render `Color32` back to the hex form used in fab.json (`RRGGBB` when
+/// alpha is fully opaque, `RRGGBBAA` otherwise — matches the storage
+/// convention `manifest::resolve_color` decodes).
+pub fn color_to_hex(c: egui::Color32) -> String {
+    if c.a() == 255 {
+        format!("{:02X}{:02X}{:02X}", c.r(), c.g(), c.b())
+    } else {
+        format!("{:02X}{:02X}{:02X}{:02X}", c.r(), c.g(), c.b(), c.a())
     }
 }
 
@@ -86,7 +101,10 @@ pub fn show_modal(ctx: &egui::Context, app: &mut App) {
                                         let color = crate::inspector::parse_color_hex(hex);
                                         show_color_swatch_tile(ui, &name, hex, color, size, &mut pick_sprite);
                                     } else {
-                                        let tex = atlas.thumbnail(&ctx_for_tex, &name);
+                                        // Polygon-clipped variant gives the
+                                        // user a faithful sprite preview
+                                        // instead of the bounding-box crop.
+                                        let tex = atlas.thumbnail_clipped(&ctx_for_tex, &name);
                                         show_sprite_tile(ui, &name, tex.as_ref(), size, &mut pick_sprite);
                                     }
                                 }
@@ -94,17 +112,45 @@ pub fn show_modal(ctx: &egui::Context, app: &mut App) {
                         });
                     }
                     PickerKind::Color => {
+                        // Seed the picker's working color from the current
+                        // hex buffer (typed/edited) or from the leaf's color
+                        // on first open.
+                        let seed_color = parse_color_hex(&picker.hex_buf)
+                            .unwrap_or(picker.live_color);
+                        picker.live_color = seed_color;
+
                         ui.horizontal(|ui| {
+                            // egui's color edit button opens the full color
+                            // picker (RGB + HSV sliders, alpha, hex).
+                            let mut rgba = [
+                                seed_color.r() as f32 / 255.0,
+                                seed_color.g() as f32 / 255.0,
+                                seed_color.b() as f32 / 255.0,
+                                seed_color.a() as f32 / 255.0,
+                            ];
+                            if ui.color_edit_button_rgba_unmultiplied(&mut rgba).changed() {
+                                picker.live_color = egui::Color32::from_rgba_unmultiplied(
+                                    (rgba[0] * 255.0).round() as u8,
+                                    (rgba[1] * 255.0).round() as u8,
+                                    (rgba[2] * 255.0).round() as u8,
+                                    (rgba[3] * 255.0).round() as u8,
+                                );
+                                picker.hex_buf = color_to_hex(picker.live_color);
+                            }
                             ui.label("hex");
-                            ui.add(egui::TextEdit::singleline(&mut picker.hex_buf).hint_text("RRGGBB or RRGGBBAA"));
-                            if ui.button("OK").clicked() {
-                                if !picker.hex_buf.is_empty() {
-                                    pick_color_hex = Some(picker.hex_buf.clone());
+                            // Editable hex; live-syncs to the swatch above.
+                            let resp = ui.add(
+                                egui::TextEdit::singleline(&mut picker.hex_buf)
+                                    .desired_width(80.0)
+                                    .hint_text("RRGGBB / RRGGBBAA"),
+                            );
+                            if resp.changed() {
+                                if let Some(c) = parse_color_hex(&picker.hex_buf) {
+                                    picker.live_color = c;
                                 }
                             }
-                            if let Some(c) = parse_color_hex(&picker.hex_buf) {
-                                let (rect, _) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::hover());
-                                ui.painter().rect_filled(rect, 2.0, c);
+                            if ui.button("Apply").clicked() && !picker.hex_buf.is_empty() {
+                                pick_color_hex = Some(picker.hex_buf.clone());
                             }
                         });
                         ui.separator();
@@ -131,29 +177,40 @@ pub fn show_modal(ctx: &egui::Context, app: &mut App) {
 
     if let Some(name) = pick_sprite {
         if let Some(p) = app.picker.take() {
-            let edit = match p.kind {
-                PickerKind::Sprite => {
-                    // Decide whether this is a sprite leaf or sprite-renderer leaf
-                    // based on the current graphic, to dispatch the right edit.
-                    let edit = app
-                        .docs
-                        .get(p.target.doc)
-                        .and_then(|d| p.target.resolve(&d.manifest))
-                        .and_then(|n| match &n.graphic {
-                            Some(unity_sprite_author::manifest::Graphic::Sprite { .. }) => {
-                                Some(NodeEdit::SpriteRef(name.clone()))
-                            }
-                            Some(unity_sprite_author::manifest::Graphic::SpriteRenderer { .. }) => {
-                                Some(NodeEdit::SpriteRendererSprite(name.clone()))
-                            }
-                            _ => None,
-                        });
-                    edit
+            // Color_* picked from the sprite picker → leaf doesn't want to
+            // hold an atlas-sprite reference. Convert the leaf to a rect
+            // with that color so the user gets the right graphic kind.
+            let is_color = name.starts_with("Color_");
+            let current_graphic = app
+                .docs
+                .get(p.target.doc)
+                .and_then(|d| p.target.resolve(&d.manifest))
+                .and_then(|n| n.graphic.clone());
+            match (is_color, &current_graphic, p.kind) {
+                (true, Some(unity_sprite_author::manifest::Graphic::Sprite { .. }), PickerKind::Sprite)
+                | (true, Some(unity_sprite_author::manifest::Graphic::SpriteRenderer { .. }), PickerKind::Sprite) => {
+                    app.pending_ops.push(TreeOp::SetGraphic {
+                        path: p.target.clone(),
+                        graphic: Some(crate::app::NewGraphic::Rect),
+                    });
+                    app.pending_ops.push(TreeOp::Edit {
+                        path: p.target,
+                        edit: NodeEdit::PolygonColor(name),
+                    });
                 }
-                PickerKind::Color => None,
-            };
-            if let Some(edit) = edit {
-                app.pending_ops.push(TreeOp::Edit { path: p.target, edit });
+                (_, Some(unity_sprite_author::manifest::Graphic::Sprite { .. }), PickerKind::Sprite) => {
+                    app.pending_ops.push(TreeOp::Edit {
+                        path: p.target,
+                        edit: NodeEdit::SpriteRef(name),
+                    });
+                }
+                (_, Some(unity_sprite_author::manifest::Graphic::SpriteRenderer { .. }), PickerKind::Sprite) => {
+                    app.pending_ops.push(TreeOp::Edit {
+                        path: p.target,
+                        edit: NodeEdit::SpriteRendererSprite(name),
+                    });
+                }
+                _ => {}
             }
         }
     } else if let Some(hex) = pick_color_hex {
