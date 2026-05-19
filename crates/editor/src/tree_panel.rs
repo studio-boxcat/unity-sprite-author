@@ -218,11 +218,9 @@ fn inline_row(
 fn paint_leaf_icon(ui: &mut egui::Ui, node: &Node, tcx: &TreeCtx) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(THUMB_PX, THUMB_PX), egui::Sense::hover());
     let painter = ui.painter_at(rect);
+    let full_uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
     match &node.graphic {
-        None => {
-            // Container — folder-style glyph.
-            painter.rect_stroke(rect.shrink(2.0), 1.0, egui::Stroke::new(0.8, egui::Color32::from_gray(140)));
-        }
+        None => paint_container_stack(node, tcx, &painter, rect, full_uv),
         Some(Graphic::Sprite { sprite, .. }) | Some(Graphic::SpriteRenderer { sprite, .. }) => {
             painter.rect_filled(rect, 1.0, egui::Color32::from_gray(40));
             if let Some(tex) = tcx.thumbs.get(sprite) {
@@ -230,7 +228,7 @@ fn paint_leaf_icon(ui: &mut egui::Ui, node: &Node, tcx: &TreeCtx) {
                 let s = (THUMB_PX / img.x.max(img.y)).min(1.0);
                 let draw_size = img * s;
                 let img_rect = egui::Rect::from_center_size(rect.center(), draw_size);
-                painter.image(tex.id(), img_rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+                painter.image(tex.id(), img_rect, full_uv, egui::Color32::WHITE);
             } else if !sprite.is_empty() {
                 painter.text(rect.center(), egui::Align2::CENTER_CENTER, "?", egui::FontId::monospace(11.0), egui::Color32::YELLOW);
             }
@@ -243,6 +241,64 @@ fn paint_leaf_icon(ui: &mut egui::Ui, node: &Node, tcx: &TreeCtx) {
         }
     }
     ui.add_space(4.0);
+}
+
+/// Container icon: stack up to 3 descendant leaf previews diagonally to
+/// suggest "group". Falls back to a plain rect stroke when the container has
+/// no sprite/polygon descendants yet.
+fn paint_container_stack(node: &Node, tcx: &TreeCtx, painter: &egui::Painter, rect: egui::Rect, full_uv: egui::Rect) {
+    let mut samples: Vec<DescendantSample> = Vec::with_capacity(3);
+    collect_descendant_samples(node, &mut samples, 3);
+    if samples.is_empty() {
+        painter.rect_stroke(rect.shrink(2.0), 1.0, egui::Stroke::new(0.8, egui::Color32::from_gray(140)));
+        return;
+    }
+    // Draw back-to-front so the most-relevant first sample lands on top.
+    for (i, sample) in samples.iter().enumerate().rev() {
+        let offset = egui::vec2(i as f32 * 1.5, -(i as f32 * 1.5));
+        let tile = egui::Rect::from_center_size(rect.center() + offset, egui::vec2(THUMB_PX * 0.7, THUMB_PX * 0.7));
+        match sample {
+            DescendantSample::Sprite(name) => {
+                if let Some(tex) = tcx.thumbs.get(name) {
+                    let img = tex.size_vec2();
+                    let s = (tile.width() / img.x.max(img.y)).min(1.0);
+                    let img_rect = egui::Rect::from_center_size(tile.center(), img * s);
+                    painter.rect_filled(tile, 1.0, egui::Color32::from_gray(50));
+                    painter.image(tex.id(), img_rect, full_uv, egui::Color32::WHITE);
+                } else {
+                    painter.rect_filled(tile, 1.0, egui::Color32::from_gray(50));
+                }
+            }
+            DescendantSample::Color(c) => {
+                painter.rect_filled(tile, 1.0, *c);
+            }
+        }
+        painter.rect_stroke(tile, 1.0, egui::Stroke::new(0.4, egui::Color32::from_gray(110)));
+    }
+}
+
+enum DescendantSample {
+    Sprite(String),
+    Color(egui::Color32),
+}
+
+fn collect_descendant_samples(node: &Node, out: &mut Vec<DescendantSample>, cap: usize) {
+    for c in &node.children {
+        if out.len() >= cap { return; }
+        match &c.graphic {
+            Some(Graphic::Sprite { sprite, .. }) | Some(Graphic::SpriteRenderer { sprite, .. }) => {
+                if !sprite.is_empty() { out.push(DescendantSample::Sprite(sprite.clone())); }
+            }
+            Some(Graphic::Polygon { polygon_sprite, .. }) => {
+                let hex = polygon_sprite.strip_prefix("Color_").unwrap_or(polygon_sprite);
+                if let Some(c) = crate::inspector::parse_color_hex(hex) {
+                    out.push(DescendantSample::Color(c));
+                }
+            }
+            None => {}
+        }
+        collect_descendant_samples(c, out, cap);
+    }
 }
 
 /// Paint a faint alt-row background. Returns the row's predicted rect so
