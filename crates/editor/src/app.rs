@@ -6,8 +6,8 @@ use crate::action::Action;
 use crate::command_palette::PaletteState;
 use crate::doc::{Doc, LoadError, NodePath, SaveError};
 use crate::inspector;
-use crate::menubar::{MenuAction, Menubar};
-use crate::ops::{self, NewGraphic, NodeEdit, TreeOp};
+use crate::menubar::Menubar;
+use crate::ops::{self, NewGraphic, TreeOp};
 use crate::picker::Picker;
 use crate::preferences::Preferences;
 use crate::selection::Selection;
@@ -123,9 +123,6 @@ pub struct TabId {
 /// its own pan/zoom, since their mesh AABBs differ.
 pub type ViewKey = (usize, usize);
 
-// TreeOp / NodeEdit / NewGraphic live in `ops.rs`. The App's pending-op queue
-// holds them; `apply_op` consumes them at end-of-frame.
-
 /// Per-click rotation state for "click again at same spot to advance through
 /// overlapping parts". The `parts` vector is the z-order-stacked list of part
 /// indices under the cursor on the first click; `cursor_index` is which we
@@ -171,26 +168,6 @@ impl App {
         app
     }
 
-    /// Translate native menubar events through the unified action dispatcher.
-    pub fn dispatch_menu_action(&mut self, action: MenuAction) {
-        let a = match action {
-            MenuAction::Open => Action::OpenDialog,
-            MenuAction::Save => Action::SaveActive,
-            MenuAction::SaveAll => Action::SaveAll,
-            MenuAction::CloseTab => Action::CloseActiveTab,
-            MenuAction::Undo => Action::Undo,
-            MenuAction::Redo => Action::Redo,
-            MenuAction::NewSprite => Action::AddUnderSelection(NewGraphic::Sprite),
-            MenuAction::NewContainer => Action::AddUnderSelection(NewGraphic::Container),
-            MenuAction::Duplicate => Action::DuplicateSelection,
-            MenuAction::ToggleShowPolygon => Action::ToggleShowPolygon,
-            MenuAction::ToggleShowPivot => Action::ToggleShowPivot,
-            MenuAction::ToggleShowOutlines => Action::ToggleShowOutlines,
-            MenuAction::ToggleShowAABB => Action::ToggleShowAABB,
-        };
-        self.dispatch(a);
-    }
-
     /// Central action dispatcher. Every user-facing command goes through
     /// here — menus, keyboard shortcuts, command palette, right-click ops.
     /// Add a new feature: extend `Action`, add one `match` arm, optionally
@@ -198,7 +175,6 @@ impl App {
     pub fn dispatch(&mut self, action: Action) {
         match action {
             Action::OpenDialog => self.open_dialog(),
-            Action::OpenPath(p) => self.open_path(p),
             Action::SaveActive => self.save_active(),
             Action::SaveAll => self.save_all(),
             Action::CloseActiveTab => {
@@ -223,7 +199,6 @@ impl App {
                     }
                 }
             }
-            Action::Tree(op) => self.pending_ops.push(op),
             Action::Fit => {
                 if let Some(tab) = self.active_tab() {
                     let primary_tree = self.selection.primary()
@@ -454,7 +429,7 @@ impl eframe::App for App {
         // the action through the same dispatcher the egui menu uses.
         if let Some(menubar) = self.menubar.take() {
             for action in menubar.poll() {
-                self.dispatch_menu_action(action);
+                self.dispatch(action);
             }
             menubar.sync_to_prefs(&self.prefs);
             self.menubar = Some(menubar);
@@ -713,12 +688,8 @@ impl App {
     /// first op in a chain records. The flag transition happens here, not in
     /// the drag handler — flipping it early would suppress the first record.
     fn record_undo_for_op(&mut self, op: &TreeOp) {
-        let (doc_idx, is_drag_edit) = match op {
-            TreeOp::Edit { path, edit } => (path.doc, matches!(edit, NodeEdit::Pos(_) | NodeEdit::PolygonVertex { .. })),
-            TreeOp::AddChild { parent, .. } => (parent.doc, false),
-            TreeOp::Duplicate(p) | TreeOp::Delete(p) | TreeOp::MoveSibling { path: p, .. } | TreeOp::SetGraphic { path: p, .. } => (p.doc, false),
-            TreeOp::MoveTo { src, .. } => (src.doc, false),
-        };
+        let doc_idx = ops::op_doc(op);
+        let is_drag_edit = ops::is_drag_edit(op);
         if is_drag_edit && self.in_drag_chain {
             return;
         }
@@ -861,7 +832,6 @@ impl App {
     }
 }
 
-// `default_graphic`, `new_node`, and `apply_edit` moved to `ops.rs`.
 
 pub fn mode_label(o: &Output) -> &'static str {
     match o {

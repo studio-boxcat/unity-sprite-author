@@ -1,8 +1,8 @@
-//! Left panel: tree of the active doc's combined sprites, with section
-//! headers per combined tree, alternating row backgrounds, and small inline
-//! thumbnails (sprite leaves use the atlas crop; polygons use a color swatch;
-//! containers show a folder-style glyph). Right-click context menu + mouse
-//! drag-to-reorder unchanged.
+//! Left panel: tree of the active doc's combined sprites. Section headers
+//! per combined tree, alternating row backgrounds, inline thumbnails
+//! (sprite leaves use the atlas crop; polygons use a color swatch;
+//! containers stack up to 3 descendant previews). Right-click context
+//! menu + mouse drag-to-reorder.
 
 use crate::app::{App, TreeDropTarget};
 use crate::ops::{NewGraphic, TreeOp};
@@ -57,7 +57,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
         let panel_rect = ui.max_rect();
         ui.painter().line_segment(
             [egui::pos2(panel_rect.left(), target.line_y), egui::pos2(panel_rect.right(), target.line_y)],
-            egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 180, 255)),
+            egui::Stroke::new(2.0, crate::theme::DROP_INDICATOR),
         );
     }
     if ctx.input(|i| i.pointer.any_released()) {
@@ -231,7 +231,7 @@ fn paint_leaf_icon(ui: &mut egui::Ui, node: &Node, tcx: &TreeCtx) {
                 let img_rect = egui::Rect::from_center_size(rect.center(), draw_size);
                 painter.image(tex.id(), img_rect, full_uv, egui::Color32::WHITE);
             } else if !sprite.is_empty() {
-                painter.text(rect.center(), egui::Align2::CENTER_CENTER, "?", egui::FontId::monospace(11.0), egui::Color32::YELLOW);
+                painter.text(rect.center(), egui::Align2::CENTER_CENTER, "?", egui::FontId::monospace(11.0), crate::theme::WARN_TEXT);
             }
         }
         Some(Graphic::Polygon { polygon_sprite, .. }) => {
@@ -312,7 +312,7 @@ fn paint_row_background(ui: &mut egui::Ui, row_idx: usize) -> egui::Rect {
         egui::vec2(ui.available_width(), height),
     );
     if row_idx % 2 == 1 {
-        ui.painter().rect_filled(rect, 0.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 6));
+        ui.painter().rect_filled(rect, 0.0, crate::theme::row_alt_bg());
     }
     rect
 }

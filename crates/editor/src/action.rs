@@ -8,8 +8,7 @@
 //! palette). With this layer, "add a feature" = add an `Action` variant +
 //! one `match` arm + (optionally) a `CommandEntry` row.
 
-use crate::ops::{NewGraphic, TreeOp};
-use std::path::PathBuf;
+use crate::ops::NewGraphic;
 
 /// One unit of user intent. Parameterless variants surface in the command
 /// palette; parameterized ones (path-aware, key-aware) get emitted by the
@@ -18,7 +17,6 @@ use std::path::PathBuf;
 pub enum Action {
     // ---- File ----
     OpenDialog,
-    OpenPath(PathBuf),
     SaveActive,
     SaveAll,
     CloseActiveTab,
@@ -31,9 +29,6 @@ pub enum Action {
     AddUnderSelection(NewGraphic),
     DuplicateSelection,
     DeleteSelection,
-
-    // ---- Tree (parameterized; UI-emitted) ----
-    Tree(TreeOp),
 
     // ---- View toggles + canvas controls ----
     Fit,

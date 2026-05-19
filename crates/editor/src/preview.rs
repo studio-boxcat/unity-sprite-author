@@ -62,7 +62,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
     let view_built = match build_view(app, doc_idx, tree_idx, &tree_clone, &ctx) {
         Ok(v) => v,
         Err(msg) => {
-            ui.colored_label(egui::Color32::YELLOW, msg);
+            ui.colored_label(crate::theme::WARN_TEXT, msg);
             return;
         }
     };
@@ -83,7 +83,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
     let avail = ui.available_size();
     let (full_resp, painter) = ui.allocate_painter(avail, egui::Sense::click_and_drag());
     let full_rect = full_resp.rect;
-    painter.rect_filled(full_rect, 0.0, egui::Color32::from_gray(28));
+    painter.rect_filled(full_rect, 0.0, crate::theme::CANVAS_BG);
     // Carve out ruler strips along the top + left so canvas coords don't
     // collide with ruler hit-tests.
     let top_ruler = egui::Rect::from_min_max(
@@ -102,9 +102,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
         full_rect.left_top() + egui::vec2(RULER_PX, RULER_PX),
         full_rect.max,
     );
-    painter.rect_filled(top_ruler, 0.0, egui::Color32::from_gray(40));
-    painter.rect_filled(left_ruler, 0.0, egui::Color32::from_gray(40));
-    painter.rect_filled(corner, 0.0, egui::Color32::from_gray(48));
+    painter.rect_filled(top_ruler, 0.0, crate::theme::RULER_BG);
+    painter.rect_filled(left_ruler, 0.0, crate::theme::RULER_BG);
+    painter.rect_filled(corner, 0.0, crate::theme::RULER_CORNER_BG);
     let resp = full_resp; // re-used; hit-tests below check the inset rect
 
     {
@@ -190,8 +190,8 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
     // Marquee rendering + commit on release.
     if let (Some(origin), Some(cur)) = (app.marquee_origin, hover_pos) {
         let r = egui::Rect::from_two_pos(origin, cur);
-        painter.rect_filled(r, 0.0, egui::Color32::from_rgba_unmultiplied(0, 180, 255, 30));
-        painter.rect_stroke(r, 0.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(0, 180, 255)));
+        painter.rect_filled(r, 0.0, crate::theme::marquee_fill());
+        painter.rect_stroke(r, 0.0, egui::Stroke::new(1.0, crate::theme::MARQUEE_STROKE));
         if ctx.input(|i| i.pointer.primary_released()) {
             commit_marquee(app, &view_built, &xform, r, &ctx);
             app.marquee_origin = None;
@@ -357,7 +357,7 @@ fn build_view(
                 crate::inspector::parse_color_hex(hex)
             }
             fab::Part::AtlasSprite { sprite, .. } if sprite.is_empty() => {
-                Some(egui::Color32::from_rgba_unmultiplied(255, 0, 220, 200))
+                Some(crate::theme::placeholder_sprite())
             }
             _ => None,
         };
@@ -514,7 +514,7 @@ fn paint_world_overlays(
     prefs: &crate::preferences::Preferences,
 ) {
     let origin = xform.world_to_screen([0.0, 0.0]);
-    let stroke_axis = egui::Stroke::new(0.5, egui::Color32::from_gray(70));
+    let stroke_axis = egui::Stroke::new(0.5, crate::theme::WORLD_AXIS);
     let len = 4000.0;
     painter.line_segment([origin - egui::vec2(len, 0.0), origin + egui::vec2(len, 0.0)], stroke_axis);
     painter.line_segment([origin - egui::vec2(0.0, len), origin + egui::vec2(0.0, len)], stroke_axis);
@@ -525,7 +525,7 @@ fn paint_world_overlays(
             xform.world_to_screen([minx, miny]),
             xform.world_to_screen([maxx, maxy]),
         );
-        painter.rect_stroke(aabb, 0.0, egui::Stroke::new(0.5, egui::Color32::from_gray(100)));
+        painter.rect_stroke(aabb, 0.0, egui::Stroke::new(0.5, crate::theme::ATLAS_AABB));
     }
 }
 
@@ -533,9 +533,9 @@ fn paint_part_outlines(painter: &egui::Painter, view: &BuiltView, xform: &Screen
     for info in &view.parts {
         let is_selected = app.selection.is_selected(&info.path);
         let color = if is_selected {
-            egui::Color32::from_rgb(255, 200, 0)
+            crate::theme::SELECTION
         } else {
-            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 48)
+            crate::theme::part_outline_unselected()
         };
         let stroke_w = if is_selected { 1.5 } else { 0.4 };
         let stroke = egui::Stroke::new(stroke_w, color);
@@ -577,9 +577,9 @@ fn paint_pivot_markers(painter: &egui::Painter, view: &BuiltView, xform: &Screen
     for info in &view.parts {
         let is_selected = app.selection.is_selected(&info.path);
         let (r, color) = if is_selected {
-            (5.0, egui::Color32::from_rgb(255, 200, 0))
+            (5.0, crate::theme::SELECTION)
         } else {
-            (3.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 140))
+            (3.0, crate::theme::pivot_marker_unselected())
         };
         let p = xform.world_to_screen(info.pivot_world);
         let stroke = egui::Stroke::new(1.0, color);
@@ -607,9 +607,9 @@ fn paint_size_handles(
         if handle == SizeHandle::Mid { continue; }
         let r = if handle == SizeHandle::Rotate { 4.5 } else { 4.0 };
         let fill = if handle == SizeHandle::Rotate {
-            egui::Color32::from_rgb(80, 200, 120)
+            crate::theme::ROTATE_HANDLE
         } else {
-            egui::Color32::from_rgb(255, 200, 0)
+            crate::theme::SELECTION
         };
         painter.circle_filled(p, r, fill);
         painter.circle_stroke(p, r, stroke);
@@ -633,8 +633,8 @@ fn paint_rulers(
 ) {
     const MIN_TICK_PX: f32 = 50.0;
     let step = nice_tick_step(MIN_TICK_PX / xform.scale.max(1e-3));
-    let tick_color = egui::Color32::from_gray(160);
-    let label_color = egui::Color32::from_gray(200);
+    let tick_color = crate::theme::RULER_TICK;
+    let label_color = crate::theme::RULER_LABEL;
     let stroke = egui::Stroke::new(0.5, tick_color);
 
     // Top ruler: ticks at world x = k*step, drawn at screen x = world_to_screen([x, 0]).x.
@@ -707,7 +707,7 @@ fn paint_guides(
     xform: &ScreenTransform,
 ) {
     let Some(set) = app.guides.get(&key) else { return; };
-    let stroke = egui::Stroke::new(0.7, egui::Color32::from_rgba_unmultiplied(0, 200, 255, 200));
+    let stroke = egui::Stroke::new(0.7, crate::theme::guide_line());
     for x in &set.vertical {
         let sx = xform.world_to_screen([*x, 0.0]).x;
         if sx < rect.left() || sx > rect.right() { continue; }
@@ -756,7 +756,7 @@ fn handle_guide_interaction(
 
     // While dragging, show a live preview line + update the position.
     if let Some(drag) = app.guide_drag {
-        let preview_stroke = egui::Stroke::new(0.7, egui::Color32::from_rgba_unmultiplied(0, 230, 255, 220));
+        let preview_stroke = egui::Stroke::new(0.7, crate::theme::guide_preview());
         let world = xform.screen_to_world(cursor);
         match drag {
             GuideDrag::AddVertical | GuideDrag::MoveVertical(_) => {
@@ -1265,9 +1265,9 @@ fn handle_polygon_vertex_drag(
         let p = xform.world_to_screen(world);
         let is_active = app.dragging_polygon_vertex == Some(i);
         let color = if is_active {
-            egui::Color32::from_rgb(0, 220, 255)
+            crate::theme::VERTEX_HANDLE_ACTIVE
         } else {
-            egui::Color32::from_rgb(0, 170, 255)
+            crate::theme::VERTEX_HANDLE
         };
         painter.circle_filled(p, VERTEX_HANDLE_R, color);
         painter.circle_stroke(p, VERTEX_HANDLE_R, egui::Stroke::new(1.0, egui::Color32::BLACK));

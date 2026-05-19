@@ -275,7 +275,7 @@ fn show_sprite_fields(
             });
     });
     if method.requires_size() && app.docs.get(path.doc).and_then(|d| path.resolve(&d.manifest)).map_or(false, |n| n.size.is_none()) {
-        ui.colored_label(egui::Color32::YELLOW, format!("⚠ {} requires `size` or inherits from sprite's natural rect", serialize::method_str(method)));
+        ui.colored_label(crate::theme::WARN_TEXT, format!("⚠ {} requires `size` or inherits from sprite's natural rect", serialize::method_str(method)));
     }
 
     // borderMult.
@@ -410,11 +410,11 @@ fn show_thumbnail(ui: &mut egui::Ui, app: &mut App, doc_idx: usize, sprite: &str
                 let scale = (max / size.x.max(size.y)).min(1.0);
                 ui.image((tex.id(), size * scale));
             } else {
-                ui.colored_label(egui::Color32::YELLOW, "⚠ sprite not in atlas");
+                ui.colored_label(crate::theme::WARN_TEXT, "⚠ sprite not in atlas");
             }
         }
         Err(e) => {
-            ui.colored_label(egui::Color32::YELLOW, format!("⚠ {e}"));
+            ui.colored_label(crate::theme::WARN_TEXT, format!("⚠ {e}"));
         }
     }
 }

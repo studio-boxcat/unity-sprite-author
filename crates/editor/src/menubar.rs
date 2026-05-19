@@ -1,27 +1,11 @@
 //! Native macOS menubar via `muda`. Other platforms keep the in-window egui
-//! menu (see `app.rs`). The menubar struct's only job is to translate native
-//! `MenuEvent`s into `MenuAction` variants — `App::dispatch_menu_action`
-//! turns those into the same calls that the egui menu uses, keeping a single
-//! source of truth for "what each menu item does".
+//! menu (see `app.rs`). Each menu item carries an `Action` directly; polling
+//! drains pending menu events and returns the corresponding `Action`s, which
+//! `App::dispatch` consumes — same path as keyboard / palette / egui-menu.
 
+use crate::action::Action;
+use crate::ops::NewGraphic;
 use crate::preferences::Preferences;
-
-#[derive(Debug, Clone, Copy)]
-pub enum MenuAction {
-    Open,
-    Save,
-    SaveAll,
-    CloseTab,
-    Undo,
-    Redo,
-    NewSprite,
-    NewContainer,
-    Duplicate,
-    ToggleShowPolygon,
-    ToggleShowPivot,
-    ToggleShowOutlines,
-    ToggleShowAABB,
-}
 
 #[cfg(target_os = "macos")]
 pub use macos::Menubar;
@@ -35,17 +19,16 @@ pub use stub::Menubar;
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use super::{MenuAction, Preferences};
+    use super::{Action, NewGraphic, Preferences};
     use muda::accelerator::{Accelerator, Code, Modifiers};
     use muda::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 
     /// Holds the native menu tree (must stay alive for the install to remain
-    /// valid) plus the IDs of the dispatchable items, so polling can route
-    /// events back to `MenuAction`s. `CheckMenuItem` handles need to live
-    /// here too so `sync_to_prefs` can flip their checkmarks.
+    /// valid) plus the item ID → action map for dispatch. `CheckMenuItem`
+    /// handles live here too so `sync_to_prefs` can flip their checkmarks.
     pub struct Menubar {
         _menu: Menu,
-        items: Vec<(MenuId, MenuAction)>,
+        items: Vec<(MenuId, Action)>,
         show_polygon: CheckMenuItem,
         show_pivot: CheckMenuItem,
         show_outlines: CheckMenuItem,
@@ -59,7 +42,6 @@ mod macos {
         pub fn install(prefs: &Preferences) -> Self {
             let menu = Menu::new();
 
-            // ----- App menu (macOS's first submenu becomes the named app menu) -----
             let app_menu = Submenu::new("unity-sprite-author editor", true);
             app_menu
                 .append_items(&[
@@ -76,47 +58,27 @@ mod macos {
                 .expect("app menu");
             menu.append(&app_menu).expect("append app");
 
-            // ----- File -----
             let open = item("Open…", accel(Modifiers::SUPER, Code::KeyO));
             let save = item("Save", accel(Modifiers::SUPER, Code::KeyS));
             let save_all = item("Save All", accel(Modifiers::SUPER | Modifiers::SHIFT, Code::KeyS));
             let close_tab = item("Close Tab", accel(Modifiers::SUPER, Code::KeyW));
             let file_menu = Submenu::new("File", true);
             file_menu
-                .append_items(&[
-                    &open,
-                    &PredefinedMenuItem::separator(),
-                    &save,
-                    &save_all,
-                    &PredefinedMenuItem::separator(),
-                    &close_tab,
-                ])
+                .append_items(&[&open, &PredefinedMenuItem::separator(), &save, &save_all, &PredefinedMenuItem::separator(), &close_tab])
                 .expect("file menu");
             menu.append(&file_menu).expect("append file");
 
-            // ----- Edit -----
             let undo = item("Undo", accel(Modifiers::SUPER, Code::KeyZ));
             let redo = item("Redo", accel(Modifiers::SUPER | Modifiers::SHIFT, Code::KeyZ));
             let new_sprite = item("New Sprite", accel(Modifiers::SUPER, Code::KeyN));
-            let new_container = item(
-                "New Container",
-                accel(Modifiers::SUPER | Modifiers::SHIFT, Code::KeyN),
-            );
+            let new_container = item("New Container", accel(Modifiers::SUPER | Modifiers::SHIFT, Code::KeyN));
             let duplicate = item("Duplicate", accel(Modifiers::SUPER, Code::KeyD));
             let edit_menu = Submenu::new("Edit", true);
             edit_menu
-                .append_items(&[
-                    &undo,
-                    &redo,
-                    &PredefinedMenuItem::separator(),
-                    &new_sprite,
-                    &new_container,
-                    &duplicate,
-                ])
+                .append_items(&[&undo, &redo, &PredefinedMenuItem::separator(), &new_sprite, &new_container, &duplicate])
                 .expect("edit menu");
             menu.append(&edit_menu).expect("append edit");
 
-            // ----- View -----
             let show_polygon = check("Show Polygons", prefs.show_polygon);
             let show_pivot = check("Show Pivot Markers", prefs.show_pivot_markers);
             let show_outlines = check("Show Part Outlines", prefs.show_part_outlines);
@@ -128,19 +90,19 @@ mod macos {
             menu.append(&view_menu).expect("append view");
 
             let items = vec![
-                (open.id().clone(), MenuAction::Open),
-                (save.id().clone(), MenuAction::Save),
-                (save_all.id().clone(), MenuAction::SaveAll),
-                (close_tab.id().clone(), MenuAction::CloseTab),
-                (undo.id().clone(), MenuAction::Undo),
-                (redo.id().clone(), MenuAction::Redo),
-                (new_sprite.id().clone(), MenuAction::NewSprite),
-                (new_container.id().clone(), MenuAction::NewContainer),
-                (duplicate.id().clone(), MenuAction::Duplicate),
-                (show_polygon.id().clone(), MenuAction::ToggleShowPolygon),
-                (show_pivot.id().clone(), MenuAction::ToggleShowPivot),
-                (show_outlines.id().clone(), MenuAction::ToggleShowOutlines),
-                (show_aabb.id().clone(), MenuAction::ToggleShowAABB),
+                (open.id().clone(), Action::OpenDialog),
+                (save.id().clone(), Action::SaveActive),
+                (save_all.id().clone(), Action::SaveAll),
+                (close_tab.id().clone(), Action::CloseActiveTab),
+                (undo.id().clone(), Action::Undo),
+                (redo.id().clone(), Action::Redo),
+                (new_sprite.id().clone(), Action::AddUnderSelection(NewGraphic::Sprite)),
+                (new_container.id().clone(), Action::AddUnderSelection(NewGraphic::Container)),
+                (duplicate.id().clone(), Action::DuplicateSelection),
+                (show_polygon.id().clone(), Action::ToggleShowPolygon),
+                (show_pivot.id().clone(), Action::ToggleShowPivot),
+                (show_outlines.id().clone(), Action::ToggleShowOutlines),
+                (show_aabb.id().clone(), Action::ToggleShowAABB),
             ];
 
             // Install last — once `init_for_nsapp` runs, item appends start
@@ -157,21 +119,19 @@ mod macos {
             }
         }
 
-        /// Drain pending menu events into a list of high-level actions.
-        /// Returns one action per click since the last poll.
-        pub fn poll(&self) -> Vec<MenuAction> {
+        /// Drain pending menu events into the corresponding actions.
+        pub fn poll(&self) -> Vec<Action> {
             let mut out = Vec::new();
             while let Ok(event) = MenuEvent::receiver().try_recv() {
                 if let Some((_, a)) = self.items.iter().find(|(id, _)| id == &event.id) {
-                    out.push(*a);
+                    out.push(a.clone());
                 }
             }
             out
         }
 
         /// Reflect `prefs` toggles into the menu's check states so the
-        /// menu mirrors the current preferences after non-menu mutations
-        /// (e.g. shortcut hotkeys without menu involvement).
+        /// menu mirrors the current preferences after non-menu mutations.
         pub fn sync_to_prefs(&self, prefs: &Preferences) {
             self.show_polygon.set_checked(prefs.show_polygon);
             self.show_pivot.set_checked(prefs.show_pivot_markers);
@@ -199,13 +159,13 @@ mod macos {
 
 #[cfg(not(target_os = "macos"))]
 mod stub {
-    use super::{MenuAction, Preferences};
+    use super::{Action, Preferences};
 
     pub struct Menubar;
 
     impl Menubar {
         pub fn install(_prefs: &Preferences) -> Self { Self }
-        pub fn poll(&self) -> Vec<MenuAction> { Vec::new() }
+        pub fn poll(&self) -> Vec<Action> { Vec::new() }
         pub fn sync_to_prefs(&self, _prefs: &Preferences) {}
     }
 }

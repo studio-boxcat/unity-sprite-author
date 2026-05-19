@@ -201,9 +201,14 @@ One-shot rollout shipped (meow-tower commits `0d9143ec…668fd2eb`). The `.tpshe
 Cargo workspace. `crates/core` is the rlib consumed by the BoxcatBridge cdylib
 in meow-tower; `crates/cli` is the offline `unity-sprite-author` binary that
 shells out to TexturePackerCLI and threads the result into `core`;
-`crates/editor` is a standalone GUI tool (`eframe` + `egui`) for authoring
-`.tps.fab.json` files. The bridge crate in meow-tower points its
-`path = "..."` at `crates/core/` — editor and CLI never leak into the rlib.
+`crates/editor` is a standalone GUI tool (`eframe` + `egui`, native macOS
+menubar via `muda`, persisted prefs, command palette) for authoring
+`.tps.fab.json` files. Every user-facing command in the editor flows through
+one `Action` enum (see `crates/editor/src/action.rs`) — adding a feature
+means: extend `Action`, add a `match` arm in `App::dispatch`, optionally
+register a `CommandEntry` for palette discoverability. The bridge crate in
+meow-tower points its `path = "..."` at `crates/core/` — editor and CLI
+never leak into the rlib.
 
 ```
 unity-sprite-author/
@@ -245,16 +250,23 @@ unity-sprite-author/
 │   └── editor/                     # GUI editor for `.tps.fab.json` (package: unity-sprite-author-editor)
 │       ├── src/
 │       │   ├── main.rs              # eframe entry
-│       │   ├── app.rs               # App, ops + undo/redo, keymap
-│       │   ├── doc.rs               # Doc + NodePath
+│       │   ├── app.rs               # App + tabs + undo/redo + Action dispatch
+│       │   ├── action.rs            # Action enum + palette CommandEntry registry
+│       │   ├── ops.rs               # TreeOp, NodeEdit, NewGraphic + apply helpers
+│       │   ├── command_palette.rs   # Cmd+Shift+P modal
+│       │   ├── menubar.rs           # native macOS menubar via `muda` (other OS: stub)
+│       │   ├── preferences.rs       # eframe::Storage-backed user prefs
+│       │   ├── theme.rs             # central color constants + helpers
+│       │   ├── doc.rs               # Doc + NodePath + Color_* sprite normalization
 │       │   ├── selection.rs         # multi-select state w/ click-modifier semantics
-│       │   ├── atlas.rs             # sibling .tpsheet/.png/.tps load, auto-pack
-│       │   ├── tree_panel.rs        # left panel: tree edit + drag-reorder
+│       │   ├── atlas.rs             # sibling .tpsheet/.png/.tps load + auto-pack + thumbnail rasterizer
+│       │   ├── tree_panel.rs        # left panel: tree edit + drag-reorder + thumbnails
 │       │   ├── inspector.rs         # right panel: per-node editor
-│       │   ├── preview.rs           # center canvas: composed mesh + interactions
+│       │   ├── preview.rs           # center canvas: composed mesh + rulers + guides + handles
 │       │   ├── picker.rs            # sprite / color modals
 │       │   └── serialize.rs         # manifest → fab.json round-trip
 │       └── tests/
+│           ├── app_ops.rs            # headless drive of the pending-op pipeline
 │           └── round_trip_goldens.rs # parse → serialize → parse against fixtures
 ├── docs/
 │   ├── fab.md              # .tps.fab.json schema + per-part transform math
