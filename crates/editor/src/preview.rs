@@ -8,7 +8,7 @@
 //!
 //! Persistent pan/zoom in `App.views`; rebuilt only when needed.
 
-use crate::app::{App, NodeEdit, TabId, TreeOp, ViewState};
+use crate::app::{App, NodeEdit, TreeOp, ViewState};
 use crate::doc::NodePath;
 use crate::tree_panel;
 use unity_sprite_author::combine::{self, AtlasSize, BuildOutput, CombinedMesh};
@@ -28,11 +28,23 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
         return;
     };
     let doc_idx = tab.doc;
-    let tree_idx = tab.tree;
+    // Tree to render = selection's primary tree, falling back to the active
+    // doc's first tree. This decouples the preview from "the active tab" now
+    // that tabs are per-file (a file can hold many combined trees).
+    let tree_idx = app
+        .selection
+        .primary()
+        .filter(|p| p.doc == doc_idx)
+        .map(|p| p.tree)
+        .unwrap_or(0);
+    let view_key = (doc_idx, tree_idx);
 
     let (tree_clone, is_sma) = {
         let Some(doc) = app.docs.get(doc_idx) else { return; };
-        let Some(tree) = doc.manifest.trees.get(tree_idx) else { return; };
+        let Some(tree) = doc.manifest.trees.get(tree_idx) else {
+            ui.centered_and_justified(|ui| ui.label("(empty manifest — add a combined tree)"));
+            return;
+        };
         (tree.clone(), matches!(tree.output, Output::Sma { .. }))
     };
 
@@ -58,7 +70,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
             do_fit = true;
         }
         ui.separator();
-        let view = app.views.entry(tab).or_default();
+        let view = app.views.entry(view_key).or_default();
         ui.label(format!("zoom: {:.1}x", view.zoom / 100.0));
         ui.label(format!("center: ({:.1}, {:.1})", view.center_world[0], view.center_world[1]));
         ui.separator();
@@ -72,25 +84,30 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
     painter.rect_filled(rect, 0.0, egui::Color32::from_gray(28));
 
     {
-        let view = app.views.entry(tab).or_default();
+        let view = app.views.entry(view_key).or_default();
         if view.needs_fit || do_fit {
             *view = fit_view(&view_built.mesh, rect);
         }
     }
-    let view = *app.views.get(&tab).unwrap();
+    let view = *app.views.get(&view_key).unwrap();
     let xform = ScreenTransform::from_view(&view, rect);
 
-    paint_mesh(&painter, &view_built, &xform);
-    paint_world_overlays(&painter, &view_built.mesh, &xform);
-    paint_part_outlines(&painter, &view_built, &xform, app);
-    paint_pivot_markers(&painter, &view_built, &xform, app);
+    paint_mesh(&painter, &view_built, &xform, &app.prefs);
+    paint_world_overlays(&painter, &view_built.mesh, &xform, &app.prefs);
+    if app.prefs.show_part_outlines {
+        paint_part_outlines(&painter, &view_built, &xform, app);
+    }
+    if app.prefs.show_pivot_markers {
+        paint_pivot_markers(&painter, &view_built, &xform, app);
+    }
 
-    handle_view_input(app, tab, &resp, rect, &ctx);
+    handle_view_input(app, view_key, &resp, rect, &ctx);
 
     let cs = tree_clone.output.canvas_scale_implicit();
 
-    // Mouse-down selection / marquee start.
+    // Mouse-down selection / marquee start / click rotation through stack.
     let primary_pressed = ctx.input(|i| i.pointer.primary_pressed());
+    let secondary_pressed = ctx.input(|i| i.pointer.secondary_pressed());
     let hover_pos = ctx.input(|i| i.pointer.hover_pos());
     let hovered_part = hover_pos
         .filter(|p| rect.contains(*p))
@@ -99,17 +116,37 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
         .filter(|p| rect.contains(*p))
         .and_then(|p| view_built.hit_test_handle(p, &xform, app, cs));
 
+    // Click-rotate anchor invalidation: if cursor drifted past tolerance, drop.
+    const CLICK_ROTATE_TOLERANCE_PX: f32 = 4.0;
+    if let (Some(state), Some(hp)) = (app.click_rotate.as_ref(), hover_pos) {
+        if (hp - state.anchor_screen).length() > CLICK_ROTATE_TOLERANCE_PX {
+            app.click_rotate = None;
+        }
+    }
+
     if primary_pressed && rect.contains(hover_pos.unwrap_or(egui::Pos2::ZERO)) {
         if hovered_handle.is_none() && hovered_part.is_none() {
-            // Empty-area click: start marquee. Held in `app.marquee_origin`.
             let (cmd, shift) = ctx.input(|i| (i.modifiers.command, i.modifiers.shift));
             if !cmd && !shift {
                 app.selection.clear();
             }
             app.marquee_origin = hover_pos;
-        } else if let Some(idx) = hovered_part {
-            if let Some(path) = view_built.parts.get(idx).map(|p| p.path.clone()) {
-                tree_panel::apply_click_modifier(app, path, &ctx);
+            app.click_rotate = None;
+        } else if let Some(pos) = hover_pos {
+            let (cmd, shift) = ctx.input(|i| (i.modifiers.command, i.modifiers.shift));
+            let path = click_rotate_pick(app, &view_built, pos, &xform, cmd, shift);
+            if let Some(path) = path {
+                tree_panel::apply_click_modifier_path(app, path, cmd, shift);
+            }
+        }
+    }
+    // Right-click: cycle through the z-stack at the cursor (Photoshop-style).
+    if secondary_pressed && rect.contains(hover_pos.unwrap_or(egui::Pos2::ZERO)) {
+        if let Some(pos) = hover_pos {
+            // Right-click always advances (never starts a marquee, never
+            // resets the rotation if we already have one at this spot).
+            if let Some(path) = click_rotate_pick(app, &view_built, pos, &xform, false, false) {
+                app.selection.set_single(path);
             }
         }
     }
@@ -149,6 +186,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
 struct PartInfo {
     path: NodePath,
     range: (usize, usize),
+    /// True when this part is a polygon leaf (used by the
+    /// `prefs.show_polygon` toggle to hide them without affecting picking
+    /// or per-part outlines).
+    is_polygon: bool,
     /// `Some` when the part renders as a flat color (polygon or placeholder).
     color_override: Option<egui::Color32>,
     /// World-space pivot point — center of the per-part anchored position.
@@ -168,12 +209,25 @@ struct PreviewView {
 
 impl PreviewView {
     fn hit_test_part(&self, screen: egui::Pos2, xform: &ScreenTransform) -> Option<usize> {
-        for (i, info) in self.parts.iter().enumerate() {
+        // Front-most first: iterate in reverse so a topmost part wins.
+        for (i, info) in self.parts.iter().enumerate().rev() {
             if point_in_part(screen, &self.mesh, &info.range, xform) {
                 return Some(i);
             }
         }
         None
+    }
+
+    /// All parts under `screen`, front-to-back (front = last in part order).
+    /// Used by click-rotation to cycle through the stack.
+    fn hit_test_parts_all(&self, screen: egui::Pos2, xform: &ScreenTransform) -> Vec<usize> {
+        let mut hits = Vec::new();
+        for (i, info) in self.parts.iter().enumerate().rev() {
+            if point_in_part(screen, &self.mesh, &info.range, xform) {
+                hits.push(i);
+            }
+        }
+        hits
     }
 
     /// Returns `Some(handle_kind)` if the cursor is over a transform handle of
@@ -278,6 +332,7 @@ fn build_view(
         parts.push(PartInfo {
             path,
             range,
+            is_polygon: matches!(part, fab::Part::Polygon { .. }),
             color_override,
             pivot_world: [leaf.world_pos[0] * cs, leaf.world_pos[1] * cs],
             affine: fab::Affine {
@@ -371,9 +426,26 @@ fn aabb_2d(verts: &[[f32; 2]]) -> (f32, f32, f32, f32) {
 // Rendering
 // =============================================================================
 
-fn paint_mesh(painter: &egui::Painter, view: &BuiltView, xform: &ScreenTransform) {
+fn paint_mesh(
+    painter: &egui::Painter,
+    view: &BuiltView,
+    xform: &ScreenTransform,
+    prefs: &crate::preferences::Preferences,
+) {
+    // Set vertex colors. Suppressed parts (e.g. polygons hidden via the View
+    // menu) get fully-transparent colors — the geometry still ships to GPU
+    // but contributes nothing visible. Filtering triangles out instead would
+    // also work; vertex-alpha is simpler and keeps part_ranges consistent for
+    // picking + outlines (which we still want when polygons are hidden).
     let mut colors = vec![egui::Color32::WHITE; view.mesh.verts.len()];
     for info in &view.parts {
+        let suppressed = info.is_polygon && !prefs.show_polygon;
+        if suppressed {
+            for v in &mut colors[info.range.0..info.range.1] {
+                *v = egui::Color32::TRANSPARENT;
+            }
+            continue;
+        }
         if let Some(c) = info.color_override {
             for v in &mut colors[info.range.0..info.range.1] {
                 *v = c;
@@ -399,19 +471,26 @@ fn paint_mesh(painter: &egui::Painter, view: &BuiltView, xform: &ScreenTransform
     painter.add(egui::Shape::mesh(egui_mesh));
 }
 
-fn paint_world_overlays(painter: &egui::Painter, mesh: &CombinedMesh, xform: &ScreenTransform) {
+fn paint_world_overlays(
+    painter: &egui::Painter,
+    mesh: &CombinedMesh,
+    xform: &ScreenTransform,
+    prefs: &crate::preferences::Preferences,
+) {
     let origin = xform.world_to_screen([0.0, 0.0]);
     let stroke_axis = egui::Stroke::new(0.5, egui::Color32::from_gray(70));
     let len = 4000.0;
     painter.line_segment([origin - egui::vec2(len, 0.0), origin + egui::vec2(len, 0.0)], stroke_axis);
     painter.line_segment([origin - egui::vec2(0.0, len), origin + egui::vec2(0.0, len)], stroke_axis);
 
-    let (minx, miny, maxx, maxy) = aabb_2d(&mesh.verts);
-    let aabb = egui::Rect::from_two_pos(
-        xform.world_to_screen([minx, miny]),
-        xform.world_to_screen([maxx, maxy]),
-    );
-    painter.rect_stroke(aabb, 0.0, egui::Stroke::new(0.5, egui::Color32::from_gray(100)));
+    if prefs.show_atlas_aabb {
+        let (minx, miny, maxx, maxy) = aabb_2d(&mesh.verts);
+        let aabb = egui::Rect::from_two_pos(
+            xform.world_to_screen([minx, miny]),
+            xform.world_to_screen([maxx, maxy]),
+        );
+        painter.rect_stroke(aabb, 0.0, egui::Stroke::new(0.5, egui::Color32::from_gray(100)));
+    }
 }
 
 fn paint_part_outlines(painter: &egui::Painter, view: &BuiltView, xform: &ScreenTransform, app: &App) {
@@ -422,21 +501,40 @@ fn paint_part_outlines(painter: &egui::Painter, view: &BuiltView, xform: &Screen
         } else {
             egui::Color32::from_rgba_unmultiplied(255, 255, 255, 48)
         };
-        let stroke_w = if is_selected { 1.0 } else { 0.4 };
+        let stroke_w = if is_selected { 1.5 } else { 0.4 };
         let stroke = egui::Stroke::new(stroke_w, color);
-        for tri in view.mesh.tris.chunks(3) {
-            if let [a, b, c] = *tri {
-                let ai = a as usize;
-                if ai < info.range.0 || ai >= info.range.1 { continue; }
-                let p_a = xform.world_to_screen(view.mesh.verts[ai]);
-                let p_b = xform.world_to_screen(view.mesh.verts[b as usize]);
-                let p_c = xform.world_to_screen(view.mesh.verts[c as usize]);
-                painter.line_segment([p_a, p_b], stroke);
-                painter.line_segment([p_b, p_c], stroke);
-                painter.line_segment([p_c, p_a], stroke);
+        // Render only perimeter edges (edges that appear in exactly one
+        // triangle of this part). Interior triangulation lines were
+        // visually noisy and aren't meaningful to the user.
+        let boundary = boundary_edges(&view.mesh.tris, info.range);
+        for (a, b) in boundary {
+            let p_a = xform.world_to_screen(view.mesh.verts[a]);
+            let p_b = xform.world_to_screen(view.mesh.verts[b]);
+            painter.line_segment([p_a, p_b], stroke);
+        }
+    }
+}
+
+/// Boundary edges = edges with odd incidence count across the part's
+/// triangles. For a clean 2D mesh, that's edges shared by exactly one
+/// triangle (the perimeter). Edges between two triangles cancel out.
+fn boundary_edges(tris: &[u16], range: (usize, usize)) -> Vec<(usize, usize)> {
+    use std::collections::HashMap;
+    let (start, end) = range;
+    let mut counts: HashMap<(usize, usize), i32> = HashMap::new();
+    for tri in tris.chunks(3) {
+        if let [a, b, c] = *tri {
+            let ai = a as usize;
+            if ai < start || ai >= end { continue; }
+            let bi = b as usize;
+            let ci = c as usize;
+            for (u, v) in [(ai, bi), (bi, ci), (ci, ai)] {
+                let key = if u < v { (u, v) } else { (v, u) };
+                *counts.entry(key).or_insert(0) += 1;
             }
         }
     }
+    counts.into_iter().filter(|(_, n)| *n == 1).map(|(e, _)| e).collect()
 }
 
 fn paint_pivot_markers(painter: &egui::Painter, view: &BuiltView, xform: &ScreenTransform, app: &App) {
@@ -476,14 +574,14 @@ fn paint_hud(painter: &egui::Painter, rect: egui::Rect, tree: &manifest::Tree, m
 // Pan / zoom
 // =============================================================================
 
-fn handle_view_input(app: &mut App, tab: TabId, resp: &egui::Response, rect: egui::Rect, ctx: &egui::Context) {
+fn handle_view_input(app: &mut App, view_key: crate::app::ViewKey, resp: &egui::Response, rect: egui::Rect, ctx: &egui::Context) {
     if !resp.hovered() { return; }
     let hover_pos = ctx.input(|i| i.pointer.hover_pos());
     let zoom_delta = ctx.input(|i| i.zoom_delta());
     let scroll = ctx.input(|i| i.smooth_scroll_delta);
     let modifiers = ctx.input(|i| i.modifiers);
 
-    let view = app.views.entry(tab).or_default();
+    let view = app.views.entry(view_key).or_default();
     let mut z = view.zoom;
     let mut c = view.center_world;
 
@@ -517,6 +615,39 @@ fn zoom_around(z: &mut f32, c: &mut [f32; 2], rect: egui::Rect, hover: Option<eg
     } else {
         *z = (*z * factor).clamp(0.5, 50_000.0);
     }
+}
+
+/// Pick the next part under `pos` using the click-rotation state in `app`.
+/// First click at a fresh location picks the front-most; subsequent clicks
+/// within `CLICK_ROTATE_TOLERANCE_PX` cycle through underlying parts.
+fn click_rotate_pick(
+    app: &mut App,
+    view: &BuiltView,
+    pos: egui::Pos2,
+    xform: &ScreenTransform,
+    _cmd: bool,
+    _shift: bool,
+) -> Option<crate::doc::NodePath> {
+    let hits = view.hit_test_parts_all(pos, xform);
+    if hits.is_empty() {
+        app.click_rotate = None;
+        return None;
+    }
+    let new_state = match app.click_rotate.take() {
+        Some(prev) if prev.parts == hits => {
+            // Same stack — advance.
+            let next = (prev.cursor_index + 1) % hits.len();
+            crate::app::ClickRotateState { anchor_screen: pos, parts: hits.clone(), cursor_index: next }
+        }
+        _ => {
+            // Fresh location — start at front.
+            crate::app::ClickRotateState { anchor_screen: pos, parts: hits.clone(), cursor_index: 0 }
+        }
+    };
+    let part_idx = new_state.parts[new_state.cursor_index];
+    let path = view.parts.get(part_idx).map(|p| p.path.clone());
+    app.click_rotate = Some(new_state);
+    path
 }
 
 // =============================================================================
@@ -969,6 +1100,31 @@ mod tests {
         assert_eq!(pos[4], [0.0, 0.0]);  // MID
         assert_eq!(pos[6], [-2.0, -1.0]); // SW
         assert_eq!(pos[8], [2.0, -1.0]); // SE
+    }
+
+    #[test]
+    fn boundary_edges_finds_only_perimeter() {
+        // Single quad triangulated 0-1-2, 0-2-3 → perimeter is 0-1, 1-2, 2-3,
+        // 3-0; the shared 0-2 diagonal cancels.
+        let tris = [0u16, 1, 2, 0, 2, 3];
+        let mut got = boundary_edges(&tris, (0, 4));
+        got.sort();
+        assert_eq!(got.len(), 4);
+        let mut want: Vec<(usize, usize)> = vec![(0, 1), (1, 2), (2, 3), (0, 3)];
+        want.sort();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn boundary_edges_respects_range() {
+        // Two disconnected quads at (0..4) and (4..8). Only the first's
+        // perimeter when range = (0, 4).
+        let tris = [0u16, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7];
+        let got = boundary_edges(&tris, (0, 4));
+        assert_eq!(got.len(), 4, "{got:?}");
+        for (a, b) in &got {
+            assert!(*a < 4 && *b < 4);
+        }
     }
 
     #[test]

@@ -4,10 +4,12 @@
 
 use crate::doc::{Doc, LoadError, NodePath, SaveError};
 use crate::inspector;
+use crate::menubar::{MenuAction, Menubar};
 use crate::picker::Picker;
+use crate::preferences::Preferences;
 use crate::selection::Selection;
 use crate::tree_panel;
-use unity_sprite_author::manifest::{DrawMode, Graphic, Node, Output, SpriteMethod, Tree};
+use unity_sprite_author::manifest::{DrawMode, Graphic, Node, Output, SpriteMethod};
 
 #[derive(Default)]
 pub struct App {
@@ -27,6 +29,10 @@ pub struct App {
     pub dragging_size_handle: Option<crate::preview::SizeHandle>,
     /// Origin of an in-flight rect-marquee selection on the preview canvas.
     pub marquee_origin: Option<egui::Pos2>,
+    /// Tracks repeat-clicks at the same world position so left/right-click
+    /// rotates selection through overlapping parts (Photoshop convention).
+    /// Reset when the cursor moves outside `CLICK_ROTATE_TOLERANCE_PX`.
+    pub click_rotate: Option<ClickRotateState>,
     /// Source path of an in-flight tree-row drag (set on drag_started by the
     /// tree panel; consumed on mouse-up to emit a `MoveTo` op).
     pub tree_drag: Option<NodePath>,
@@ -35,7 +41,17 @@ pub struct App {
     /// Persistent pan/zoom per tab. Re-fit happens only on first open or via
     /// the "Fit" button — otherwise the canvas would rescale every time a
     /// part was dragged outside the current AABB.
-    pub views: std::collections::HashMap<TabId, ViewState>,
+    pub views: std::collections::HashMap<ViewKey, ViewState>,
+    /// Persisted user preferences (view toggles + recent-files list). Loaded
+    /// in `App::new` via `eframe::Storage` and written back by
+    /// `eframe::App::save` — autosaves every 30 s + on shutdown.
+    pub prefs: Preferences,
+    /// Native menubar handle. On macOS, drives File/Edit/View via `muda`
+    /// and suppresses the in-window egui menu (set up only after the
+    /// NSApplication exists, i.e. inside `App::new`). On other platforms
+    /// this is a no-op stub and the egui menu_bar at the top of the window
+    /// remains the source of truth.
+    pub menubar: Option<Menubar>,
     /// Undo / redo snapshot stacks per doc index. Snapshots are entire
     /// `Manifest` clones; cheap for the manifests we see (≤ a few hundred
     /// nodes per file). Coalescing logic in `record_undo_for_op` keeps drag
@@ -65,11 +81,16 @@ impl Default for ViewState {
     }
 }
 
+/// One tab = one open `.tps.fab.json` file. Trees inside that file appear as
+/// top-level rows in the left tree panel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TabId {
     pub doc: usize,
-    pub tree: usize,
 }
+
+/// View-state key: per (doc, tree). Each combined sprite within a file has
+/// its own pan/zoom, since their mesh AABBs differ.
+pub type ViewKey = (usize, usize);
 
 /// Edits emitted by the tree panel / inspector / pickers during a frame, then
 /// applied at the end of `update` so we don't mutate during iteration.
@@ -88,6 +109,18 @@ pub enum TreeOp {
     SetGraphic { path: NodePath, graphic: Option<NewGraphic> },
     /// Mutate the node via a closure. Used by inspector for inline edits.
     Edit { path: NodePath, edit: NodeEdit },
+}
+
+/// Per-click rotation state for "click again at same spot to advance through
+/// overlapping parts". The `parts` vector is the z-order-stacked list of part
+/// indices under the cursor on the first click; `cursor_index` is which we
+/// last selected. Right-click + Cmd-click also advance.
+#[derive(Debug, Clone)]
+pub struct ClickRotateState {
+    /// Screen-space anchor; further clicks within a small radius keep rotating.
+    pub anchor_screen: egui::Pos2,
+    pub parts: Vec<usize>,
+    pub cursor_index: usize,
 }
 
 /// Where a dragged tree row would land. `dst_idx` is the insertion index
@@ -139,27 +172,88 @@ pub enum NodeEdit {
 }
 
 impl App {
-    fn open_dialog(&mut self) {
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter("fab manifest", &["json"])
-            .set_title("Open .tps.fab.json")
-            .pick_file()
-        else {
-            return;
+    /// eframe creation hook — pulls persisted `Preferences` out of storage
+    /// (or defaults if first run / settings file missing). Auto-reopens the
+    /// most-recently-used file so the session picks up where the last one
+    /// left off; stale entries (file deleted/renamed) are silently skipped.
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let prefs = Preferences::load(cc.storage);
+        let menubar = Some(Menubar::install(&prefs));
+        let mut app = Self {
+            prefs,
+            menubar,
+            ..Default::default()
         };
+        if let Some(path) = app.prefs.recent_files.first().cloned() {
+            if path.exists() {
+                app.open_path(path);
+            }
+        }
+        app
+    }
+
+    /// Dispatch a native-menu action through the same code paths the
+    /// in-window egui menu uses, so behavior stays consistent across the
+    /// two surfaces.
+    pub fn dispatch_menu_action(&mut self, action: MenuAction) {
+        match action {
+            MenuAction::Open => self.open_dialog(),
+            MenuAction::Save => self.save_active(),
+            MenuAction::SaveAll => self.save_all(),
+            MenuAction::CloseTab => {
+                if let Some(i) = self.active_tab {
+                    self.close_tab(i);
+                }
+            }
+            MenuAction::Undo => self.undo(),
+            MenuAction::Redo => self.redo(),
+            MenuAction::NewSprite => self.add_under_selection(NewGraphic::Sprite),
+            MenuAction::NewContainer => self.add_under_selection(NewGraphic::Container),
+            MenuAction::Duplicate => {
+                for sel in self.selection.without_descendants_of_selected() {
+                    if !sel.child_chain.is_empty() {
+                        self.pending_ops.push(TreeOp::Duplicate(sel));
+                    }
+                }
+            }
+            MenuAction::ToggleShowPolygon => self.prefs.show_polygon = !self.prefs.show_polygon,
+            MenuAction::ToggleShowPivot => self.prefs.show_pivot_markers = !self.prefs.show_pivot_markers,
+            MenuAction::ToggleShowOutlines => self.prefs.show_part_outlines = !self.prefs.show_part_outlines,
+            MenuAction::ToggleShowAABB => self.prefs.show_atlas_aabb = !self.prefs.show_atlas_aabb,
+        }
+    }
+
+    fn open_dialog(&mut self) {
+        let mut dialog = rfd::FileDialog::new()
+            .add_filter("fab manifest", &["json"])
+            .set_title("Open .tps.fab.json");
+        if let Some(dir) = &self.prefs.last_open_dir {
+            dialog = dialog.set_directory(dir);
+        }
+        let Some(path) = dialog.pick_file() else { return; };
+        self.open_path(path);
+    }
+
+    /// Open by explicit path (also used by the recent-files submenu). Updates
+    /// the persisted recent-files list on success.
+    pub fn open_path(&mut self, path: std::path::PathBuf) {
+        // If the file's already open, focus its tab instead of duplicating.
+        if let Some(existing) = self.tabs.iter().position(|t| self.docs.get(t.doc).map_or(false, |d| d.path == path)) {
+            self.active_tab = Some(existing);
+            self.selection.clear();
+            return;
+        }
         match Doc::open(&path) {
             Ok(doc) => {
                 let doc_idx = self.docs.len();
                 let n_trees = doc.manifest.trees.len();
                 self.status = Some(format!("loaded {n_trees} tree(s) from {}", doc.path.display()));
+                self.prefs.note_open(doc.path.clone());
                 self.docs.push(doc);
-                let first_new_tab = self.tabs.len();
-                for tree_idx in 0..n_trees {
-                    self.tabs.push(TabId { doc: doc_idx, tree: tree_idx });
-                }
-                if n_trees > 0 {
-                    self.active_tab = Some(first_new_tab);
-                }
+                let tab_idx = self.tabs.len();
+                self.tabs.push(TabId { doc: doc_idx });
+                self.active_tab = Some(tab_idx);
+                self.selection.clear();
             }
             Err(e) => self.set_error(LoadError::to_string(&e)),
         }
@@ -207,10 +301,10 @@ impl App {
             Some(active) if active > tab_idx => Some(active - 1),
             other => other,
         };
-        // Drop any selected paths that pointed into the closed tab's tree.
-        let live_tabs: std::collections::HashSet<(usize, usize)> = self.tabs.iter().map(|t| (t.doc, t.tree)).collect();
+        // Drop any selected paths that pointed into the closed tab's doc.
+        let live_docs: std::collections::HashSet<usize> = self.tabs.iter().map(|t| t.doc).collect();
         let kept: Vec<NodePath> = self.selection.iter()
-            .filter(|p| live_tabs.contains(&(p.doc, p.tree)))
+            .filter(|p| live_docs.contains(&p.doc))
             .cloned()
             .collect();
         self.selection.replace_with(kept);
@@ -226,13 +320,16 @@ impl App {
         let parent = match self.selection.primary().cloned() {
             Some(p) => p,
             None => match self.active_tab() {
-                Some(t) => NodePath::tree_root(t.doc, t.tree),
+                Some(t) => NodePath::tree_root(t.doc, 0),
                 None => return,
             },
         };
         self.pending_ops.push(TreeOp::AddChild { parent, graphic });
     }
 
+    /// Cycle through open tabs by `delta`. Wired only on non-macOS where the
+    /// egui top menu uses Cmd+Shift+[ / ]; macOS gets the same via muda.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub fn cycle_tab(&mut self, delta: i32) {
         if self.tabs.is_empty() { return; }
         let cur = self.active_tab.unwrap_or(0) as i32;
@@ -242,15 +339,19 @@ impl App {
         self.selection.clear();
     }
 
-    /// Move selection up/down by one visible tree row.
-    pub fn move_selection(&mut self, delta: i32) {
+    /// Move selection up/down by one visible tree row. Walks every combined
+    /// tree in the active doc in order, skipping descendants of collapsed
+    /// nodes so the cursor mirrors what the user sees in the panel.
+    pub fn move_selection(&mut self, ctx: &egui::Context, delta: i32) {
         let Some(tab) = self.active_tab() else { return; };
         let Some(doc) = self.docs.get(tab.doc) else { return; };
-        let Some(tree) = doc.manifest.trees.get(tab.tree) else { return; };
         let mut visible: Vec<NodePath> = Vec::new();
-        let root_path = NodePath::tree_root(tab.doc, tab.tree);
-        visible.push(root_path.clone());
-        collect_visible(&tree.root, &root_path, &mut visible);
+        for (tree_idx, tree) in doc.manifest.trees.iter().enumerate() {
+            let root_path = NodePath::tree_root(tab.doc, tree_idx);
+            visible.push(root_path.clone());
+            collect_visible_open(ctx, &tree.root, &root_path, &mut visible);
+        }
+        if visible.is_empty() { return; }
         let cur_idx = self.selection
             .primary()
             .and_then(|sel| visible.iter().position(|p| p == sel))
@@ -287,17 +388,35 @@ impl App {
         self.active_tab.and_then(|i| self.tabs.get(i).copied())
     }
 
-    pub fn active_tree(&self) -> Option<(&Doc, usize, &Tree)> {
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    pub fn active_doc(&self) -> Option<&Doc> {
         let t = self.active_tab()?;
-        let doc = self.docs.get(t.doc)?;
-        let tree = doc.manifest.trees.get(t.tree)?;
-        Some((doc, t.tree, tree))
+        self.docs.get(t.doc)
     }
 }
 
 impl eframe::App for App {
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.prefs.save_to(storage);
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // ----- Keyboard shortcuts (handled before menu so menu state is fresh) -----
+        // ----- Native menubar dispatch (macOS) -----
+        // muda fires accelerators natively. Drain its event channel and run
+        // the action through the same dispatcher the egui menu uses.
+        if let Some(menubar) = self.menubar.take() {
+            for action in menubar.poll() {
+                self.dispatch_menu_action(action);
+            }
+            menubar.sync_to_prefs(&self.prefs);
+            self.menubar = Some(menubar);
+        }
+
+        // ----- Keyboard shortcuts (in-window egui menu path) -----
+        // On macOS, muda owns the accelerator namespace — letting egui also
+        // see Cmd+S etc. would double-fire (menu activation + this handler).
+        #[cfg(not(target_os = "macos"))]
+        {
         let cmd_s = ctx.input(|i| i.modifiers.command && !i.modifiers.shift && i.key_pressed(egui::Key::S));
         let cmd_shift_s = ctx.input(|i| i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::S));
         let cmd_o = ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::O));
@@ -345,20 +464,25 @@ impl eframe::App for App {
         } else if cmd_shift_rb {
             self.cycle_tab(1);
         }
+        } // end cfg(not(target_os = "macos")) keyboard shortcuts
 
-        // Tree arrow-key nav (only when no text widget has focus).
+        // Tree arrow-key nav (only when no text widget has focus). Not a Cmd
+        // accelerator, so it stays cross-platform.
         if !ctx.wants_keyboard_input() {
             let up = ctx.input(|i| i.key_pressed(egui::Key::ArrowUp));
             let down = ctx.input(|i| i.key_pressed(egui::Key::ArrowDown));
             let left = ctx.input(|i| i.key_pressed(egui::Key::ArrowLeft));
             let right = ctx.input(|i| i.key_pressed(egui::Key::ArrowRight));
-            if up { self.move_selection(-1); }
-            if down { self.move_selection(1); }
+            if up { self.move_selection(ctx, -1); }
+            if down { self.move_selection(ctx, 1); }
             if left { self.collapse_or_parent(); }
             if right { self.expand_or_first_child(); }
         }
 
         // ----- Top menu -----
+        // On macOS the native menubar (muda) replaces the in-window menu.
+        // Other platforms keep this so File/Edit/View stay reachable.
+        #[cfg(not(target_os = "macos"))]
         egui::TopBottomPanel::top("menu").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("Edit", |ui| {
@@ -378,6 +502,25 @@ impl eframe::App for App {
                         ui.close_menu();
                         self.open_dialog();
                     }
+                    let recent: Vec<std::path::PathBuf> = self.prefs.recent_files.clone();
+                    ui.add_enabled_ui(!recent.is_empty(), |ui| {
+                        ui.menu_button("Recent files", |ui| {
+                            for p in &recent {
+                                if ui.button(p.display().to_string()).clicked() {
+                                    ui.close_menu();
+                                    self.open_path(p.clone());
+                                }
+                            }
+                            if !recent.is_empty() {
+                                ui.separator();
+                                if ui.button("Clear recent").clicked() {
+                                    ui.close_menu();
+                                    self.prefs.recent_files.clear();
+                                }
+                            }
+                        });
+                    });
+                    ui.separator();
                     let can_save = self.active_tab().is_some();
                     if ui.add_enabled(can_save, egui::Button::new("Save active    Cmd+S")).clicked() {
                         ui.close_menu();
@@ -393,8 +536,16 @@ impl eframe::App for App {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 });
+                ui.menu_button("View", |ui| {
+                    // Toggles are mutated directly on `self.prefs` — eframe
+                    // autosaves them periodically; nothing else to do.
+                    ui.checkbox(&mut self.prefs.show_polygon, "Show polygons");
+                    ui.checkbox(&mut self.prefs.show_pivot_markers, "Show pivot markers");
+                    ui.checkbox(&mut self.prefs.show_part_outlines, "Show part outlines");
+                    ui.checkbox(&mut self.prefs.show_atlas_aabb, "Show atlas AABB");
+                });
                 ui.separator();
-                ui.label(if let Some((doc, _, _)) = self.active_tree() {
+                ui.label(if let Some(doc) = self.active_doc() {
                     let dirty = if doc.dirty { " *" } else { "" };
                     format!("{}{dirty}", doc.path.display())
                 } else {
@@ -462,14 +613,15 @@ impl App {
         let mut activate: Option<usize> = None;
         ui.horizontal_wrapped(|ui| {
             for (i, tab) in self.tabs.iter().enumerate() {
-                let Some(tree) = self.docs.get(tab.doc).and_then(|d| d.manifest.trees.get(tab.tree)) else {
-                    continue;
-                };
-                let dirty = self.docs.get(tab.doc).map_or(false, |d| d.dirty);
+                let Some(doc) = self.docs.get(tab.doc) else { continue; };
                 let active = self.active_tab == Some(i);
-                let mark = if dirty { " *" } else { "" };
-                let label = format!("{}{mark}", tree.name);
-                let resp = ui.selectable_label(active, label);
+                let label = format!(
+                    "{}{}",
+                    doc.path.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
+                    if doc.dirty { " *" } else { "" },
+                );
+                let resp = ui.selectable_label(active, &label)
+                    .on_hover_text(doc.path.display().to_string());
                 if resp.clicked() {
                     activate = Some(i);
                 }
@@ -565,7 +717,7 @@ impl App {
         self.status = Some("redo".into());
     }
 
-    fn apply_op(&mut self, op: TreeOp) {
+    pub fn apply_op(&mut self, op: TreeOp) {
         self.record_undo_for_op(&op);
         match op {
             TreeOp::AddChild { parent, graphic } => {
@@ -802,14 +954,20 @@ pub fn node_label(node: &Node) -> String {
     }
 }
 
-/// Flatten the tree into a visible-row list in DFS order. Walks all nodes
-/// regardless of collapsed state — egui's CollapsingHeader keeps state in
-/// its own memory; we treat all nodes as visible for arrow-key navigation
-/// purposes (simpler and matches the common file-tree expectation).
-pub fn collect_visible(node: &Node, path: &NodePath, out: &mut Vec<NodePath>) {
+/// Visible-row DFS that honors the tree panel's collapsed state. A
+/// collapsed parent's subtree is hidden — arrow nav skips it. Leaves
+/// (children-less nodes) have no collapsing state and are always visible.
+pub fn collect_visible_open(
+    ctx: &egui::Context,
+    node: &Node,
+    path: &NodePath,
+    out: &mut Vec<NodePath>,
+) {
     for (i, c) in node.children.iter().enumerate() {
         let cp = path.child(i);
         out.push(cp.clone());
-        collect_visible(c, &cp, out);
+        if !c.children.is_empty() && crate::tree_panel::is_node_open(ctx, &cp) {
+            collect_visible_open(ctx, c, &cp, out);
+        }
     }
 }

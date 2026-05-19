@@ -11,19 +11,24 @@ pub fn show(ui: &mut egui::Ui, app: &mut App) {
         ui.label("(no tab — open a .tps.fab.json to start)");
         return;
     };
-    let (tree_name, n_children, children) = {
+    // Snapshot the active doc's trees so we can iterate them without holding
+    // a borrow across the recursive `show_node` calls (which need `&mut app`).
+    let trees: Vec<(String, usize, Vec<unity_sprite_author::manifest::Node>)> = {
         let Some(doc) = app.docs.get(tab.doc) else { return; };
-        let Some(tree) = doc.manifest.trees.get(tab.tree) else { return; };
-        (tree.name.clone(), tree.root.children.len(), tree.root.children.clone())
+        doc.manifest.trees.iter().enumerate().map(|(i, t)| {
+            (t.name.clone(), i, t.root.children.clone())
+        }).collect()
     };
-    let root_path = NodePath::tree_root(tab.doc, tab.tree);
 
     // Reset drop target each frame; it'll get repopulated by hover during the recurse.
     app.tree_drop_target = None;
 
-    show_root(ui, app, tree_name, &root_path, n_children);
-    for (i, child) in children.iter().enumerate() {
-        show_node(ui, app, child, root_path.child(i));
+    for (tree_name, tree_idx, children) in trees {
+        let root_path = NodePath::tree_root(tab.doc, tree_idx);
+        show_root(ui, app, tree_name, &root_path, children.len());
+        for (i, child) in children.iter().enumerate() {
+            show_node(ui, app, child, root_path.child(i));
+        }
     }
 
     // Render drop indicator + commit drop on mouse-up.
@@ -72,7 +77,7 @@ fn show_node(ui: &mut egui::Ui, app: &mut App, node: &Node, path: NodePath) {
     let row_resp = if node.children.is_empty() {
         leaf_row(ui, &label, selected)
     } else {
-        let id = ui.make_persistent_id(("node", &path));
+        let id = collapsing_id(&path);
         let mut header_resp_opt: Option<egui::Response> = None;
         egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true)
             .show_header(ui, |ui| {
@@ -99,6 +104,22 @@ fn show_node(ui: &mut egui::Ui, app: &mut App, node: &Node, path: NodePath) {
     // Drop target detection — populates app.tree_drop_target when this row
     // is hovered during an active drag.
     consider_drop_on_row(app, row_resp.rect, &path, &node.children, &row_resp);
+}
+
+/// Stable Id for a node's collapsing header. Keyed off the path so the
+/// arrow-nav helper in `app.rs` can look up the same state without holding
+/// a `Ui`. Bump the prefix string only for a deliberate state-loss release.
+pub fn collapsing_id(path: &NodePath) -> egui::Id {
+    egui::Id::new(("usa-tree-node", path))
+}
+
+/// Has the tree-panel CollapsingState for this node been left open?
+/// Defaults to `true` (matches `load_with_default_open(_, _, true)` in
+/// `show_node`). Returns `true` for leaves too — they have no header.
+pub fn is_node_open(ctx: &egui::Context, path: &NodePath) -> bool {
+    egui::collapsing_header::CollapsingState::load(ctx, collapsing_id(path))
+        .map(|s| s.is_open())
+        .unwrap_or(true)
 }
 
 fn leaf_row(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
@@ -196,6 +217,12 @@ fn add_child_menu(ui: &mut egui::Ui, app: &mut App, parent: &NodePath) {
 /// canvas and tree-row click handling so the modifier semantics stay uniform.
 pub fn apply_click_modifier(app: &mut App, path: NodePath, ctx: &egui::Context) {
     let (cmd, shift) = ctx.input(|i| (i.modifiers.command, i.modifiers.shift));
+    apply_click_modifier_path(app, path, cmd, shift);
+}
+
+/// Same as [`apply_click_modifier`] but with modifiers passed in directly so
+/// callers that already read them don't have to re-read.
+pub fn apply_click_modifier_path(app: &mut App, path: NodePath, cmd: bool, shift: bool) {
     if cmd {
         app.selection.toggle(path);
     } else if shift {

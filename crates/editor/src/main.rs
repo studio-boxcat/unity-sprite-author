@@ -6,7 +6,9 @@ mod app;
 mod atlas;
 mod doc;
 mod inspector;
+mod menubar;
 mod picker;
+mod preferences;
 mod preview;
 mod selection;
 mod serialize;
@@ -17,11 +19,14 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1440.0, 880.0])
             .with_title("unity-sprite-author editor"),
+        // `persistence` lets eframe round-trip window geometry + our
+        // `Preferences` blob to disk between launches.
+        persist_window: true,
         ..Default::default()
     };
     eframe::run_native(
         "unity-sprite-author-editor",
         options,
-        Box::new(|_cc| Ok(Box::new(app::App::default()))),
+        Box::new(|cc| Ok(Box::new(app::App::new(cc)))),
     )
 }
