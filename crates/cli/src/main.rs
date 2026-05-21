@@ -272,7 +272,6 @@ fn ensure_meta(
         out_dir: out_dir.to_path_buf(),
         target: asset.to_path_buf(),
         importer_override: importer,
-        scrub_chars: None,
         lock_timeout: Duration::from_secs(10),
     })
     .map_err(|e| format!("register {}: {e}", asset.display()))?;
