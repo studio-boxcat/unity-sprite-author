@@ -70,6 +70,62 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+/// Conventional file layout: `tpsheet` / `tps` / `png` all share a stem at
+/// `<parent>/<stem>.ext`, and the per-sprite output dir is `<parent>/<stem>/`.
+/// Both the CLI (tps-first, packs then authors) and the Unity Editor bridge
+/// (tpsheet-first, already-packed) derive paths the same way — this helper
+/// is the single source of truth for that convention.
+#[derive(Debug, Clone)]
+pub struct StandardLayout {
+    pub tpsheet_path: PathBuf,
+    pub tps_path: PathBuf,
+    pub atlas_png_path: PathBuf,
+    pub sprite_dir: PathBuf,
+}
+
+impl StandardLayout {
+    /// Build from a `.tps` path. Used by the CLI (post-pack: TexturePackerCLI
+    /// emits the sibling `.tpsheet` and `.png`).
+    pub fn from_tps(tps_path: &Path) -> Result<Self, LayoutError> {
+        Self::from_stem_path(tps_path)
+    }
+
+    /// Build from a `.tpsheet` path. Used by the Unity Editor bridge (the
+    /// TPSImporter has already emitted the tpsheet+png).
+    pub fn from_tpsheet(tpsheet_path: &Path) -> Result<Self, LayoutError> {
+        Self::from_stem_path(tpsheet_path)
+    }
+
+    fn from_stem_path(p: &Path) -> Result<Self, LayoutError> {
+        let stem = p
+            .file_stem()
+            .ok_or_else(|| LayoutError::NoStem(p.to_path_buf()))?;
+        let parent = p.parent().unwrap_or(Path::new(""));
+        let sprite_dir = parent.join(stem);
+        Ok(StandardLayout {
+            tpsheet_path: sprite_dir.with_extension("tpsheet"),
+            tps_path: sprite_dir.with_extension("tps"),
+            atlas_png_path: sprite_dir.with_extension("png"),
+            sprite_dir,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub enum LayoutError {
+    NoStem(PathBuf),
+}
+
+impl fmt::Display for LayoutError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoStem(p) => write!(f, "path has no file stem: {}", p.display()),
+        }
+    }
+}
+
+impl std::error::Error for LayoutError {}
+
 /// Inputs to [`generate`]. All paths must be absolute (or resolvable from
 /// the process's working directory); the pipeline does no path-walking
 /// beyond what's spelled out here.
@@ -664,6 +720,33 @@ mod tests {
         let _ = fs::remove_dir_all(&dst);
         copy_dir(&src, &dst).unwrap();
         dst
+    }
+
+    #[test]
+    fn standard_layout_from_tps_derives_sibling_paths() {
+        let layout = StandardLayout::from_tps(Path::new("/proj/Assets/Orgel.tps")).unwrap();
+        assert_eq!(layout.tps_path, Path::new("/proj/Assets/Orgel.tps"));
+        assert_eq!(layout.tpsheet_path, Path::new("/proj/Assets/Orgel.tpsheet"));
+        assert_eq!(layout.atlas_png_path, Path::new("/proj/Assets/Orgel.png"));
+        assert_eq!(layout.sprite_dir, Path::new("/proj/Assets/Orgel"));
+    }
+
+    #[test]
+    fn standard_layout_from_tpsheet_matches_from_tps() {
+        let a = StandardLayout::from_tps(Path::new("/proj/Assets/Orgel.tps")).unwrap();
+        let b = StandardLayout::from_tpsheet(Path::new("/proj/Assets/Orgel.tpsheet")).unwrap();
+        assert_eq!(a.tpsheet_path, b.tpsheet_path);
+        assert_eq!(a.tps_path, b.tps_path);
+        assert_eq!(a.atlas_png_path, b.atlas_png_path);
+        assert_eq!(a.sprite_dir, b.sprite_dir);
+    }
+
+    #[test]
+    fn standard_layout_errors_on_stemless_path() {
+        assert!(matches!(
+            StandardLayout::from_tps(Path::new("/")),
+            Err(LayoutError::NoStem(_))
+        ));
     }
 
     fn copy_dir(src: &Path, dst: &Path) -> io::Result<()> {

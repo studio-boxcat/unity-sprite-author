@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use unity_assetdb::bake::with_meta_suffix;
 use unity_assetdb::register::{self, ImporterKind, RegisterOptions};
-use unity_sprite_author::pipeline::{self, GenerateInputs};
+use unity_sprite_author::pipeline::{self, GenerateInputs, StandardLayout};
 
 const USAGE: &str = "\
 usage: unity-sprite-author <atlas.tps> [options]
@@ -143,20 +143,11 @@ fn run(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         .tps_path
         .canonicalize()
         .map_err(|e| format!("canonicalize {}: {e}", cli.tps_path.display()))?;
-    let tps_dir = tps_path
-        .parent()
-        .ok_or_else(|| format!("{} has no parent dir", tps_path.display()))?
-        .to_path_buf();
-    let tps_stem = tps_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| format!("{} has no file stem", tps_path.display()))?;
-    let tpsheet_path = tps_dir.join(format!("{tps_stem}.tpsheet"));
-    let png_path = tps_dir.join(format!("{tps_stem}.png"));
-    let sprite_dir = cli
-        .sprite_dir
-        .clone()
-        .unwrap_or_else(|| tps_dir.join(tps_stem));
+    let layout = StandardLayout::from_tps(&tps_path)?;
+    let tps_dir = layout.tps_path.parent().unwrap().to_path_buf();
+    let tpsheet_path = layout.tpsheet_path.clone();
+    let png_path = layout.atlas_png_path.clone();
+    let sprite_dir = cli.sprite_dir.clone().unwrap_or_else(|| layout.sprite_dir.clone());
 
     if !cli.skip_pack {
         pack(&cli.texturepacker, &tps_path)?;

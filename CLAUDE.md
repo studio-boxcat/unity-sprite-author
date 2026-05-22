@@ -44,7 +44,7 @@ Unity import → TPSheetPostprocessor.OnPostprocessAllAssets
 
 ## Public Rust API
 
-The only entry point callers use is `pipeline::generate`. The crate has no FFI of its own — the BoxcatBridge cdylib in meow-tower wraps this fn behind `bxc_sprite_author_generate` and handles C# marshalling.
+The primary entry point is `pipeline::generate`. The crate has no FFI of its own — the BoxcatBridge cdylib in meow-tower wraps this fn behind `bxc_sprite_author_generate` and handles C# marshalling. `pipeline::StandardLayout::from_tpsheet` / `from_tps` is a small helper for callers (the bridge and the CLI) that need to derive `tpsheet` / `tps` / `png` / `sprite_dir` from a single stem path under the standard `<parent>/<stem>.ext` convention.
 
 ```rust
 use std::path::Path;
@@ -86,7 +86,7 @@ unity-sprite-author Atlas.tps --prefix AC_ --ppu 100 --sprite-dir Atlas
 unity-sprite-author Atlas.tps --skip-pack     # reuse existing .tpsheet/.png
 ```
 
-`--prefix` / `--ppu` override the meta-derived defaults. PPU is required (CLI flag or `spritePixelsToUnits` in `.png.meta`); prefix defaults to `""` when neither source supplies one. Default `--sprite-dir` is `<tps-parent>/<tps-stem>/` (matches the meow-tower convention). `.tps.fab.json` / `.tps.mesh.json` sidecars are picked up automatically since the bin just forwards `tps_path` to `pipeline::generate` — no extra flags.
+`--prefix` / `--ppu` override the meta-derived defaults. PPU is required (CLI flag or `spritePixelsToUnits` in `.png.meta`); prefix defaults to `""` when neither source supplies one. Default `--sprite-dir` follows `pipeline::StandardLayout` (`<tps-parent>/<tps-stem>/`), shared with the meow-tower bridge. `.tps.fab.json` / `.tps.mesh.json` sidecars are picked up automatically since the bin just forwards `tps_path` to `pipeline::generate` — no extra flags.
 
 ### Caller-side notes (Unity / C#)
 
