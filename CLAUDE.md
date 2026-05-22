@@ -44,7 +44,7 @@ Unity import → TPSheetPostprocessor.OnPostprocessAllAssets
 
 ## Public Rust API
 
-The primary entry point is `pipeline::generate`. The crate has no FFI of its own — the BoxcatBridge cdylib in meow-tower wraps this fn behind `bxc_sprite_author_generate` and handles C# marshalling. `pipeline::StandardLayout::from_tpsheet` / `from_tps` is a small helper for callers (the bridge and the CLI) that need to derive `tpsheet` / `tps` / `png` / `sprite_dir` from a single stem path under the standard `<parent>/<stem>.ext` convention.
+The primary entry point is `pipeline::generate`. The crate has no FFI of its own — the BoxcatBridge cdylib in meow-tower wraps this fn behind `bxc_sprite_author_generate` and handles C# marshalling. `pipeline::StandardLayout::from_tpsheet` / `from_tps` is a small helper for callers (the bridge and the CLI) that need to derive `tpsheet` / `tps` / `png` / `sprite_dir` from a single stem path under the standard `<parent>/<stem>.ext` convention. `meta::read_tps_prefix` is the parallel helper for sourcing the `_prefix` default from a `.tps.meta` ScriptedImporter block — shared so the bridge and CLI agree on the on-disk shape.
 
 ```rust
 use std::path::Path;
@@ -220,7 +220,7 @@ unity-sprite-author/
 │   │   │   ├── pipeline.rs         # orchestrate: parse → build → write → prune → delete
 │   │   │   ├── tpsheet.rs          # parser (mirrors SheetLoader.cs)
 │   │   │   ├── tps.rs              # minimal parser (spriteScale lookup)
-│   │   │   ├── meta.rs             # .png.meta GUID read + alphaIsTransparency rewrite; .asset.meta read/write
+│   │   │   ├── meta.rs             # .png.meta GUID read + alphaIsTransparency rewrite; .asset.meta read/write; .tps.meta _prefix read
 │   │   │   ├── render_data.rs      # _typelessdata, m_IndexBuffer, uvTransform
 │   │   │   ├── emit.rs             # SpriteAsset → bytes
 │   │   │   ├── yaml.rs             # Unity-flavor YAML + yaml::float (C# ToString("R"))

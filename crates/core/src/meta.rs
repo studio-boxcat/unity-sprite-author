@@ -287,6 +287,27 @@ pub fn read_existing_texture_rect_size<P: AsRef<Path>>(asset_path: P) -> Option<
     None
 }
 
+/// Read `_prefix:` out of a `.tps`'s sibling `.tps.meta` ScriptedImporter
+/// block. Returns `None` when the meta is missing, unreadable, the field
+/// is absent (freshly-minted DefaultImporter meta), or the value is empty.
+/// Shared by the CLI and the BoxcatBridge cdylib so prefix-defaulting is
+/// uniform across headless packs and Unity Editor postprocess.
+pub fn read_tps_prefix<P: AsRef<Path>>(tps_path: P) -> Option<String> {
+    let mut meta = tps_path.as_ref().to_path_buf();
+    meta.as_mut_os_string().push(".meta");
+    let text = fs::read_to_string(&meta).ok()?;
+    for line in text.lines() {
+        if let Some(rest) = line.trim_start().strip_prefix("_prefix:") {
+            let v = rest.trim();
+            if v.is_empty() {
+                return None;
+            }
+            return Some(v.to_string());
+        }
+    }
+    None
+}
+
 /// Compose a 128-bit GUID from two pre-derived entropy words (LE-packed:
 /// `lo` → bytes 0..8, `hi` → bytes 8..16). Split out from [`mint_guid`]
 /// so tests can pin the mint path against fixed entropy.
@@ -471,6 +492,55 @@ mod tests {
         std::fs::write(&path, "Sprite:\n  m_Rect:\n    width: 1\n").unwrap();
         assert!(read_existing_texture_rect_size(&path).is_none());
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_tps_prefix_picks_up_value() {
+        let dir = std::env::temp_dir().join("uspa_test_read_tps_prefix_value");
+        std::fs::create_dir_all(&dir).unwrap();
+        let tps = dir.join("Atlas.tps");
+        std::fs::write(
+            tps.with_extension("tps.meta"),
+            "fileFormatVersion: 2\nguid: 0\nScriptedImporter:\n  _prefix: AC_\n",
+        )
+        .unwrap();
+        assert_eq!(read_tps_prefix(&tps).as_deref(), Some("AC_"));
+        let _ = std::fs::remove_file(tps.with_extension("tps.meta"));
+    }
+
+    #[test]
+    fn read_tps_prefix_empty_value_returns_none() {
+        let dir = std::env::temp_dir().join("uspa_test_read_tps_prefix_empty");
+        std::fs::create_dir_all(&dir).unwrap();
+        let tps = dir.join("Atlas.tps");
+        std::fs::write(
+            tps.with_extension("tps.meta"),
+            "ScriptedImporter:\n  _prefix: \n",
+        )
+        .unwrap();
+        assert!(read_tps_prefix(&tps).is_none());
+        let _ = std::fs::remove_file(tps.with_extension("tps.meta"));
+    }
+
+    #[test]
+    fn read_tps_prefix_missing_meta_returns_none() {
+        let tps = std::env::temp_dir().join("uspa_does_not_exist_prefix.tps");
+        let _ = std::fs::remove_file(tps.with_extension("tps.meta"));
+        assert!(read_tps_prefix(&tps).is_none());
+    }
+
+    #[test]
+    fn read_tps_prefix_no_field_returns_none() {
+        let dir = std::env::temp_dir().join("uspa_test_read_tps_prefix_nofield");
+        std::fs::create_dir_all(&dir).unwrap();
+        let tps = dir.join("Atlas.tps");
+        std::fs::write(
+            tps.with_extension("tps.meta"),
+            "fileFormatVersion: 2\nguid: 0\nDefaultImporter:\n  externalObjects: {}\n",
+        )
+        .unwrap();
+        assert!(read_tps_prefix(&tps).is_none());
+        let _ = std::fs::remove_file(tps.with_extension("tps.meta"));
     }
 
     #[test]

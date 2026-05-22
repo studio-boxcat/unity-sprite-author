@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use unity_assetdb::bake::with_meta_suffix;
 use unity_assetdb::register::{self, ImporterKind, RegisterOptions};
+use unity_sprite_author::meta::read_tps_prefix;
 use unity_sprite_author::pipeline::{self, GenerateInputs, StandardLayout};
 
 const USAGE: &str = "\
@@ -274,23 +275,6 @@ fn ensure_meta(
         );
     }
     Ok(())
-}
-
-/// Extract `_prefix:` from a `ScriptedImporter` block in a `.tps.meta`.
-/// Returns `None` when the field is absent (e.g. freshly-minted
-/// `DefaultImporter` meta), empty, or the file is unreadable.
-fn read_tps_prefix(tps: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(with_meta_suffix(tps)).ok()?;
-    for line in text.lines() {
-        if let Some(rest) = line.trim_start().strip_prefix("_prefix:") {
-            let v = rest.trim();
-            if v.is_empty() {
-                return None;
-            }
-            return Some(v.to_string());
-        }
-    }
-    None
 }
 
 /// Extract `spritePixelsToUnits:` from a `TextureImporter` block in a
