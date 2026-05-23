@@ -18,7 +18,7 @@ use std::process::{Command, ExitCode};
 use std::time::Duration;
 
 use unity_assetdb::register::{self, ImporterKind, RegisterOptions};
-use unity_sprite_author::meta::{read_png_ppu, read_tps_prefix};
+use unity_sprite_author::meta::read_tps_prefix;
 use unity_sprite_author::pipeline::{self, GenerateInputs, StandardLayout};
 
 const USAGE: &str = "\
@@ -31,8 +31,6 @@ usage: unity-sprite-author <atlas.tps> [options]
 options:
   --prefix <STR>        Sprite filename prefix. Default: TPSImporter
                         `_prefix` from .tps.meta if present, else \"\".
-  --ppu <N>             Pixels-per-unit. Default: `spritePixelsToUnits`
-                        from .png.meta if present, else error.
   --sprite-dir <DIR>    Output dir for sprite .asset files. Default:
                         <tps-parent>/<tps-stem>/.
   --skip-pack           Don't run TexturePackerCLI; assume .tpsheet
@@ -66,7 +64,6 @@ fn main() -> ExitCode {
 struct Cli {
     tps_path: PathBuf,
     prefix: Option<String>,
-    ppu: Option<f32>,
     sprite_dir: Option<PathBuf>,
     skip_pack: bool,
     texturepacker: String,
@@ -88,7 +85,6 @@ impl Cli {
     fn parse(args: &[String]) -> Result<Self, String> {
         let mut tps_path: Option<PathBuf> = None;
         let mut prefix: Option<String> = None;
-        let mut ppu: Option<f32> = None;
         let mut sprite_dir: Option<PathBuf> = None;
         let mut skip_pack = false;
         let mut texturepacker = "texturepacker".to_string();
@@ -99,10 +95,6 @@ impl Cli {
                 "-h" | "--help" => help = true,
                 "--skip-pack" => skip_pack = true,
                 "--prefix" => prefix = Some(take_value(&mut iter, "--prefix")?.clone()),
-                "--ppu" => {
-                    let v = take_value(&mut iter, "--ppu")?;
-                    ppu = Some(v.parse().map_err(|_| format!("invalid --ppu: {v}"))?);
-                }
                 "--sprite-dir" => {
                     sprite_dir = Some(PathBuf::from(take_value(&mut iter, "--sprite-dir")?));
                 }
@@ -122,7 +114,6 @@ impl Cli {
             return Ok(Self {
                 tps_path: PathBuf::new(),
                 prefix,
-                ppu,
                 sprite_dir,
                 skip_pack,
                 texturepacker,
@@ -132,7 +123,6 @@ impl Cli {
         Ok(Self {
             tps_path: tps_path.ok_or("missing <atlas.tps> argument")?,
             prefix,
-            ppu,
             sprite_dir,
             skip_pack,
             texturepacker,
@@ -200,22 +190,12 @@ fn run(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         Some(p) => p.clone(),
         None => read_tps_prefix(&tps_path).unwrap_or_default(),
     };
-    let ppu = match cli.ppu {
-        Some(v) => v,
-        None => read_png_ppu(&png_path).ok_or_else(|| {
-            format!(
-                "{}.meta has no `spritePixelsToUnits` field — pass --ppu, or open the .png in \
-                 Unity once to let TextureImporter fill the field in",
-                png_path.display()
-            )
-        })?,
-    };
 
     std::fs::create_dir_all(&sprite_dir)
         .map_err(|e| format!("create sprite dir {}: {e}", sprite_dir.display()))?;
 
     eprintln!(
-        "authoring sprites: tpsheet={} png={} sprite_dir={} prefix={:?} ppu={ppu}",
+        "authoring sprites: tpsheet={} png={} sprite_dir={} prefix={:?}",
         rel(&tpsheet_path, &project_root),
         rel(&png_path, &project_root),
         rel(&sprite_dir, &project_root),
@@ -227,7 +207,6 @@ fn run(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         atlas_png_path: &png_path,
         sprite_dir: &sprite_dir,
         prefix: &prefix,
-        ppu,
     })?;
 
     eprintln!(

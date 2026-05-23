@@ -80,9 +80,6 @@ impl Watcher {
             .map_err(|e| format!("{e}"))?;
 
         let prefix = meta::read_tps_prefix(&layout.tps_path).unwrap_or_default();
-        let ppu = meta::read_png_ppu(&layout.atlas_png_path).ok_or_else(|| {
-            format!("{}.meta missing spritePixelsToUnits", layout.atlas_png_path.display())
-        })?;
 
         let inputs = GenerateInputs {
             tpsheet_path,
@@ -90,7 +87,6 @@ impl Watcher {
             atlas_png_path: &layout.atlas_png_path,
             sprite_dir: &layout.sprite_dir,
             prefix: &prefix,
-            ppu,
         };
 
         pipeline::generate(&inputs).map_err(|e| format!("{e:#}"))?;

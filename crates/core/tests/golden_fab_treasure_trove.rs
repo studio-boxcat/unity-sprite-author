@@ -63,7 +63,6 @@ fn treasure_trove_matches_pre_migration_goldens() {
         atlas_png_path: &dst.join("TreasureTrove.png"),
         sprite_dir: &sprite_dir,
         prefix: "",
-        ppu: 100.0,
     })
     .expect("pipeline");
 

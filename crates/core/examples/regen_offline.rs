@@ -8,7 +8,7 @@
 //
 // Usage:
 //   regen_offline --tps <path> --tpsheet <path> --png-meta <path>
-//                 --sprite-dir <path> --ppu 100 [--prefix STR]
+//                 --sprite-dir <path> [--prefix STR]
 
 use std::path::PathBuf;
 use unity_sprite_author::pipeline::{self, GenerateInputs};
@@ -20,7 +20,6 @@ fn main() {
     let mut png_meta: Option<PathBuf> = None;
     let mut sprite_dir: Option<PathBuf> = None;
     let mut prefix: String = String::new();
-    let mut ppu: f32 = 100.0;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -29,7 +28,6 @@ fn main() {
             "--png-meta" => png_meta = Some(it.next().expect("--png-meta val").into()),
             "--sprite-dir" => sprite_dir = Some(it.next().expect("--sprite-dir val").into()),
             "--prefix" => prefix = it.next().expect("--prefix val").clone(),
-            "--ppu" => ppu = it.next().expect("--ppu val").parse().expect("ppu f32"),
             other => panic!("unknown arg: {other}"),
         }
     }
@@ -47,7 +45,6 @@ fn main() {
         atlas_png_path: &png,
         sprite_dir: &sprite_dir,
         prefix: &prefix,
-        ppu,
     })
     .expect("pipeline");
 }

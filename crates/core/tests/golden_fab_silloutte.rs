@@ -41,7 +41,6 @@ fn silloutte_byte_exact() {
         atlas_png_path: &dst.join("PremiumCat_Vampire_Popup.png"),
         sprite_dir: &sprite_dir,
         prefix: "",
-        ppu: 100.0,
     })
     .expect("pipeline");
 

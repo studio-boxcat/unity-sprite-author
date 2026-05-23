@@ -2,10 +2,10 @@
 //
 // Walks every `<atlas>.tps` under a given Assets/ root, regenerates the
 // sibling `.tpsheet` via TexturePackerCLI (skipping `Template~/` dirs that
-// Unity ignores), reads the prefix from `<atlas>.tps.meta` and ppu from
-// `<atlas>.png.meta`, then calls `unity_sprite_author::pipeline::generate`
-// directly. Same emit semantics as Unity's TPSheetPostprocessor, just
-// without the Editor in the loop.
+// Unity ignores), reads the prefix from `<atlas>.tps.meta`, then calls
+// `unity_sprite_author::pipeline::generate` directly (ppu is read from
+// `<atlas>.png.meta` inside the pipeline). Same emit semantics as Unity's
+// TPSheetPostprocessor, just without the Editor in the loop.
 //
 // Usage:
 //   cargo run --release --example migrate_corpus -- $MEOW_CLIENT/Assets
@@ -31,12 +31,6 @@ fn read_meta_field(path: &Path, key: &str) -> Option<String> {
         }
     }
     None
-}
-
-fn read_ppu(png_meta: &Path) -> f32 {
-    read_meta_field(png_meta, "spritePixelsToUnits")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(100.0)
 }
 
 fn read_prefix(tps_meta: &Path) -> String {
@@ -73,24 +67,13 @@ fn process_one(tps: &Path) -> Result<(), String> {
 
     texturepacker(tps).map_err(|e| format!("texturepacker on {}: {e}", tps.display()))?;
 
-    let inputs = GenerateInputs {
-        tpsheet_path: &tpsheet,
-        tps_path: tps,
-        atlas_png_path: &png,
-        sprite_dir: &sprite_dir,
-        prefix: &read_prefix(&tps_meta),
-        ppu: read_ppu(&png_meta),
-    };
-    let _ = inputs;
     let prefix = read_prefix(&tps_meta);
-    let ppu = read_ppu(&png_meta);
     pipeline::generate(&GenerateInputs {
         tpsheet_path: &tpsheet,
         tps_path: tps,
         atlas_png_path: &png,
         sprite_dir: &sprite_dir,
         prefix: &prefix,
-        ppu,
     })
     .map_err(|e| format!("pipeline::generate on {}: {e}", tps.display()))?;
     Ok(())

@@ -27,6 +27,7 @@ pub enum MetaError {
     Io(io::Error),
     InvalidGuid(String),
     NoGuidField,
+    NoPpu,
     NoAlphaIsTransparencyField,
     InvalidAlphaIsTransparencyValue(String),
 }
@@ -37,6 +38,9 @@ impl fmt::Display for MetaError {
             Self::Io(e) => write!(f, "meta io error: {e}"),
             Self::InvalidGuid(s) => write!(f, "invalid guid hex: {s:?}"),
             Self::NoGuidField => write!(f, "meta has no `guid:` field"),
+            Self::NoPpu => {
+                write!(f, "png.meta has no `spritePixelsToUnits:` field")
+            }
             Self::NoAlphaIsTransparencyField => {
                 write!(f, "png.meta has no `alphaIsTransparency:` field")
             }

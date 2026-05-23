@@ -146,8 +146,6 @@ pub struct GenerateInputs<'a> {
     /// Read from `TPSImporter._prefix` on the sibling `.tps.meta` by the
     /// C# postprocessor, then passed through here.
     pub prefix: &'a str,
-    /// Pixels-per-unit from the atlas's `TextureImporter.spritePixelsPerUnit`.
-    pub ppu: f32,
 }
 
 /// Result of a successful [`generate`] call. The caller routes each path
@@ -204,6 +202,9 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
     let atlas_meta_path = png_meta_path(input.atlas_png_path);
     let atlas_meta_text = read_to_string(&atlas_meta_path)?;
     let atlas_guid = meta::parse_guid(&atlas_meta_text).map_err(Error::Meta)?;
+
+    let ppu = meta::read_png_ppu(input.atlas_png_path)
+        .ok_or_else(|| Error::Meta(meta::MetaError::NoPpu))?;
 
     // Optional `.tps.fab.json` sidecar (see docs/fab.md). When present, it
     // declares fabricated combined sprites built from referenced parts; those
@@ -282,13 +283,13 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
         let meta_path = input.sprite_dir.join(format!("{asset_name}.asset.meta"));
 
         let invert_scale = tps_data.invert_scale(&sprite.name);
-        let pixels_to_units = input.ppu / invert_scale;
+        let pixels_to_units = ppu / invert_scale;
         let rd = render_data::build(
             sprite.rect,
             sprite.pivot,
             &sprite.geometry.vertices,
             &sprite.geometry.triangles,
-            input.ppu,
+            ppu,
             invert_scale,
             atlas_size,
         );
@@ -346,6 +347,7 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
             &sheet,
             &tps_data,
             input,
+            ppu,
             atlas_size,
             &atlas_guid,
             &mut current_asset_names_ci,
@@ -364,6 +366,7 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
             &mesh_manifest,
             &sheet,
             input,
+            ppu,
             atlas_size,
             &mut writes,
             &mut written_asset_paths,
@@ -551,6 +554,7 @@ fn emit_combined_sprites(
     sheet: &tpsheet::Sheet,
     tps_data: &tps::TpsData,
     input: &GenerateInputs,
+    ppu: f32,
     atlas_size: AtlasSize,
     atlas_guid: &[u8; 16],
     current_asset_names_ci: &mut HashSet<String>,
@@ -577,14 +581,14 @@ fn emit_combined_sprites(
             c,
             |name| sprite_by_name.get(name).map(|s| ((*s).clone(), tps_data.invert_scale(name))),
             combine_atlas,
-            input.ppu,
+            ppu,
         ).map_err(Error::Combine)?;
 
-        let ((rect_w_f, rect_h_f), (px, py)) = combine::calc_rect_and_pivot(&mesh.verts, input.ppu);
+        let ((rect_w_f, rect_h_f), (px, py)) = combine::calc_rect_and_pivot(&mesh.verts, ppu);
 
         let rd = render_data::build_fabricated(
             &mesh.verts, &mesh.uvs, &mesh.tris,
-            rect_w_f, rect_h_f, (px, py), input.ppu,
+            rect_w_f, rect_h_f, (px, py), ppu,
         );
 
         let (own_guid, meta_shape) = meta::resolve_sprite_meta(&meta_path).map_err(Error::Meta)?;
@@ -614,7 +618,7 @@ fn emit_combined_sprites(
                 top: c.border[3] as i32,
             },
             pivot: tpsheet::Pivot { x: px, y: py },
-            pixels_to_units: input.ppu,
+            pixels_to_units: ppu,
             own_guid,
             atlas_guid: *atlas_guid,
             render_data: rd,
@@ -661,6 +665,7 @@ fn emit_combined_meshes(
     manifest: &MeshManifest,
     sheet: &tpsheet::Sheet,
     input: &GenerateInputs,
+    ppu: f32,
     atlas_size: AtlasSize,
     writes: &mut Vec<(PathBuf, Vec<u8>)>,
     written_asset_paths: &mut Vec<PathBuf>,
@@ -681,7 +686,7 @@ fn emit_combined_meshes(
     for combined in &manifest.meshes {
         let mesh = mesh_emit::build_mesh(
             combined,
-            input.ppu,
+            ppu,
             (atlas_size.width, atlas_size.height),
             |name| sprite_by_name.get(name).map(|s| (*s).clone()),
         )
@@ -766,7 +771,6 @@ mod tests {
             atlas_png_path: &dir.join("Orgel.png"),
             sprite_dir: &dir.join("sprites"),
             prefix: "",
-            ppu: 80.0,
         };
         let _ = generate(&inputs).unwrap();
         assert!(
@@ -796,7 +800,6 @@ mod tests {
             atlas_png_path: &dir.join("Orgel.png"),
             sprite_dir: &sprite_dir,
             prefix: "",
-            ppu: 80.0,
         };
         let saved_tpsheet =
             fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/orgel/Orgel.tpsheet"))
@@ -861,7 +864,6 @@ mod tests {
             atlas_png_path: &dir.join("Orgel.png"),
             sprite_dir: &dir.join("sprites"),
             prefix: "",
-            ppu: 80.0,
         };
         // Stash the tpsheet text so we can restore it for the second pass.
         let saved_tpsheet =
@@ -913,7 +915,6 @@ mod tests {
             atlas_png_path: &dir.join("Orgel.png"),
             sprite_dir: &dir.join("sprites"),
             prefix: "",
-            ppu: 80.0,
         };
         match generate(&inputs) {
             Err(Error::DuplicateSpriteName(name)) => {
@@ -953,7 +954,6 @@ mod tests {
             atlas_png_path: &dir.join("Orgel.png"),
             sprite_dir: &sprites,
             prefix: "",
-            ppu: 80.0,
         };
         let out = generate(&inputs).unwrap();
 
@@ -1000,7 +1000,6 @@ mod tests {
             atlas_png_path: &png_path,
             sprite_dir: &dir.join("sprites"),
             prefix: "",
-            ppu: 80.0,
         };
         let out = generate(&inputs).unwrap();
 
@@ -1033,7 +1032,6 @@ mod tests {
             atlas_png_path: &png_path,
             sprite_dir: &dir.join("sprites"),
             prefix: "",
-            ppu: 80.0,
         };
         let out = generate(&inputs).unwrap();
 
@@ -1066,7 +1064,6 @@ mod tests {
             atlas_png_path: &dir.join("Orgel.png"),
             sprite_dir: &dir.join("sprites"),
             prefix: "",
-            ppu: 80.0,
         };
         let err = generate(&inputs).unwrap_err();
         assert!(
@@ -1087,7 +1084,6 @@ mod tests {
             atlas_png_path: &dir.join("Orgel.png"),
             sprite_dir: &dir.join("sprites"),
             prefix: "",
-            ppu: 80.0,
         };
         // Stage a known consistent .tps state for this sprite by writing a
         // minimal .tps that says spriteScale=1 for Cake__DecoLeft. Easier:
@@ -1157,7 +1153,6 @@ mod tests {
             atlas_png_path: &dir.join("Orgel.png"),
             sprite_dir: &dir.join("sprites"),
             prefix: "",
-            ppu: 80.0,
         };
         let out = generate(&inputs).unwrap();
 
@@ -1203,7 +1198,6 @@ mod tests {
             atlas_png_path: &dir.join("Orgel.png"),
             sprite_dir: &dir.join("sprites"),
             prefix: "",
-            ppu: 80.0,
         };
         let e = generate(&inputs).unwrap_err();
         assert!(matches!(e, Error::Manifest(_)), "got {e:?}");
@@ -1244,7 +1238,6 @@ mod tests {
             atlas_png_path: &dir.join("Orgel.png"),
             sprite_dir: &sprite_dir,
             prefix: "",
-            ppu: 80.0,
         };
         let out = generate(&inputs).expect("textureRect drift should not fail");
         assert!(
