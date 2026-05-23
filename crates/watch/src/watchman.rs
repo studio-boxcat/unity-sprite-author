@@ -107,20 +107,35 @@ fn clock_to_string(clock: Clock) -> Result<String, WatchError> {
 fn new_connector() -> Connector {
     let c = Connector::new();
     if std::env::var_os("WATCHMAN_SOCK").is_some() {
-        return c; // socket already known, no CLI discovery needed
+        eprintln!("sprite-author watch: WATCHMAN_SOCK set, skipping CLI discovery");
+        return c;
     }
     #[cfg(target_os = "macos")]
     {
-        // Homebrew on Apple Silicon; Intel Macs use /usr/local/bin (already on default PATH).
         let brew = Path::new("/opt/homebrew/bin/watchman");
         if brew.exists() {
+            eprintln!("sprite-author watch: using {}", brew.display());
             return c.watchman_cli_path(brew);
+        } else {
+            eprintln!("sprite-author watch: {} not found", brew.display());
         }
     }
     c
 }
 
 fn map_connect_err(e: WatchmanError) -> WatchError {
+    match &e {
+        WatchmanError::ConnectionDiscovery { watchman_path, reason, stderr } => {
+            eprintln!(
+                "sprite-author watch: discovery failed: path={} reason={reason} stderr={stderr}",
+                watchman_path.display()
+            );
+        }
+        WatchmanError::Connect { endpoint, .. } => {
+            eprintln!("sprite-author watch: connect failed: endpoint={}", endpoint.display());
+        }
+        _ => {}
+    }
     match e {
         WatchmanError::ConnectionDiscovery { .. } | WatchmanError::Connect { .. } => {
             WatchError::Unavailable
