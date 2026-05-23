@@ -47,7 +47,7 @@ async fn since_inner(
     project_root: &Path,
     prev_clock: Option<&str>,
 ) -> Result<Delta, WatchError> {
-    let client = Connector::new().connect().await.map_err(map_connect_err)?;
+    let client = new_connector().connect().await.map_err(map_connect_err)?;
 
     let canonical = CanonicalPath::canonicalize(project_root)
         .map_err(|e| WatchError::Query(format!("canonicalize: {e}")))?;
@@ -99,6 +99,25 @@ fn clock_to_string(clock: Clock) -> Result<String, WatchError> {
             "watchman returned SCM-aware clock; not requested".into(),
         )),
     }
+}
+
+/// macOS GUI apps (launched from Unity Hub / Finder) don't inherit the
+/// shell's PATH, so `Connector::new()` can't find the `watchman` binary
+/// via bare name lookup. Fall back to the Homebrew install path.
+fn new_connector() -> Connector {
+    let c = Connector::new();
+    if std::env::var_os("WATCHMAN_SOCK").is_some() {
+        return c; // socket already known, no CLI discovery needed
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // Homebrew on Apple Silicon; Intel Macs use /usr/local/bin (already on default PATH).
+        let brew = Path::new("/opt/homebrew/bin/watchman");
+        if brew.exists() {
+            return c.watchman_cli_path(brew);
+        }
+    }
+    c
 }
 
 fn map_connect_err(e: WatchmanError) -> WatchError {
