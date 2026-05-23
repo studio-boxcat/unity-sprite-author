@@ -7,8 +7,9 @@ test suite can't fabricate (the editor is the source of truth for
 `m_RenderDataKey` ↔ `.asset.meta` round-tripping, `settingsRaw`'s bit
 layout, `m_SpriteAtlas`-driven `m_AtlasRD` divergence, and per-sprite
 `spriteScale` after a Texture Importer reimport). This doc captures the
-procedure for each so any maintainer can run them, paste the output back
-into TODO.md, and close the item without re-deriving the setup.
+procedure for each so any maintainer can run them and close the item
+without re-deriving the setup — record findings in the commit message of
+the follow-up fix, or under [[TODO.md#unity-side-probes-blocked-on-editor-in-the-loop]].
 
 All four assume the meow-tower checkout at `$MEOW_CLIENT` (alias for
 `$MEOW_ROOT/meow-tower`). The Rust side is consumed via the BoxcatBridge

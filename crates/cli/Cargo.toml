@@ -11,6 +11,12 @@ path = "src/main.rs"
 # `unity-assetdb` mints `.tps.meta` / `.png.meta` on first-time packs outside
 # the Unity Editor. `default-features = false` skips its `cli` feature so we
 # don't transitively pull clap.
+#
+# `tps-core` (meow-toolbox) is the canonical TexturePacker `.tps` DOM. We use
+# its `list_file_lists` for the pre-pack color-PNG synthesis step — the rlib
+# keeps its own hand-rolled, single-field spriteScale extractor (per
+# CLAUDE.md's "library deps held to serde" policy on `core`).
 [dependencies]
 unity-sprite-author = { path = "../core" }
 unity-assetdb = { path = "../../../unity-assetdb", default-features = false }
+tps-core = { path = "../../../meow-toolbox/tools/tps/crates/core" }

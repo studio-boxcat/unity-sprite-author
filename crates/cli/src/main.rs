@@ -1,11 +1,17 @@
 //! `unity-sprite-author` CLI — pack one `.tps` with TexturePackerCLI, then
 //! run `pipeline::generate` on the result. Missing `.tps.meta` / `.png.meta`
 //! are synthesized via `unity-assetdb` so first-time packs outside the
-//! Unity Editor don't error on the atlas-GUID read.
+//! Unity Editor don't error on the atlas-GUID read. Missing
+//! `Color_*.png` swatches referenced by a sibling `.tps.fab.json` are
+//! synthesized into the .tps's source dir before the pack (see
+//! `color_synth`).
 //!
 //! See `CLAUDE.md` for the rlib's contract; this binary is a thin
 //! orchestrator that mirrors what `TPSheetPostprocessor.cs` does inside
 //! Unity.
+
+mod color_png;
+mod color_synth;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -150,7 +156,14 @@ fn run(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let png_path = layout.atlas_png_path.clone();
     let sprite_dir = cli.sprite_dir.clone().unwrap_or_else(|| layout.sprite_dir.clone());
 
+    // Pre-pack: synthesize any missing `Color_*.png` swatches referenced
+    // by a sibling `.tps.fab.json`. No-op when no fab.json exists or all
+    // referenced swatches are already on disk.
     if !cli.skip_pack {
+        let synth = color_synth::synthesize_for_tps(&tps_path)?;
+        for p in &synth.written_paths {
+            eprintln!("synth color: {}", rel(p, &tps_dir));
+        }
         pack(&cli.texturepacker, &tps_path)?;
     }
     if !tpsheet_path.exists() {

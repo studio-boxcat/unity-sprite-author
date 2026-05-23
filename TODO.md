@@ -24,24 +24,13 @@ hidden f64 precision, or derives the offset from the mesh AABB not the
 rect. Magnitude is invisible at runtime; revisit only when Unity engine
 source becomes available (UnityCsReference or decompilation).
 
-## SMA polygon-color synthesis (Phase 2b blocker)
+## Deferred (waiting on a real case)
 
-9 Box atlases ship `Polygon` SpriteRenderers backed by runtime Color
-textures that the Rust port currently rejects. Full work breakdown in
-[[sma-migration.md#outstanding-phase-2b-polygon-color-synthesis]].
-
-## Pack-step features (CLI follow-ups)
-
-- **1×1 color PNG synthesis.** When a tree references a polygon `color`
-  whose `Color_RRGGBB` entry is missing from the tpsheet, synthesize the
-  pixel PNG into the source `Sprites_Export~/` dir and add it to the
-  `.tps`, so the next TexturePackerCLI pack picks it up. Mirrors
-  meow-tower's `CanvasSpriteAuthor.ReplaceColorTextures` /
-  `ColorTextureUtils.CreateTexture`. Naturally fits the
-  `unity-sprite-author` CLI pack step (one place that already touches
-  TexturePacker), not `pipeline::generate` (which runs *after* the pack).
-- **`keepStandalone` allowlist** if a part ever needs both standalone
-  and combined emission. Otherwise rename in TexturePacker.
-- **Bilinear UV sampling for polygon parts.** All polygon verts sample
-  the polygon sprite's atlas-rect center today. Defer until a non-solid
-  polygon part appears.
+- **`keepStandalone` allowlist** — only matters if a part ever needs
+  both standalone *and* combined emission. Otherwise just rename in
+  TexturePacker. No corpus pressure today.
+- **Bilinear UV sampling for polygon parts** — all polygon verts sample
+  the polygon sprite's atlas-rect center pixel
+  (`combine::polygon_uv_center`). Mirrors `SolidUVCache.Get` byte-exact.
+  Switch to bilinear-over-rect only when a non-solid polygon part
+  appears in authoring.

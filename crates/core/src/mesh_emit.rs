@@ -19,9 +19,10 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use crate::mesh_manifest::{DrawMode, MeshCombined};
+use crate::combine::{is_quad_layout, polygon_uv_center, AtlasSize, PartMesh};
+use crate::mesh_manifest::{DrawMode, MeshCombined, MeshRendererContent};
 use crate::tpsheet::SpriteEntry;
-use crate::yaml;
+use crate::{triangulator, yaml};
 
 /// A single Mesh sub-asset within a multi-mesh `.asset` file.
 #[derive(Debug, Clone)]
@@ -618,67 +619,35 @@ where
     let mut all_colors: Vec<[u8; 4]> = Vec::new();
     let mut all_tris: Vec<u16> = Vec::new();
 
-    let inv_ppu = 1.0_f32 / ppu;
-    let atlas_w = atlas_size.0 as f32;
-    let atlas_h = atlas_size.1 as f32;
-
+    let atlas = AtlasSize {
+        width: atlas_size.0,
+        height: atlas_size.1,
+    };
     for r in &combined.renderers {
-        let entry = lookup(&r.sprite).ok_or_else(|| BuildMeshError::UnresolvedSprite {
-            combined: combined.name.clone(),
-            sprite: r.sprite.clone(),
-        })?;
-
-        // Source pivot-relative vertices and outer UV corners — derived
-        // from the tpsheet entry. The SMA path always operates on
-        // axis-aligned-quad sprites for Tiled, and on arbitrary sprite
-        // meshes for Simple.
-        let pw = entry.rect.w as f32;
-        let ph = entry.rect.h as f32;
-        let pivot_px = (pw * entry.pivot.x, ph * entry.pivot.y);
-        let src_verts: Vec<[f32; 2]> = entry
-            .geometry
-            .vertices
-            .iter()
-            .map(|v| {
-                [
-                    (v.x - pivot_px.0) * inv_ppu,
-                    (v.y - pivot_px.1) * inv_ppu,
-                ]
-            })
-            .collect();
-        let src_uvs: Vec<[f32; 2]> = entry
-            .geometry
-            .vertices
-            .iter()
-            .map(|v| {
-                [
-                    (entry.rect.x as f32 + v.x) / atlas_w,
-                    (entry.rect.y as f32 + v.y) / atlas_h,
-                ]
-            })
-            .collect();
-        let src_tris: Vec<u16> = entry.geometry.triangles.clone();
-
-        let (mut verts2, uvs, tris) = match r.draw_mode {
-            DrawMode::Simple => (src_verts, src_uvs, src_tris),
-            DrawMode::Tiled => {
-                let size = r.size.expect("parser ensures tiled has size");
-                let n = src_verts.len();
-                if n != 4 {
-                    return Err(BuildMeshError::TiledNonQuad {
+        let PartMesh { mut verts, uvs, tris } = match &r.content {
+            MeshRendererContent::Sprite { sprite, draw_mode, size } => {
+                let entry = lookup(sprite).ok_or_else(|| {
+                    BuildMeshError::UnresolvedSprite {
                         combined: combined.name.clone(),
-                        sprite: r.sprite.clone(),
-                        vert_count: n,
-                    });
-                }
-                let quad = [src_verts[0], src_verts[1], src_verts[2], src_verts[3]];
-                let uv_min = src_uvs[0];
-                let uv_max = src_uvs[3];
-                let sprite_size_world = [pw * inv_ppu, ph * inv_ppu];
-                let sprite_pivot_norm = [entry.pivot.x, entry.pivot.y];
-                let (ps, uvs, tris) =
-                    tiled_mesh(quad, [uv_min, uv_max], sprite_size_world, sprite_pivot_norm, size);
-                (ps, uvs, tris)
+                        sprite: sprite.clone(),
+                    }
+                })?;
+                build_sprite_mesh(&entry, *draw_mode, *size, ppu, atlas).map_err(|vc| {
+                    BuildMeshError::TiledNonQuad {
+                        combined: combined.name.clone(),
+                        sprite: sprite.clone(),
+                        vert_count: vc,
+                    }
+                })?
+            }
+            MeshRendererContent::Polygon { polygon_sprite, vertices, triangles } => {
+                let entry = lookup(polygon_sprite).ok_or_else(|| {
+                    BuildMeshError::UnresolvedSprite {
+                        combined: combined.name.clone(),
+                        sprite: polygon_sprite.clone(),
+                    }
+                })?;
+                build_polygon_mesh(vertices, triangles.as_deref(), entry.rect, atlas)
             }
         };
 
@@ -686,7 +655,7 @@ where
         // matches SpriteMeshBuilder.CalculateRendererToRootMatrix which
         // pre-multiplies by `diag(flipX ? -1 : 1, flipY ? -1 : 1, 1)`.
         if r.flip_x || r.flip_y {
-            for v in verts2.iter_mut() {
+            for v in verts.iter_mut() {
                 if r.flip_x {
                     v[0] = -v[0];
                 }
@@ -700,14 +669,14 @@ where
         // [m00, m01, m02, m03, m10, m11, m12, m13]. z always 0.
         let m = r.local_to_root;
         let base = all_verts.len() as u16;
-        for v in &verts2 {
+        for v in &verts {
             let x = m[0] * v[0] + m[1] * v[1] + m[3];
             let y = m[4] * v[0] + m[5] * v[1] + m[7];
             all_verts.push([x, y, 0.0]);
         }
         all_uvs.extend(uvs);
         if combined.used_in_canvas {
-            for _ in &verts2 {
+            for _ in &verts {
                 all_colors.push([0xff, 0xff, 0xff, 0xff]);
             }
         }
@@ -756,6 +725,94 @@ where
         aabb_center: center,
         aabb_extent: extent,
     })
+}
+
+/// Source verts/uvs/tris for an atlas-backed `SpriteRenderer` leaf, in the
+/// renderer's local frame (pivot-relative world units). `Simple` lifts the
+/// sprite's tpsheet geometry verbatim; `Tiled` runs through
+/// [`tiled_mesh`]. On `Tiled` with a non-quad sprite the function returns
+/// `Err(vert_count)` and the caller wraps it with combined+sprite context.
+fn build_sprite_mesh(
+    entry: &SpriteEntry,
+    draw_mode: DrawMode,
+    size: Option<[f32; 2]>,
+    ppu: f32,
+    atlas: AtlasSize,
+) -> Result<PartMesh, usize> {
+    let inv_ppu = 1.0_f32 / ppu;
+    let atlas_w = atlas.width as f32;
+    let atlas_h = atlas.height as f32;
+    let pw = entry.rect.w as f32;
+    let ph = entry.rect.h as f32;
+    let pivot_px = (pw * entry.pivot.x, ph * entry.pivot.y);
+    let src_verts: Vec<[f32; 2]> = entry
+        .geometry
+        .vertices
+        .iter()
+        .map(|v| [(v.x - pivot_px.0) * inv_ppu, (v.y - pivot_px.1) * inv_ppu])
+        .collect();
+    let src_uvs: Vec<[f32; 2]> = entry
+        .geometry
+        .vertices
+        .iter()
+        .map(|v| {
+            [
+                (entry.rect.x as f32 + v.x) / atlas_w,
+                (entry.rect.y as f32 + v.y) / atlas_h,
+            ]
+        })
+        .collect();
+    let src_tris: Vec<u16> = entry.geometry.triangles.clone();
+
+    match draw_mode {
+        DrawMode::Simple => Ok(PartMesh {
+            verts: src_verts,
+            uvs: src_uvs,
+            tris: src_tris,
+        }),
+        DrawMode::Tiled => {
+            let size = size.expect("parser ensures tiled has size");
+            let n = src_verts.len();
+            if n != 4 {
+                return Err(n);
+            }
+            let quad = [src_verts[0], src_verts[1], src_verts[2], src_verts[3]];
+            let uv_min = src_uvs[0];
+            let uv_max = src_uvs[3];
+            let sprite_size_world = [pw * inv_ppu, ph * inv_ppu];
+            let sprite_pivot_norm = [entry.pivot.x, entry.pivot.y];
+            let (verts, uvs, tris) = tiled_mesh(
+                quad,
+                [uv_min, uv_max],
+                sprite_size_world,
+                sprite_pivot_norm,
+                size,
+            );
+            Ok(PartMesh { verts, uvs, tris })
+        }
+    }
+}
+
+/// Source verts/uvs/tris for a polygon leaf. Vertices are passed verbatim
+/// (already in the renderer's local frame — bridge composes scale/rot/pos
+/// into `local_to_root`). Triangles use the caller's override when
+/// present, the canonical quad-layout list `[0,2,3,3,1,0]` when verts
+/// match `SetUp_Quad`, otherwise ear-clip. UVs all sample the center
+/// pixel of the `Color_*` entry — see [`polygon_uv_center`].
+fn build_polygon_mesh(
+    vertices: &[[f32; 2]],
+    tris_override: Option<&[u16]>,
+    polygon_rect: crate::tpsheet::Rect,
+    atlas: AtlasSize,
+) -> PartMesh {
+    let tris = match tris_override {
+        Some(t) => t.to_vec(),
+        None if is_quad_layout(vertices) => vec![0, 2, 3, 3, 1, 0],
+        None => triangulator::triangulate(vertices),
+    };
+    let uv = polygon_uv_center(polygon_rect, atlas);
+    let uvs = vec![uv; vertices.len()];
+    PartMesh { verts: vertices.to_vec(), uvs, tris }
 }
 
 #[derive(Debug)]
@@ -927,7 +984,7 @@ mod tests {
         assert_eq!(uvs[7], [0.5, 1.0]);
     }
 
-    use crate::mesh_manifest::{MeshCombined, MeshRenderer};
+    use crate::mesh_manifest::{MeshCombined, MeshRenderer, MeshRendererContent};
     use crate::tpsheet::{
         Border, Geometry, Pivot, Rect, SpriteAlignment, SpriteEntry, Vertex,
     };
@@ -953,14 +1010,49 @@ mod tests {
         }
     }
 
+    /// Color-swatch sprite: 1×1 rect at `(rx, ry)`, no geometry needed —
+    /// polygons sample the center pixel of the rect.
+    fn color_entry(name: &str, rx: u32, ry: u32, w: u32, h: u32) -> SpriteEntry {
+        SpriteEntry {
+            name: name.to_string(),
+            rect: Rect { x: rx, y: ry, w, h },
+            pivot: Pivot { x: 0.5, y: 0.5 },
+            alignment: SpriteAlignment::Custom,
+            border: Border::default(),
+            geometry: Geometry {
+                vertices: vec![],
+                triangles: vec![],
+            },
+        }
+    }
+
     fn renderer(sprite: &str, draw: DrawMode, size: Option<[f32; 2]>) -> MeshRenderer {
         MeshRenderer {
-            sprite: sprite.to_string(),
             flip_x: false,
             flip_y: false,
-            draw_mode: draw,
-            size,
             local_to_root: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            content: MeshRendererContent::Sprite {
+                sprite: sprite.to_string(),
+                draw_mode: draw,
+                size,
+            },
+        }
+    }
+
+    fn polygon_renderer(
+        polygon_sprite: &str,
+        vertices: Vec<[f32; 2]>,
+        triangles: Option<Vec<u16>>,
+    ) -> MeshRenderer {
+        MeshRenderer {
+            flip_x: false,
+            flip_y: false,
+            local_to_root: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            content: MeshRendererContent::Polygon {
+                polygon_sprite: polygon_sprite.to_string(),
+                vertices,
+                triangles,
+            },
         }
     }
 
@@ -1038,6 +1130,141 @@ mod tests {
         // verts span x in [-1, 0]: center.x = -0.5, extent.x = 0.5
         assert_eq!(m.aabb_center[0], -0.5);
         assert_eq!(m.aabb_extent[0], 0.5);
+    }
+
+    #[test]
+    fn build_mesh_polygon_quad_uv_center() {
+        // Polygon sampling a 4×6 `Color_*` rect at (100, 200) inside a
+        // 128×128 atlas: expected UV center = (102, 203) / 128.
+        let color = color_entry("Color_AA", 100, 200, 4, 6);
+        let verts = vec![[-1.0, -1.0], [1.0, -1.0], [-1.0, 1.0], [1.0, 1.0]];
+        let r = polygon_renderer("Color_AA", verts.clone(), None);
+        let mc = MeshCombined {
+            file_id: 1,
+            name: "p".into(),
+            output_path: "o.asset".into(),
+            used_in_canvas: true,
+            keep_vertices: true,
+            keep_indices: true,
+            renderers: vec![r],
+        };
+        let m = build_mesh(&mc, 100.0, (128, 128), |s| {
+            (s == "Color_AA").then(|| color.clone())
+        })
+        .unwrap();
+        assert_eq!(m.vertices.len(), 4);
+        // Quad layout → ear-clip would degenerate; the helper emits the
+        // canonical `[0,2,3,3,1,0]` triangle list instead.
+        assert_eq!(m.indices, vec![0, 2, 3, 3, 1, 0]);
+        // All four UVs identical, sampled at the rect center.
+        let inv = 1.0_f32 / 128.0;
+        let expected = [
+            (100.0 * inv + 104.0 * inv) * 0.5,
+            (200.0 * inv + 206.0 * inv) * 0.5,
+        ];
+        for uv in &m.uvs {
+            assert_eq!(*uv, expected);
+        }
+    }
+
+    #[test]
+    fn build_mesh_polygon_ear_clips_pentagon() {
+        // Non-quad input → ear-clip via triangulator. 5 verts → 9 indices
+        // (3 triangles).
+        let color = color_entry("Color_BB", 0, 0, 1, 1);
+        let verts = vec![
+            [0.0, 0.0],
+            [2.0, 0.0],
+            [3.0, 1.5],
+            [1.0, 3.0],
+            [-1.0, 1.5],
+        ];
+        let r = polygon_renderer("Color_BB", verts, None);
+        let mc = MeshCombined {
+            file_id: 1,
+            name: "p".into(),
+            output_path: "o.asset".into(),
+            used_in_canvas: false,
+            keep_vertices: false,
+            keep_indices: false,
+            renderers: vec![r],
+        };
+        let m = build_mesh(&mc, 100.0, (128, 128), |s| {
+            (s == "Color_BB").then(|| color.clone())
+        })
+        .unwrap();
+        assert_eq!(m.vertices.len(), 5);
+        // 3 ear-clipped triangles = 9 indices, every index < 5.
+        assert_eq!(m.indices.len(), 9);
+        assert!(m.indices.iter().all(|&i| i < 5));
+    }
+
+    #[test]
+    fn build_mesh_polygon_explicit_triangles_override() {
+        // Caller-supplied triangles bypass both ear-clip and the
+        // quad-layout shortcut. Useful when the polygon is non-convex
+        // and the author has a tighter triangulation than ear-clip.
+        let color = color_entry("Color_CC", 0, 0, 1, 1);
+        let verts = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        let r = polygon_renderer("Color_CC", verts, Some(vec![0, 1, 2, 0, 2, 3]));
+        let mc = MeshCombined {
+            file_id: 1,
+            name: "p".into(),
+            output_path: "o.asset".into(),
+            used_in_canvas: true,
+            keep_vertices: true,
+            keep_indices: true,
+            renderers: vec![r],
+        };
+        let m = build_mesh(&mc, 100.0, (128, 128), |s| {
+            (s == "Color_CC").then(|| color.clone())
+        })
+        .unwrap();
+        assert_eq!(m.indices, vec![0, 1, 2, 0, 2, 3]);
+    }
+
+    #[test]
+    fn build_mesh_polygon_matrix_translates_and_scales() {
+        // Polygon verts are in the renderer's local frame; the bridge
+        // composes scale/rotation/translation into `local_to_root`. We
+        // verify the matrix is applied: scale 2, translate (5, 5).
+        let color = color_entry("Color_DD", 0, 0, 1, 1);
+        let verts = vec![[-1.0, -1.0], [1.0, -1.0], [-1.0, 1.0], [1.0, 1.0]];
+        let mut r = polygon_renderer("Color_DD", verts, None);
+        r.local_to_root = [2.0, 0.0, 0.0, 5.0, 0.0, 2.0, 0.0, 5.0];
+        let mc = MeshCombined {
+            file_id: 1,
+            name: "p".into(),
+            output_path: "o.asset".into(),
+            used_in_canvas: true,
+            keep_vertices: true,
+            keep_indices: true,
+            renderers: vec![r],
+        };
+        let m = build_mesh(&mc, 100.0, (128, 128), |s| {
+            (s == "Color_DD").then(|| color.clone())
+        })
+        .unwrap();
+        // Local (-1,-1) × scale 2 + (5, 5) = (3, 3); local (1,1) → (7, 7).
+        assert_eq!(m.aabb_center, [5.0, 5.0, 0.0]);
+        assert_eq!(m.aabb_extent, [2.0, 2.0, 0.0]);
+    }
+
+    #[test]
+    fn build_mesh_polygon_unresolved_color_errors() {
+        let verts = vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
+        let r = polygon_renderer("Color_MISSING", verts, None);
+        let mc = MeshCombined {
+            file_id: 1,
+            name: "p".into(),
+            output_path: "o.asset".into(),
+            used_in_canvas: true,
+            keep_vertices: true,
+            keep_indices: true,
+            renderers: vec![r],
+        };
+        let err = build_mesh(&mc, 100.0, (128, 128), |_| None).unwrap_err();
+        assert!(matches!(err, BuildMeshError::UnresolvedSprite { .. }));
     }
 
     #[test]

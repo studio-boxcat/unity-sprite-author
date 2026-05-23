@@ -326,20 +326,34 @@ fn polygon_mesh_with_tris(
     };
     let verts: Vec<[f32; 2]> = vertices.iter().map(|v| apply_transform(*v, &ctx)).collect();
 
-    // Multiply-by-reciprocal to match Unity's SolidUVCache, which averages
-    // DataUtility.GetInnerUV's already-multiplied innerUV.x/innerUV.z. The
-    // algebraically-equivalent (rect.x + rect.w*0.5) / atlas.width loses 1 ULP.
-    let inv_w = 1.0_f32 / atlas.width as f32;
-    let inv_h = 1.0_f32 / atlas.height as f32;
-    let cx = (polygon_sprite_rect.x as f32 * inv_w
-        + (polygon_sprite_rect.x + polygon_sprite_rect.w) as f32 * inv_w)
-        * 0.5;
-    let cy = (polygon_sprite_rect.y as f32 * inv_h
-        + (polygon_sprite_rect.y + polygon_sprite_rect.h) as f32 * inv_h)
-        * 0.5;
+    let [cx, cy] = polygon_uv_center(polygon_sprite_rect, atlas);
     let uvs: Vec<[f32; 2]> = vec![[cx, cy]; vertices.len()];
 
     PartMesh { verts, uvs, tris }
+}
+
+/// UV coordinates sampled at the center pixel of a `Color_*` atlas rect.
+///
+/// Multiplies by the reciprocal of atlas width/height to match Unity's
+/// `SolidUVCache.Get`, which averages `DataUtility.GetInnerUV`'s
+/// already-multiplied `innerUV.x` / `innerUV.z`. The algebraically
+/// equivalent `(rect.x + rect.w*0.5) / atlas.width` loses 1 ULP. Shared
+/// between the CSA polygon path ([`polygon_mesh`]) and the SMA polygon
+/// path (`mesh_emit::build_mesh`).
+pub fn polygon_uv_center(rect: Rect, atlas: AtlasSize) -> [f32; 2] {
+    let inv_w = 1.0_f32 / atlas.width as f32;
+    let inv_h = 1.0_f32 / atlas.height as f32;
+    let cx = (rect.x as f32 * inv_w + (rect.x + rect.w) as f32 * inv_w) * 0.5;
+    let cy = (rect.y as f32 * inv_h + (rect.y + rect.h) as f32 * inv_h) * 0.5;
+    [cx, cy]
+}
+
+/// Detect the 4-vert `MeshBuilder.SetUp_Quad` layout — `[BL, BR, TL, TR]`
+/// with `x_min < x_max` and `y_min < y_max`. Ear-clip would emit a
+/// degenerate ring on this layout (signed area cancels), so callers use
+/// the canonical `[0,2,3,3,1,0]` triangle list when this returns true.
+pub fn is_quad_layout(v: &[[f32; 2]]) -> bool {
+    is_setup_quad_layout(v)
 }
 
 /// Build the mesh for a single atlas-sprite part under the given method.

@@ -61,6 +61,31 @@ impl Output {
     }
 }
 
+impl Manifest {
+    /// Sorted, deduplicated list of every `Color_*` tpsheet entry name
+    /// referenced by a polygon leaf across all trees. Used by the CLI's
+    /// pre-pack step to synthesize missing 1×1 color PNGs into the
+    /// TexturePacker source dir.
+    pub fn polygon_sprite_names(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for tree in &self.trees {
+            collect_polygon_names(&tree.root, &mut out);
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+}
+
+fn collect_polygon_names(node: &Node, out: &mut Vec<String>) {
+    if let Some(Graphic::Polygon { polygon_sprite, .. }) = &node.graphic {
+        out.push(polygon_sprite.clone());
+    }
+    for c in &node.children {
+        collect_polygon_names(c, out);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Node {
     pub name: String,
@@ -828,26 +853,40 @@ pub fn to_mesh_combined(
     let leaves = walk(tree);
     let mut renderers: Vec<mm::MeshRenderer> = Vec::with_capacity(leaves.len());
     for leaf in leaves {
-        let (sprite, draw_mode) = match leaf.graphic {
-            Graphic::SpriteRenderer { sprite, draw_mode } => (sprite, draw_mode),
-            _ => {
+        let content = match leaf.graphic {
+            Graphic::SpriteRenderer { sprite, draw_mode } => {
+                let dm = match draw_mode {
+                    DrawMode::Simple => mm::DrawMode::Simple,
+                    DrawMode::Tiled => mm::DrawMode::Tiled,
+                };
+                // SpriteRenderer.size lives on the node (`leaf.size`) —
+                // tiled mode consumes a world-unit draw rect; simple
+                // mode leaves it unset.
+                mm::MeshRendererContent::Sprite {
+                    sprite: sprite.clone(),
+                    draw_mode: dm,
+                    size: leaf.size,
+                }
+            }
+            Graphic::Polygon { polygon_sprite, vertices, triangles } => {
+                mm::MeshRendererContent::Polygon {
+                    polygon_sprite: polygon_sprite.clone(),
+                    vertices: vertices.clone(),
+                    triangles: triangles.clone(),
+                }
+            }
+            Graphic::Sprite { .. } => {
                 return Err(BridgeError::GraphicMismatch {
                     tree: tree.name.clone(),
-                    reason: "sma output only accepts sprite-renderer graphics",
+                    reason: "sma output rejects CSA `sprite` graphics; use `spriteRenderer`",
                 })
             }
-        };
-        // SpriteRenderer.size lives on the node (`leaf.size`) — tiled mode
-        // consumes a world-unit draw rect; simple mode leaves it unset.
-        let size = leaf.size;
-        let dm = match draw_mode {
-            DrawMode::Simple => mm::DrawMode::Simple,
-            DrawMode::Tiled => mm::DrawMode::Tiled,
         };
         // localToRoot = composed 2D affine row-major [m00, m01, m02, m03, m10, m11, m12, m13].
         // The walker gives us world_scale (composed across ancestors), world_pos
         // (composed translation), and world_rot_deg_ccw (composed rotation). Build
-        // the matrix accordingly. Flip is folded into world_scale's sign.
+        // the matrix accordingly. SpriteRenderer flipX/Y is folded into
+        // world_scale's sign; polygons have no flip semantic.
         let (sin_t, cos_t) = leaf.world_rot_deg_ccw.to_radians().sin_cos();
         let m00 = cos_t * leaf.world_scale[0];
         let m01 = -sin_t * leaf.world_scale[1];
@@ -856,18 +895,16 @@ pub fn to_mesh_combined(
         let l2r = [m00, m01, 0.0, leaf.world_pos[0], m10, m11, 0.0, leaf.world_pos[1]];
 
         renderers.push(mm::MeshRenderer {
-            sprite: sprite.clone(),
-            // flipX/Y is folded into world_scale's sign by the walker, so the
-            // mesh_manifest level keeps these false. mesh_emit's `build_mesh`
-            // applies flip BEFORE the matrix, but if the matrix already
-            // carries the sign in m00/m11, that's a double-flip. We undo
-            // here: extract sign from world_scale, but pass false for flip
-            // and absorb sign into l2r.
+            // flipX/Y is folded into world_scale's sign by the walker, so
+            // the mesh_manifest level keeps these false. mesh_emit's
+            // `build_mesh` applies flip BEFORE the matrix; the matrix
+            // already carries the sign in m00/m11, so a true here would
+            // double-flip. The fields stay on `MeshRenderer` for callers
+            // that bypass the walker (tests, direct IR authoring).
             flip_x: false,
             flip_y: false,
-            draw_mode: dm,
-            size,
             local_to_root: l2r,
+            content,
         });
     }
 
@@ -1402,8 +1439,14 @@ mod tests {
         assert!(mc.keep_vertices); // default
         assert_eq!(mc.renderers.len(), 1);
         let r = &mc.renderers[0];
-        assert_eq!(r.sprite, "foo");
-        assert_eq!(r.draw_mode, crate::mesh_manifest::DrawMode::Simple);
+        match &r.content {
+            crate::mesh_manifest::MeshRendererContent::Sprite { sprite, draw_mode, size } => {
+                assert_eq!(sprite, "foo");
+                assert_eq!(*draw_mode, crate::mesh_manifest::DrawMode::Simple);
+                assert!(size.is_none());
+            }
+            other => panic!("expected Sprite content, got {other:?}"),
+        }
         assert_eq!(r.local_to_root, [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
     }
 
@@ -1459,8 +1502,14 @@ mod tests {
         );
         let mc = to_mesh_combined(&m.trees[0]).unwrap();
         let r = &mc.renderers[0];
-        assert_eq!(r.draw_mode, crate::mesh_manifest::DrawMode::Tiled);
-        assert_eq!(r.size, Some([4.05, 1.0]));
+        match &r.content {
+            crate::mesh_manifest::MeshRendererContent::Sprite { sprite, draw_mode, size } => {
+                assert_eq!(sprite, "brick");
+                assert_eq!(*draw_mode, crate::mesh_manifest::DrawMode::Tiled);
+                assert_eq!(*size, Some([4.05, 1.0]));
+            }
+            other => panic!("expected Sprite content, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1476,18 +1525,94 @@ mod tests {
     }
 
     #[test]
-    fn bridge_to_mesh_rejects_polygon_in_sma() {
+    fn bridge_to_mesh_accepts_polygon() {
+        // SMA trees now compose with polygon leaves (resolved to a
+        // `Color_*` tpsheet entry). The bridge preserves the raw
+        // vertices + optional triangle override into the
+        // `MeshRendererContent::Polygon` variant; the matrix carries
+        // the leaf's composed scale/rot/pos same as SpriteRenderer.
         let m = parse_single(
             r#"{ "version":1, "combined":[{
               "name":"X",
               "mode":"sma-canvas", "fileId":1,"outputPath":"o.asset",
               "children":[
-                {"type":"polygon","color":"112233","vertices":[[0,0],[1,0],[1,1]]}
+                {
+                  "pos":[7,3],
+                  "type":"polygon","color":"112233",
+                  "vertices":[[-1,-1],[1,-1],[1,1],[-1,1]],
+                  "triangles":[0,2,3,3,1,0]
+                }
+              ]
+            }]}"#,
+        );
+        let mc = to_mesh_combined(&m.trees[0]).unwrap();
+        assert_eq!(mc.renderers.len(), 1);
+        let r = &mc.renderers[0];
+        match &r.content {
+            crate::mesh_manifest::MeshRendererContent::Polygon {
+                polygon_sprite, vertices, triangles,
+            } => {
+                assert_eq!(polygon_sprite, "Color_112233");
+                assert_eq!(vertices.len(), 4);
+                assert_eq!(triangles.as_deref(), Some(&[0u16, 2, 3, 3, 1, 0][..]));
+            }
+            other => panic!("expected Polygon content, got {other:?}"),
+        }
+        // Bridge composes leaf.pos into m03/m13 — same path as SpriteRenderer.
+        assert_eq!(r.local_to_root[3], 7.0);
+        assert_eq!(r.local_to_root[7], 3.0);
+    }
+
+    #[test]
+    fn bridge_to_mesh_rejects_csa_sprite_graphic() {
+        // SMA accepts only `spriteRenderer` and `polygon` leaves. A
+        // CSA-style `sprite` (with `method` / slice grids) belongs in a
+        // `ui` tree and is rejected here.
+        let m = parse_single(
+            r#"{ "version":1, "combined":[{
+              "name":"X",
+              "mode":"sma-canvas", "fileId":1,"outputPath":"o.asset",
+              "children":[
+                {"type":"sprite","sprite":"a","method":"ID"}
               ]
             }]}"#,
         );
         let err = to_mesh_combined(&m.trees[0]).unwrap_err();
         assert!(matches!(err, BridgeError::GraphicMismatch { .. }));
+    }
+
+    #[test]
+    fn polygon_sprite_names_sorted_deduped_across_trees() {
+        let m = parse(
+            r#"{ "version":1, "combined":[
+              {"name":"A","mode":"ui","children":[
+                {"type":"polygon","color":"FF0000","vertices":[[0,0],[1,0],[1,1]]},
+                {"type":"polygon","color":"00ff00","vertices":[[0,0],[1,0],[1,1]]}
+              ]},
+              {"name":"B","mode":"ui","children":[
+                {"type":"polygon","color":"FF0000","vertices":[[0,0],[1,0],[1,1]]},
+                {"name":"nested","children":[
+                  {"type":"polygon","color":"DEADBEEF","vertices":[[0,0],[1,0],[1,1]]}
+                ]}
+              ]}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            m.polygon_sprite_names(),
+            vec!["Color_00FF00", "Color_DEADBEEF", "Color_FF0000"],
+        );
+    }
+
+    #[test]
+    fn polygon_sprite_names_empty_when_no_polygons() {
+        let m = parse(
+            r#"{ "version":1, "combined":[
+              {"name":"A","mode":"ui","children":[{"type":"sprite","sprite":"x"}]}
+            ]}"#,
+        )
+        .unwrap();
+        assert!(m.polygon_sprite_names().is_empty());
     }
 
     #[test]

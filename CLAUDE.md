@@ -160,7 +160,7 @@ C# integration (matched-pair to this crate, in `meow-tower`):
 - `Packages/com.boxcat.libs/TexturePacker/TexturePackerUtils.cs` — `.tps` parsing for `spriteScale` (and `_prefix` reader for menu items).
 - `Packages/com.boxcat.libs/TexturePacker/SheetLoader.cs` — historical tpsheet parser. No longer on the import path; useful as a cross-reference for our parser.
 
-TS prior art (`prefab-saloon/src/lib/sprite/`) was the byte-exact reference for `m_IndexBuffer` and mesh encoding during the initial port; goldens have since taken over that role. Don't port `prefab-saloon/src/lib/prefab/` — we don't read `.asset` files and the YAML emit is Unity-flavor specific.
+TS prior art at `prefab-saloon/src/lib/sprite/` (`tpsheet-parser.ts`, `generator.ts`) was the byte-exact reference for `m_IndexBuffer` + mesh encoding during the initial port; goldens have since taken over that role. The sibling `prefab-saloon/src/lib/prefab/{parser,serializer,templates}.ts` is intentionally *not* ported — we don't read `.asset` files and the YAML emit must be Unity-flavor specific from day one.
 
 ## Known byte-exactness traps (from corpus audit)
 
@@ -188,7 +188,7 @@ TS prior art (`prefab-saloon/src/lib/sprite/`) was the byte-exact reference for 
 Cargo workspace, three crates:
 
 - **`crates/core/`** — the rlib (`unity-sprite-author` package). Consumed by the BoxcatBridge cdylib in meow-tower (`Native~/bridge/` points its `path = "..."` here). Module-level orientation lives in `src/lib.rs`; key entry points are `pipeline::generate`, `manifest::parse` (unified CSA+SMA tree), `combine::build_combined`, `mesh_emit::build_mesh`, and `emit::SpriteAsset`. Golden tests under `tests/golden/{orgel,fab,sma}/`; opt-in `e2e_meow_tower.rs` walks a meow-tower checkout.
-- **`crates/cli/`** — offline `unity-sprite-author` bin. Shells out to TexturePackerCLI, threads the result into `core`. See [[#cli]].
+- **`crates/cli/`** — offline `unity-sprite-author` bin. Shells out to TexturePackerCLI, threads the result into `core`. Pre-pack step synthesizes missing 1×1 `Color_*.png` swatches into the .tps source dir (`color_png` + `color_synth` modules; .tps DOM via the `tps-core` crate from meow-toolbox). See [[#cli]].
 - **`crates/editor/`** — GUI tool (`eframe` + `egui`, native macOS menubar via `muda`) for authoring `.tps.fab.json`. Every user-facing command flows through one `Action` enum in `action.rs` — extend `Action`, add a `match` arm in `App::dispatch`, optionally register a `CommandEntry` for palette discoverability. Editor and CLI never leak into the rlib.
 
 Supporting: `docs/` (fab schema, SMA migration map, Unity-Editor probe runbooks), `scripts/` (corpus regen, one-shot `.tpsheet.meta` → `.tps.meta` migration), `justfile` (`just install` → `~/.local/bin/`).

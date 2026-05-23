@@ -70,28 +70,33 @@ Position uses `Vector3` (z = 0); UV uses `Vector2`. Triangles are u16.
 - **f16 UVs via explicit byte-port.** `float_to_half` mirrors Unity's
   `Mathf.FloatToHalf` bit-for-bit; pinned by the Box_29_Ghost golden.
 
-## Outstanding (Phase 2b): polygon-color synthesis
+## Polygon-color synthesis under SMA
 
 9 Box atlases (`Boxes/{03_Unicorn,05_Dino,09_Wizard,28_Boardgame,29_Ghost,30_Sleepy,31_Raincoat,32_Pilot,33_Vampire}`)
-have child SpriteRenderers named `Polygon` whose `.sprite` is a
-runtime-created Color texture (no GUID, hashed name like `mBzYY2st`).
-The Unity-side SMA pipeline accepts these because it walks geometry;
-the Rust port requires every renderer's sprite to resolve in the
-sibling tpsheet, and `manifest::to_mesh_combined` currently rejects
-polygon graphics under SMA trees (`bridge_to_mesh_rejects_polygon_in_sma`).
+ship child SpriteRenderers named `Polygon` whose `.sprite` is a
+runtime-created Color texture (no GUID; hashed name like `mBzYY2st`).
+The original C# SMA pipeline accepted them because it walked geometry
+directly; the Rust port requires the renderer's sprite to resolve in
+the sibling tpsheet.
 
-To unblock:
+Wired up the same way as CSA polygon leaves — `manifest::to_mesh_combined`
+accepts `Graphic::Polygon` and packs it into
+`MeshRendererContent::Polygon`; `mesh_emit::build_mesh` triangulates
+(or honours the caller's explicit `triangles` override), samples UVs
+via the shared `combine::polygon_uv_center` helper, and passes verts
+through the renderer's `local_to_root` matrix same as the atlas-sprite
+branch.
 
-- **Authoring path**: hand- or LLM-edited fab.json declares polygon
-  leaves under SMA trees the same way the CSA side does (see [[fab.md]]
-  schema for `type: "polygon"`).
-- **Manifest schema** (`manifest.rs` Node): add polygon-leaf fields to
-  `spriteRenderer` mode (mirrors the existing UISolid path on CSA trees).
-- **Emit extension** (`mesh_emit::build_mesh`): for polygon renderers,
-  synthesize verts directly + sample UVs from a `Color_RRGGBB` entry in
-  the same tpsheet (mirrors `combine::polygon_mesh_with_tris` on CSA).
-- **Golden coverage**: extend `tests/golden/sma/box_29_ghost/` to
-  exercise the polygon branch.
+Authoring stays in fab.json — declare polygon leaves under SMA trees
+the same way CSA does (see [[fab.md]] schema for `type: "polygon"`).
+The CLI's pre-pack `color_synth` step writes a 1×1 `Color_*.png` into
+the .tps source dir for any color the tpsheet doesn't yet carry, so
+the next TexturePackerCLI pack picks it up automatically.
+
+End-to-end golden coverage against a real polygon-bearing SMA fixture
+is still TBD — the Box_29_Ghost golden was captured pre-port and
+doesn't exercise the polygon branch. Unit-test coverage in
+`mesh_emit::tests::build_mesh_polygon_*` pins the math.
 
 ## References
 

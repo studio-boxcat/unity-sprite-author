@@ -31,15 +31,34 @@ pub struct MeshCombined {
 
 #[derive(Debug, PartialEq)]
 pub struct MeshRenderer {
-    pub sprite: String,
     pub flip_x: bool,
     pub flip_y: bool,
-    pub draw_mode: DrawMode,
-    pub size: Option<[f32; 2]>,
     /// 8 floats, row-major: `[m00, m01, m02, m03, m10, m11, m12, m13]`.
     /// Combined flip × renderer.localToWorld × root.worldToLocal as
     /// captured by the v3 → mesh bridge.
     pub local_to_root: [f32; 8],
+    pub content: MeshRendererContent,
+}
+
+/// What the renderer draws: an atlas-backed sprite (Simple/Tiled draw modes)
+/// or a synthesized polygon sampling a `Color_*` tpsheet entry.
+#[derive(Debug, PartialEq)]
+pub enum MeshRendererContent {
+    Sprite {
+        sprite: String,
+        draw_mode: DrawMode,
+        /// `SpriteRenderer.size` (world units). Required for `Tiled`,
+        /// unused for `Simple`.
+        size: Option<[f32; 2]>,
+    },
+    /// Solid-color polygon: caller supplies the local-frame `vertices` and
+    /// optional `triangles` override; UVs sample the center pixel of the
+    /// `polygon_sprite` (a `Color_*` entry) atlas rect.
+    Polygon {
+        polygon_sprite: String,
+        vertices: Vec<[f32; 2]>,
+        triangles: Option<Vec<u16>>,
+    },
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
