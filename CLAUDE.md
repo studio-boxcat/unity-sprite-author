@@ -6,7 +6,7 @@ Rust `rlib` consumed by meow-tower via the shared **BoxcatBridge** cdylib (see `
 
 ## Purpose
 
-A watchman-based poller (`crates/watch/`, wired via `BoxcatBridgeInit`) detects `.tpsheet` writes in `Assets/` and dispatches into `pipeline::generate`. The pipeline does parse + bytes + filesystem; C# calls `AssetDatabase.Refresh()` afterwards. Prefix comes from `TPSImporter._prefix` on the sibling `.tps.meta`; PPU from the `.png.meta` `TextureImporter`.
+A `ScriptedImporter` (`TPSheetImporter`) imports `.tpsheet` files and dispatches into `pipeline::generate` via the BoxcatBridge FFI. The pipeline does parse + bytes + filesystem; Unity reimports the written `.asset` files automatically. Prefix comes from `TPSheetImporter._prefix` on the sibling `.tpsheet.meta`; PPU from the `.png.meta` `TextureImporter`.
 
 The bar is **byte-exactness**: output must equal what Unity's `EditorUtility.CopySerialized` emits, byte-for-byte. Existing committed `.asset` files survive the swap with no diff churn — AssetBundle hashes, addressables, `.meta` GUID refs stay stable. The previous managed C# `CreateSprites` path was slow, version-unstable, and re-ran on every reimport; the native port fixes all three.
 
@@ -20,7 +20,7 @@ The bar is **byte-exactness**: output must equal what Unity's `EditorUtility.Cop
 
 - Other Unity asset types (`.controller`, `.spriteatlasv2`, etc.). Sprite-only by design.
 - Reimplementing Unity's tight-mesh tracer / alpha outline algorithms. Tpsheet always carries verts + tris.
-- Daemon / long-running service. The `crates/watch/` poller is clock-query-based (not a subscription), driven by C# `EditorApplication.update`.
+- Daemon / long-running service. The `TPSheetImporter` is event-driven (Unity import), not a poller.
 - Cross-Unity-version compat. Target one version at a time; bump explicitly.
 
 ## Pipeline
@@ -28,15 +28,13 @@ The bar is **byte-exactness**: output must equal what Unity's `EditorUtility.Cop
 ```
 TexturePacker → Foo.tps + Foo.tpsheet + Foo.png (in Assets/)
        ↓
-watchman detects Foo.tpsheet write
+Unity import → TPSheetImporter.OnImportAsset
        ↓
-BoxcatBridgeInit.PollSpriteAuthorWatch (~2s cadence)
-       ↓
-bxc_sprite_author_watch_poll → Watcher::poll (crates/watch/)
+BoxcatBridge.SpriteAuthorGenerate → bxc_sprite_author_generate (cdylib)
        ↓
 pipeline::generate (this rlib) — .tpsheet retained, .asset written/pruned
        ↓
-AssetDatabase.Refresh()
+(SmartUpdate hash check skips redundant runs)
 ```
 
 ## Public Rust API
@@ -87,7 +85,7 @@ unity-sprite-author Atlas.tps --skip-pack     # reuse existing .tpsheet/.png
 
 ### Caller-side notes (Unity / C#)
 
-`StartAssetEditing` is **not** wrapped around the call — Rust writes raw bytes that the editing batch wouldn't observe anyway. The watchman poller's C# side calls `AssetDatabase.Refresh()` after the bridge returns to sync Unity's database. The canonical C# integration is `BoxcatBridgeInit` polling `bxc_sprite_author_watch_poll` every ~2s via `EditorApplication.update`.
+`StartAssetEditing` is **not** wrapped around the call — Rust writes raw bytes that the editing batch wouldn't observe anyway. The canonical C# integration is `TPSheetImporter` (`ScriptedImporter`) calling `BoxcatBridge.SpriteAuthorGenerate` on `.tpsheet` import.
 
 ## GUID policy
 
@@ -138,7 +136,7 @@ Reference fixture for parity testing: `tests/golden/orgel/` — a self-contained
 
 ## Reference Implementations
 
-C# integration in `meow-tower` lives under `Packages/com.boxcat.libs/{TexturePacker,Native,Native~/bridge}/`. Entry chain: `BoxcatBridgeInit` → `EditorApplication.update` → `bxc_sprite_author_watch_poll` → `Watcher::poll` (`crates/watch/`) → `pipeline::generate`. `TPSImporter` (`ScriptedImporter`) holds the `_prefix` on `.tps`.
+C# integration in `meow-tower` lives under `Packages/com.boxcat.libs/{TexturePacker,Native,Native~/bridge}/`. Entry chain: `TPSheetImporter.OnImportAsset` → `BoxcatBridge.SpriteAuthorGenerate` → `bxc_sprite_author_generate` (cdylib) → `pipeline::generate`. `TPSheetImporter` (`ScriptedImporter`) holds the `_prefix` on `.tpsheet`.
 
 TS prior art at `prefab-saloon/src/lib/sprite/` (`tpsheet-parser.ts`, `generator.ts`) was the byte-exact reference for `m_IndexBuffer` + mesh encoding during the initial port; goldens have since taken over that role. The sibling `prefab-saloon/src/lib/prefab/{parser,serializer,templates}.ts` is intentionally *not* ported — we don't read `.asset` files and the YAML emit must be Unity-flavor specific from day one.
 
@@ -165,11 +163,10 @@ TS prior art at `prefab-saloon/src/lib/sprite/` (`tpsheet-parser.ts`, `generator
 
 ## Layout
 
-Cargo workspace, four crates:
+Cargo workspace, three crates:
 
 - **`crates/core/`** — the rlib (`unity-sprite-author` package). Consumed by the BoxcatBridge cdylib in meow-tower (`Native~/bridge/` points its `path = "..."` here). Module-level orientation lives in `src/lib.rs`; key entry points are `pipeline::generate`, `manifest::parse` (unified CSA+SMA tree), `combine::build_combined`, `mesh_emit::build_mesh`, and `emit::SpriteAsset`. Golden tests under `tests/golden/{orgel,fab,sma}/`; opt-in `e2e_meow_tower.rs` walks a meow-tower checkout.
 - **`crates/cli/`** — offline `unity-sprite-author` bin. Shells out to TexturePackerCLI, threads the result into `core`. Pre-pack step synthesizes missing 1×1 `Color_*.png` swatches into the .tps source dir (`color_png` + `color_synth` modules; .tps DOM via the `tps-core` crate from meow-toolbox). See [[#cli]].
 - **`crates/editor/`** — GUI tool (`eframe` + `egui`, native macOS menubar via `muda`) for authoring `.tps.fab.json`. Every user-facing command flows through one `Action` enum in `action.rs` — extend `Action`, add a `match` arm in `App::dispatch`, optionally register a `CommandEntry` for palette discoverability. Editor and CLI never leak into the rlib.
-- **`crates/watch/`** — watchman-based poller. Detects `.tpsheet` writes via clock queries (`watchman_client`), runs `pipeline::generate`. Consumed by the bridge cdylib alongside core. Sync facade — tokio confined to the wire layer.
 
 Supporting: `docs/` (fab schema, SMA migration map, Unity-Editor probe runbooks), `scripts/` (corpus regen, one-shot `.tpsheet.meta` → `.tps.meta` migration), `justfile` (`just install` → `~/.local/bin/`).

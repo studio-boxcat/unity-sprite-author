@@ -24,21 +24,18 @@ hidden f64 precision, or derives the offset from the mesh AABB not the
 rect. Magnitude is invisible at runtime; revisit only when Unity engine
 source becomes available (UnityCsReference or decompilation).
 
-## Watchman watcher (remaining)
+## TPSheetImporter prefix migration (remaining)
 
-The watchman-based watcher that replaces `TPSheetPostprocessor` is
-implemented: `crates/watch/` (rlib), bridge FFI
-(`bxc_sprite_author_watch_{init,poll}`), C# polling via
-`BoxcatBridgeInit` + `EditorApplication.update`.
-`TPSheetPostprocessor` is deleted. `.tpsheet` is retained on disk
-(pipeline no longer deletes it) so TexturePacker's `smartUpdateKey`
-hash check works on next GUI publish.
+`TPSheetImporter` (`ScriptedImporter` for `.tpsheet`) replaces the old
+`TPSImporter` + `TPSheetPostprocessor` pair. Pipeline no longer deletes
+the `.tpsheet`; SmartUpdate hash check in `<sprite_dir>/.hash` skips
+redundant runs. `_prefix` migrated from `.tps.meta` to `.tpsheet.meta`.
 
 **Remaining:**
 
-- Migrate `_prefix` from `.tps.meta` `TPSImporter` into the fab.json
-  manifest. Once done, delete `TPSImporter` + `SpriteAuthorGenerate`
-  FFI (the old bridge entry point).
+- Run `scripts/migrate-prefix-to-tpsheet.sh` on meow-tower after
+  `.tpsheet` files exist on disk (requires one full TP corpus pack).
+- Bridge `Cargo.toml` `rev` bump to pick up the hash-check changes.
 
 ## Deferred (waiting on a real case)
 

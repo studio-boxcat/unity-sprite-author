@@ -158,8 +158,7 @@ pub struct GenerateOutput {
     /// with the tpsheet's `alphahandling`. Call
     /// `AssetDatabase.ImportAsset(p, ForceUpdate)` on each in C#.
     pub written_paths: Vec<PathBuf>,
-    /// Pruned `.asset` paths plus the consumed `.tpsheet` + `.tpsheet.meta`.
-    /// Call `AssetDatabase.DeleteAsset` on each in C#.
+    /// Pruned `.asset` paths (orphans no longer in the tpsheet).
     pub deleted_paths: Vec<PathBuf>,
     /// Non-fatal warnings — e.g. legacy `SpriteMeshType.Tight + spriteMode:
     /// Multiple` outputs whose on-disk `textureRect` no longer matches the
@@ -179,9 +178,24 @@ pub struct GenerateOutput {
 /// leave the original files. See CLAUDE.md "Public Rust API" /
 /// "Invariants" for the two-phase commit semantics.
 pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
+    // ---- SmartUpdate hash check ----------------------------------------
+    // TexturePacker embeds a `$TexturePacker:SmartUpdate:<key>$` line in
+    // the tpsheet header. We store the last-processed key in
+    // `<sprite_dir>/.hash`. If they match, the tpsheet hasn't changed
+    // since the last run — skip the entire pipeline.
+    let tpsheet_text = read_to_string(input.tpsheet_path)?;
+    let smart_key = extract_smart_update_key(&tpsheet_text);
+    let hash_path = input.sprite_dir.join(".hash");
+    if let Some(key) = &smart_key {
+        if let Ok(stored) = fs::read_to_string(&hash_path) {
+            if stored.trim() == key.as_str() {
+                return Ok(GenerateOutput::default());
+            }
+        }
+    }
+
     // ---- Phase 1: pure compute ------------------------------------------
 
-    let tpsheet_text = read_to_string(input.tpsheet_path)?;
     let sheet = tpsheet::parse(&tpsheet_text).map_err(Error::Tpsheet)?;
     if sheet.tex.width == 0 || sheet.tex.height == 0 {
         return Err(Error::AtlasSizeUnknown);
@@ -481,11 +495,30 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
         }
     }
 
+    // Write the SmartUpdate key so the next run can skip.
+    if let Some(key) = &smart_key {
+        let _ = fs::write(&hash_path, key);
+    }
+
     Ok(GenerateOutput {
         written_paths: paths_to_import,
         deleted_paths,
         warnings,
     })
+}
+
+const SMART_UPDATE_PREFIX: &str = "$TexturePacker:SmartUpdate:";
+
+fn extract_smart_update_key(tpsheet_text: &str) -> Option<String> {
+    for line in tpsheet_text.lines() {
+        if let Some(rest) = line.find(SMART_UPDATE_PREFIX).map(|i| &line[i + SMART_UPDATE_PREFIX.len()..]) {
+            let key = rest.trim_end_matches('$').trim();
+            if !key.is_empty() {
+                return Some(key.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn read_to_string(path: &Path) -> Result<String, Error> {

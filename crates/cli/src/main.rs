@@ -188,7 +188,11 @@ fn run(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     let prefix = match &cli.prefix {
         Some(p) => p.clone(),
-        None => read_tps_prefix(&tps_path).unwrap_or_default(),
+        // TPSheetImporter stores _prefix in .tpsheet.meta; fall back to
+        // .tps.meta (TPSImporter, legacy) for projects mid-migration.
+        None => read_tps_prefix(&tpsheet_path)
+            .or_else(|| read_tps_prefix(&tps_path))
+            .unwrap_or_default(),
     };
 
     std::fs::create_dir_all(&sprite_dir)
