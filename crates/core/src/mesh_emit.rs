@@ -598,13 +598,17 @@ pub fn tiled_mesh(
 }
 
 /// Build a single combined `MeshAsset` from a manifest entry + the
-/// per-sprite source data the renderers reference.
+/// per-sprite source data its renderers reference.
 ///
-/// `lookup` resolves each renderer's `sprite` field to a `SpriteEntry`
-/// from the active `.tpsheet`. PPU and atlas size (for UV normalization)
-/// must mirror what the SMA path produces — same as the per-tpsheet
-/// emit. Errors are returned for unresolved sprite names; the caller
-/// surfaces them with manifest context.
+/// Dispatches per `MeshRendererContent` variant: `Sprite` resolves the
+/// tpsheet entry and goes through `build_sprite_mesh` (Simple lifts
+/// geometry verbatim, Tiled runs `tiled_mesh`); `Polygon` resolves the
+/// `Color_*` entry for its UV center and goes through
+/// `build_polygon_mesh` (ear-clip or `[0,2,3,3,1,0]` quad shortcut).
+/// `lookup` is invoked once per renderer with the resolved sprite or
+/// `polygon_sprite` name. PPU and atlas size mirror the per-tpsheet
+/// emit. Errors carry combined+sprite context (unresolved names,
+/// tiled-non-quad, empty mesh).
 pub fn build_mesh<F>(
     combined: &MeshCombined,
     ppu: f32,
@@ -632,11 +636,11 @@ where
                         sprite: sprite.clone(),
                     }
                 })?;
-                build_sprite_mesh(&entry, *draw_mode, *size, ppu, atlas).map_err(|vc| {
+                build_sprite_mesh(&entry, *draw_mode, *size, ppu, atlas).map_err(|e| {
                     BuildMeshError::TiledNonQuad {
                         combined: combined.name.clone(),
                         sprite: sprite.clone(),
-                        vert_count: vc,
+                        vert_count: e.vert_count,
                     }
                 })?
             }
@@ -727,18 +731,24 @@ where
     })
 }
 
+/// Tiled draw mode requires a 4-vert axis-aligned quad. Carries the
+/// vert count the caller saw so the public `BuildMeshError::TiledNonQuad`
+/// gets composed with combined+sprite context up one level.
+struct TiledNonQuad {
+    vert_count: usize,
+}
+
 /// Source verts/uvs/tris for an atlas-backed `SpriteRenderer` leaf, in the
 /// renderer's local frame (pivot-relative world units). `Simple` lifts the
 /// sprite's tpsheet geometry verbatim; `Tiled` runs through
-/// [`tiled_mesh`]. On `Tiled` with a non-quad sprite the function returns
-/// `Err(vert_count)` and the caller wraps it with combined+sprite context.
+/// [`tiled_mesh`].
 fn build_sprite_mesh(
     entry: &SpriteEntry,
     draw_mode: DrawMode,
     size: Option<[f32; 2]>,
     ppu: f32,
     atlas: AtlasSize,
-) -> Result<PartMesh, usize> {
+) -> Result<PartMesh, TiledNonQuad> {
     let inv_ppu = 1.0_f32 / ppu;
     let atlas_w = atlas.width as f32;
     let atlas_h = atlas.height as f32;
@@ -774,7 +784,7 @@ fn build_sprite_mesh(
             let size = size.expect("parser ensures tiled has size");
             let n = src_verts.len();
             if n != 4 {
-                return Err(n);
+                return Err(TiledNonQuad { vert_count: n });
             }
             let quad = [src_verts[0], src_verts[1], src_verts[2], src_verts[3]];
             let uv_min = src_uvs[0];
@@ -1248,6 +1258,34 @@ mod tests {
         // Local (-1,-1) × scale 2 + (5, 5) = (3, 3); local (1,1) → (7, 7).
         assert_eq!(m.aabb_center, [5.0, 5.0, 0.0]);
         assert_eq!(m.aabb_extent, [2.0, 2.0, 0.0]);
+    }
+
+    #[test]
+    fn build_mesh_polygon_flip_x_applies_before_matrix() {
+        // Polygons have no Graphic-level flipX/Y, but the IR field is
+        // honored by build_mesh — pin the contract so direct IR
+        // authoring stays consistent with the SpriteRenderer branch.
+        let color = color_entry("Color_EE", 0, 0, 1, 1);
+        let verts = vec![[1.0, 0.0], [3.0, 0.0], [1.0, 2.0], [3.0, 2.0]];
+        let mut r = polygon_renderer("Color_EE", verts, None);
+        r.flip_x = true;
+        let mc = MeshCombined {
+            file_id: 1,
+            name: "p".into(),
+            output_path: "o.asset".into(),
+            used_in_canvas: true,
+            keep_vertices: true,
+            keep_indices: true,
+            renderers: vec![r],
+        };
+        let m = build_mesh(&mc, 100.0, (128, 128), |s| {
+            (s == "Color_EE").then(|| color.clone())
+        })
+        .unwrap();
+        // Original verts span x ∈ [1, 3]; flipX puts them at [-3, -1].
+        // center.x = -2, extent.x = 1.
+        assert_eq!(m.aabb_center[0], -2.0);
+        assert_eq!(m.aabb_extent[0], 1.0);
     }
 
     #[test]

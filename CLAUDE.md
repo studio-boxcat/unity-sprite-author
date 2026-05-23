@@ -106,20 +106,7 @@ Two trailing-space variants exist in the corpus and one varying field:
 - **Modern186** (current Unity emit): no trailing spaces. 186 bytes.
 - **`mainObjectFileID`**: usually `21300000` (Sprite class fileID). Some incompletely-imported sprites carry `0` instead.
 
-To avoid byte churn on existing metas the pipeline preserves both axes when present (`meta::detect_shape`). Fresh mints use Modern186 + `21300000`. Schema (Legacy189 form shown):
-
-```
-fileFormatVersion: 2
-guid: <32-lower-hex>
-NativeFormatImporter:
-  externalObjects: {}
-  mainObjectFileID: 21300000
-  userData: 
-  assetBundleName: 
-  assetBundleVariant: 
-```
-
-Golden tests stage the committed `.asset.meta` before invoking the pipeline so the preserve branch is exercised; the mint branch is unit-tested via `mint_guid_from(lo, hi)` with fixed entropy (no `rand` crate).
+To avoid byte churn on existing metas the pipeline preserves both axes when present (`meta::detect_shape`). Fresh mints use Modern186 + `21300000`. Golden tests stage the committed `.asset.meta` before invoking the pipeline so the preserve branch is exercised; the mint branch is unit-tested via `mint_guid_from(lo, hi)` with fixed entropy (no `rand` crate).
 
 ## Reference: tpsheet → Sprite `.asset` field map
 
@@ -152,13 +139,7 @@ Reference fixture for parity testing: `tests/golden/orgel/` — a self-contained
 
 ## Reference Implementations
 
-C# integration (matched-pair to this crate, in `meow-tower`):
-- `Packages/com.boxcat.libs/TexturePacker/TPSheetPostprocessor.cs` — `OnPostprocessAllAssets` entry point; calls `BoxcatBridge.SpriteAuthorGenerate(...)`.
-- `Packages/com.boxcat.libs/Native/BoxcatBridge.cs` — `SpriteAuthorGenerate` wrapper + `SpriteAuthorResult` shape; marshals UTF-8 paths and frees the native arena.
-- `Packages/com.boxcat.libs/Native~/bridge/src/lib.rs` — `bxc_sprite_author_generate` / `bxc_sprite_author_free` exports wrapping `unity_sprite_author::pipeline::generate`.
-- `Packages/com.boxcat.libs/TexturePacker/TPSImporter.cs` — `ScriptedImporter` holding `_prefix` on `.tps`.
-- `Packages/com.boxcat.libs/TexturePacker/TexturePackerUtils.cs` — `.tps` parsing for `spriteScale` (and `_prefix` reader for menu items).
-- `Packages/com.boxcat.libs/TexturePacker/SheetLoader.cs` — historical tpsheet parser. No longer on the import path; useful as a cross-reference for our parser.
+C# integration in `meow-tower` lives under `Packages/com.boxcat.libs/{TexturePacker,Native,Native~/bridge}/`. Entry chain: `TPSheetPostprocessor.OnPostprocessAllAssets` → `BoxcatBridge.SpriteAuthorGenerate` → the bridge cdylib's `bxc_sprite_author_generate` → `pipeline::generate` here. `TPSImporter` (`ScriptedImporter`) holds the `_prefix` on `.tps`.
 
 TS prior art at `prefab-saloon/src/lib/sprite/` (`tpsheet-parser.ts`, `generator.ts`) was the byte-exact reference for `m_IndexBuffer` + mesh encoding during the initial port; goldens have since taken over that role. The sibling `prefab-saloon/src/lib/prefab/{parser,serializer,templates}.ts` is intentionally *not* ported — we don't read `.asset` files and the YAML emit must be Unity-flavor specific from day one.
 

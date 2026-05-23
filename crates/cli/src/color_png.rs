@@ -101,6 +101,36 @@ mod tests {
     }
 
     #[test]
+    fn golden_byte_vector_solid_red() {
+        // Pinned to catch IDAT-layout drift the component tests would
+        // miss in combination. Solid opaque red, 1×1 RGBA. 73 bytes.
+        let png = encode_1x1([0xFF, 0x00, 0x00, 0xFF]);
+        assert_eq!(
+            png,
+            vec![
+                // PNG signature.
+                0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+                // IHDR: length=13, type, w=1, h=1, depth=8, color=6, 0,0,0, CRC.
+                0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+                0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+                0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+                0x89,
+                // IDAT: length=16, type, zlib 0x78 0x01, stored block 0x01,
+                // LEN=5 (LE), NLEN=~5 (LE), filter 0, R G B A,
+                // Adler32(scanline) BE (independently verified by
+                // `adler32_known_vector`), chunk CRC BE.
+                0x00, 0x00, 0x00, 0x10, 0x49, 0x44, 0x41, 0x54,
+                0x78, 0x01, 0x01, 0x05, 0x00, 0xFA, 0xFF,
+                0x00, 0xFF, 0x00, 0x00, 0xFF,
+                0x05, 0x00, 0x01, 0xFF, 0xFA, 0x5C, 0x88, 0xD1,
+                // IEND: length=0, type, CRC.
+                0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44,
+                0xAE, 0x42, 0x60, 0x82,
+            ]
+        );
+    }
+
+    #[test]
     fn deterministic_byte_output() {
         // Two encodes of the same color produce identical streams — no
         // alloc-order-dependent CRC table, no timestamp, etc.

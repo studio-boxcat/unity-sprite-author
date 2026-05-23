@@ -17,18 +17,7 @@ are declared directly in the sidecar JSON.
 ## Location
 
 Sibling of the `.tps`, named `<tps_path>.fab.json`. Discovery is implicit;
-absent → behavior unchanged. No `pipeline::generate` parameter.
-
-```
-21_Collections/Boxes/33_Vampire/
-├── 33_Vampire.tps
-├── 33_Vampire.tps.fab.json
-├── 33_Vampire.tpsheet
-├── 33_Vampire.png
-└── 33_Vampire/                  ← output sprite dir
-    ├── BX_33_Armchair.asset     ← fabricated combined
-    └── ...                      ← non-part per-tpsheet sprites
-```
+absent → behavior unchanged. No `pipeline::generate` parameter. Output sprites land in `<tps-parent>/<tps-stem>/` (the `pipeline::StandardLayout` convention shared with the CLI and the meow-tower bridge).
 
 ## Schema
 

@@ -895,12 +895,12 @@ pub fn to_mesh_combined(
         let l2r = [m00, m01, 0.0, leaf.world_pos[0], m10, m11, 0.0, leaf.world_pos[1]];
 
         renderers.push(mm::MeshRenderer {
-            // flipX/Y is folded into world_scale's sign by the walker, so
-            // the mesh_manifest level keeps these false. mesh_emit's
-            // `build_mesh` applies flip BEFORE the matrix; the matrix
-            // already carries the sign in m00/m11, so a true here would
-            // double-flip. The fields stay on `MeshRenderer` for callers
-            // that bypass the walker (tests, direct IR authoring).
+            // SpriteRenderer: flipX/Y is folded into world_scale's sign by
+            // the walker, so the IR keeps these false (the matrix carries
+            // the sign in m00/m11; a true here would double-flip).
+            // Polygon: no flip semantic at the Graphic level — also false.
+            // The fields stay on `MeshRenderer` for callers that bypass
+            // the walker (direct IR authoring in tests).
             flip_x: false,
             flip_y: false,
             local_to_root: l2r,

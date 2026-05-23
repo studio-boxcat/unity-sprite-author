@@ -712,3 +712,59 @@ fn sma_tree_into_fab_adapter_still_errors() {
         BridgeError::OutputMismatch { .. }
     ));
 }
+
+// ---------------------------------------------------------------------------
+// Group 8 — end-to-end SMA polygon: parse → bridge → build_mesh.
+
+#[test]
+fn sma_polygon_threads_through_to_built_mesh() {
+    use unity_sprite_author::manifest::to_mesh_combined;
+    use unity_sprite_author::mesh_emit::build_mesh;
+    use unity_sprite_author::tpsheet::{
+        Border, Geometry, Pivot, Rect, SpriteAlignment, SpriteEntry,
+    };
+
+    // Author a minimal SMA tree with one polygon leaf. The bridge
+    // resolves `color:"FF0000"` → `Color_FF0000`; the test's tpsheet
+    // lookup provides a 4×4 rect for that name so UVs can sample its
+    // center pixel.
+    let m = parse(
+        r#"{ "version":1, "combined":[{
+              "name":"P",
+              "mode":"sma-canvas", "fileId":42,"outputPath":"o.asset",
+              "children":[
+                {"pos":[2, 3],
+                 "type":"polygon","color":"FF0000",
+                 "vertices":[[-1,-1],[1,-1],[-1,1],[1,1]]}
+              ]
+            }]}"#,
+    )
+    .unwrap();
+    let mc = to_mesh_combined(&m.trees[0]).unwrap();
+
+    let color_entry = SpriteEntry {
+        name: "Color_FF0000".into(),
+        rect: Rect { x: 10, y: 20, w: 4, h: 4 },
+        pivot: Pivot { x: 0.5, y: 0.5 },
+        alignment: SpriteAlignment::Custom,
+        border: Border::default(),
+        geometry: Geometry { vertices: vec![], triangles: vec![] },
+    };
+    let mesh = build_mesh(&mc, 100.0, (128, 128), |s| {
+        (s == "Color_FF0000").then(|| color_entry.clone())
+    })
+    .unwrap();
+
+    // Quad layout → canonical 6-index list, polygon vertices translated by
+    // (2, 3) via the matrix. Verts span x ∈ [1, 3], y ∈ [2, 4].
+    assert_eq!(mesh.indices, vec![0, 2, 3, 3, 1, 0]);
+    assert_eq!(mesh.aabb_center, [2.0, 3.0, 0.0]);
+    assert_eq!(mesh.aabb_extent, [1.0, 1.0, 0.0]);
+    // All UVs sample the Color rect center: (10..14)/128, (20..24)/128.
+    let inv = 1.0_f32 / 128.0;
+    let expected = [(10.0 * inv + 14.0 * inv) * 0.5, (20.0 * inv + 24.0 * inv) * 0.5];
+    for uv in &mesh.uvs {
+        assert_eq!(*uv, expected);
+    }
+    assert_eq!(mesh.file_id, 42);
+}

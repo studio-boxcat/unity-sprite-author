@@ -185,32 +185,7 @@ commit message noting the byte-exact rate before/after.
 
 ## Archive
 
-- **Phase-1b corpus regen** — root-caused, not actioned. The
-  `PA_InfinitePencil_Clock` byte-exactness gap was traced to upstream
-  tpsheet drift, not a pipeline bug. Unity-side bit-level probe + Rust
-  trace showed Clock1's per-vert Y matched bit-exact while Clock2
-  diverged 16 ULPs in `v_local × ui_scale` at vertex 4 — same code
-  path, same inputs from the loaded sprite, so the divergence is in
-  the input data. Running without the fab manifest also diverged on
-  multiple constituent sprites: the .tpsheet regenerated via
-  `texturepacker` doesn't match what TexturePacker historically
-  produced when the goldens were emitted (source PNGs or TexturePacker
-  itself drifted). Forward path is a one-shot corpus regen — re-run
-  TexturePackerCLI across every atlas, run the pipeline, accept new
-  bytes as canonical, commit the resulting `.asset` diffs together.
-  The Silloutte goldens align with current TexturePacker output, which
-  is why those tests stay green. The `pa_clock` diagnostic test was
-  dropped along with the v1 fab schema retirement; reproducing it now
-  requires running `pipeline::generate` against a real meow-tower
-  atlas under `--skip-pack`.
+Retired investigations have moved out of this doc — `git log -- docs/unity-probes.md` recovers the Phase-1b corpus regen narrative and the Silloutte3 root-anchored y-shift writeup. Two operational notes that didn't die with them:
 
-- **Silloutte3 root-anchored y-shift** — SOLVED, then RETIRED. The fix
-  threaded the prefab root's `RectTransform.anchoredPosition` through an
-  FMA-fused `compute_m13_axis` to reproduce the ~1-ULP-per-vertex shift
-  Unity's `Mesh.CombineMeshes` produces for non-origin CSA roots. The
-  schema field (`rootAnchored`) and the FMA helper were dropped when
-  Silloutte3 itself was retired from the fixture set, on the principle
-  that authoring fab fixtures with the CSA root pinned at origin
-  sidesteps the residual entirely. Any future fab whose CSA root sits
-  off-origin will drift ~1 ULP per vertex from Unity's emit; pin the
-  root, or re-introduce the FMA path.
+- **Phase-1b corpus regen**: the path forward is a one-shot regen — re-run TexturePackerCLI across every atlas, run the pipeline, accept the new bytes as canonical, commit the resulting `.asset` diffs together. Silloutte goldens align with current TexturePacker output; Orgel doesn't (documented under D above).
+- **Silloutte3 retirement principle**: future fab fixtures whose CSA root sits off-origin will drift ~1 ULP per vertex from Unity's emit. Pin the root at origin, or re-introduce the FMA-fused `compute_m13_axis` path that the retired Silloutte3 fixture exercised.

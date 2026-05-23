@@ -31,8 +31,15 @@ pub struct SynthOutcome {
 /// left untouched regardless of content.
 pub fn synthesize_for_tps(tps_path: &Path) -> Result<SynthOutcome, SynthError> {
     let fab_path = with_extension_suffix(tps_path, ".fab.json");
-    let Ok(fab_text) = fs::read_to_string(&fab_path) else {
-        return Ok(SynthOutcome::default());
+    let fab_text = match fs::read_to_string(&fab_path) {
+        Ok(t) => t,
+        // Only NotFound is the no-op path. Permission denied, EIO, etc.
+        // are real failures that should surface (per the global "never
+        // silently swallow" rule).
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return Ok(SynthOutcome::default())
+        }
+        Err(e) => return Err(SynthError::Io { path: fab_path, source: e }),
     };
     let manifest = manifest::parse(&fab_text).map_err(|e| SynthError::Manifest {
         path: fab_path.clone(),

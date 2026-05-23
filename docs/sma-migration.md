@@ -46,19 +46,7 @@ Position uses `Vector3` (z = 0); UV uses `Vector2`. Triangles are u16.
 - **CanvasRenderer** path: positions + UVs both f32; colors written as
   opaque white per vertex; `UploadMeshData(false)` keeps the mesh readable.
 
-## Implementation map
-
-| Concern | Module |
-|---|---|
-| Mesh `.asset` emit (both VBO layouts) | `crates/core/src/mesh_emit.rs` |
-| `Mathf.FloatToHalf` byte-port (round-to-nearest-even) | `mesh_emit::float_to_half` |
-| Tiled mesh (`GetMesh_Tiled` port) | `mesh_emit::tiled_mesh` |
-| Per-renderer matrix application | `mesh_emit::build_mesh` |
-| Manifest (v3 unified tree, CSA + SMA) | `crates/core/src/manifest.rs` |
-| Manifest (legacy flat SMA-only) | `crates/core/src/mesh_manifest.rs` |
-| Pipeline dispatch | `pipeline::load_mesh_manifest` |
-| Golden fixture | `crates/core/tests/golden_sma_mesh.rs` (Box_29_Ghost, 32 meshes) |
-| SMA dumper | `crates/core/examples/sma_dumper.cs` → `crates/core/examples/sma_dump_to_mesh_manifest.rs` |
+Mesh emit + the `Mathf.FloatToHalf` byte-port live in `mesh_emit.rs`. The unified v3 manifest in `manifest.rs` discriminates trees by `Output::Csa | Output::Sma` and bridges to the IR in `mesh_manifest.rs`. Pinned by the Box_29_Ghost golden (32 meshes) and a sibling Unity dumper under `crates/core/examples/`.
 
 ## Resolved design choices
 
