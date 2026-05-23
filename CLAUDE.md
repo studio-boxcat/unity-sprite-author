@@ -8,9 +8,7 @@ Rust `rlib` consumed by meow-tower via the shared **BoxcatBridge** cdylib (see `
 
 C# (`TPSheetPostprocessor`) is the `AssetPostprocessor` entry point — for each imported `.tpsheet` it reads `_prefix` from `TPSImporter` on the sibling `.tps`, picks up PPU from the `.png`'s `TextureImporter`, and calls `BoxcatBridge.SpriteAuthorGenerate(...)`, which dispatches into this rlib's `pipeline::generate`. The pipeline does parse + bytes + filesystem; C# routes the returned written/deleted paths back through `AssetDatabase.ImportAsset`/`DeleteAsset`.
 
-The previous C# `CreateSprites` path was slow (managed), non-deterministic across Unity versions, and re-ran on every reimport. Moving it to native code with a byte-exact contract makes it fast, deterministic, and version-stable.
-
-The bar is **byte-exactness**: output must equal what Unity's `EditorUtility.CopySerialized` emits, byte-for-byte. Existing committed `.asset` files survive the swap with no diff churn — AssetBundle hashes, addressables, `.meta` GUID refs stay stable.
+The bar is **byte-exactness**: output must equal what Unity's `EditorUtility.CopySerialized` emits, byte-for-byte. Existing committed `.asset` files survive the swap with no diff churn — AssetBundle hashes, addressables, `.meta` GUID refs stay stable. The previous managed C# `CreateSprites` path was slow, version-unstable, and re-ran on every reimport; the native port fixes all three.
 
 ## Goal
 
@@ -121,9 +119,7 @@ NativeFormatImporter:
   assetBundleVariant: 
 ```
 
-### Test strategy for GUID determinism
-
-Random-mint conflicts with byte-equal goldens. Strategy: **tests stage the committed `.asset.meta` into the temp input dir before running the pipeline**, so only the preserve branch is exercised by golden tests. The mint branch is covered by `meta::tests::mint_guid_from_seeds_is_deterministic` — calls a `mint_guid_from(lo, hi)` helper directly with fixed entropy words so the rendered `.asset.meta` bytes are deterministic. (`mint_guid()` itself uses two `RandomState::hash_one` calls; no `rand` crate.)
+Golden tests stage the committed `.asset.meta` before invoking the pipeline so the preserve branch is exercised; the mint branch is unit-tested via `mint_guid_from(lo, hi)` with fixed entropy (no `rand` crate).
 
 ## Reference: tpsheet → Sprite `.asset` field map
 
@@ -164,12 +160,7 @@ C# integration (matched-pair to this crate, in `meow-tower`):
 - `Packages/com.boxcat.libs/TexturePacker/TexturePackerUtils.cs` — `.tps` parsing for `spriteScale` (and `_prefix` reader for menu items).
 - `Packages/com.boxcat.libs/TexturePacker/SheetLoader.cs` — historical tpsheet parser. No longer on the import path; useful as a cross-reference for our parser.
 
-TS port for mesh internals (proven byte-exact for `m_IndexBuffer`, float-tolerant elsewhere):
-- `prefab-saloon/src/lib/sprite/tpsheet-parser.ts`
-- `prefab-saloon/src/lib/sprite/generator.ts` — port `encodeTypelessData`, `encodeIndexBuffer`, `pixelToLocal`, `pixelToUV`, `alignTo16` verbatim.
-- `prefab-saloon/src/lib/sprite/generator.test.ts` — 4 verified mesh fixtures; lift into Rust tests.
-
-Do **not** port: `prefab-saloon/src/lib/prefab/{parser,serializer,templates}.ts`. We don't read `.asset` files, and the YAML emitter must be Unity-flavor specific from day one.
+TS prior art (`prefab-saloon/src/lib/sprite/`) was the byte-exact reference for `m_IndexBuffer` and mesh encoding during the initial port; goldens have since taken over that role. Don't port `prefab-saloon/src/lib/prefab/` — we don't read `.asset` files and the YAML emit is Unity-flavor specific.
 
 ## Known byte-exactness traps (from corpus audit)
 
@@ -192,90 +183,12 @@ Do **not** port: `prefab-saloon/src/lib/prefab/{parser,serializer,templates}.ts`
 - Golden-file `assert_eq!` over committed Unity-emitted samples. `.gitattributes` pins `*.asset binary` and `*.asset.meta binary` to prevent CRLF conversion.
 - Cross-platform concerns (universal macOS dylib, Windows UCRT linkage) now live in the bridge crate, not here.
 
-## Migration
-
-One-shot rollout shipped (meow-tower commits `0d9143ec…668fd2eb`). The `.tpsheet.meta` `_prefix` was relocated to `.tps.meta` (the new `TPSImporter` `ScriptedImporter`'s home) by `scripts/migrate-tpsheet-meta.sh` — idempotent, `--dry-run` flag, reversible via git. Re-run is safe; skips already-migrated `.tps.meta`.
-
 ## Layout
 
-Cargo workspace. `crates/core` is the rlib consumed by the BoxcatBridge cdylib
-in meow-tower; `crates/cli` is the offline `unity-sprite-author` binary that
-shells out to TexturePackerCLI and threads the result into `core`;
-`crates/editor` is a standalone GUI tool (`eframe` + `egui`, native macOS
-menubar via `muda`, persisted prefs, command palette) for authoring
-`.tps.fab.json` files. Every user-facing command in the editor flows through
-one `Action` enum (see `crates/editor/src/action.rs`) — adding a feature
-means: extend `Action`, add a `match` arm in `App::dispatch`, optionally
-register a `CommandEntry` for palette discoverability. The bridge crate in
-meow-tower points its `path = "..."` at `crates/core/` — editor and CLI
-never leak into the rlib.
+Cargo workspace, three crates:
 
-```
-unity-sprite-author/
-├── Cargo.toml              # [workspace] root — members: crates/core, crates/cli
-├── crates/
-│   ├── core/                       # rlib (package: unity-sprite-author, lib: unity_sprite_author)
-│   │   ├── src/
-│   │   │   ├── lib.rs              # module declarations
-│   │   │   ├── pipeline.rs         # orchestrate: parse → build → write → prune → delete
-│   │   │   ├── tpsheet.rs          # parser (mirrors SheetLoader.cs)
-│   │   │   ├── tps.rs              # minimal parser (spriteScale lookup)
-│   │   │   ├── meta.rs             # .png.meta GUID read + alphaIsTransparency rewrite; .asset.meta read/write; .tps.meta _prefix read
-│   │   │   ├── render_data.rs      # _typelessdata, m_IndexBuffer, uvTransform
-│   │   │   ├── emit.rs             # SpriteAsset → bytes
-│   │   │   ├── yaml.rs             # Unity-flavor YAML + yaml::float (C# ToString("R"))
-│   │   │   ├── triangulator.rs     # ear-clipping triangulator for fab polygon parts
-│   │   │   ├── combine.rs          # fab combined-sprite mesh stitching
-│   │   │   ├── manifest.rs         # .tps.fab.json unified tree (CSA + SMA) → fab/mesh bridge
-│   │   │   ├── fab.rs              # typed IR for fabricated combined sprites (consumed by combine.rs)
-│   │   │   ├── mesh_emit.rs        # Mesh .asset emit (SpriteRenderer half2 UVs + CanvasRenderer f32 UVs)
-│   │   │   └── mesh_manifest.rs    # Mesh IR consumed by `mesh_emit`; v3 manifest bridges into it
-│   │   ├── tests/
-│   │   │   ├── golden_parity.rs              # byte-equality on the Orgel corpus
-│   │   │   ├── golden_fab_silloutte.rs       # fab manifest → byte-exact Silloutte{1,2}.asset
-│   │   │   ├── golden_fab_treasure_trove.rs  # fab manifest → ULP-tolerance rect/pivot/offset/vert diff vs pre-c23474b2 TreasureTrove goldens (4 sprites)
-│   │   │   ├── golden_sma_mesh.rs            # Mesh .asset byte-exact (Box_29_Ghost, 32 meshes)
-│   │   │   ├── e2e_meow_tower.rs             # opt-in walk of the meow-tower checkout
-│   │   │   └── golden/                       # committed .tpsheet + .tps + .png.meta + expected .asset
-│   │   ├── examples/
-│   │   │   ├── drift_report.rs              # diagnostic — runs across meow-tower, prints first diff per atlas
-│   │   │   ├── sma_dumper.cs                # Unity scratch — dump SMA SpriteRenderer tree
-│   │   │   ├── regen_offline.rs             # single-atlas runner over staged tps/tpsheet/png.meta/fab.json (no TexturePackerCLI)
-│   │   │   └── migrate_corpus.rs            # offline corpus migration runner (no Unity Editor)
-│   │   └── benches/
-│   │       └── pipeline.rs         # criterion harness — full pipeline + per-stage hot paths
-│   ├── cli/                        # `unity-sprite-author` binary (package: unity-sprite-author-cli)
-│   │   └── src/
-│   │       └── main.rs             # offline CLI: pack .tps + author sprites
-│   └── editor/                     # GUI editor for `.tps.fab.json` (package: unity-sprite-author-editor)
-│       ├── src/
-│       │   ├── main.rs              # eframe entry
-│       │   ├── app.rs               # App + tabs + undo/redo + Action dispatch
-│       │   ├── action.rs            # Action enum + palette CommandEntry registry
-│       │   ├── ops.rs               # TreeOp, NodeEdit, NewGraphic + apply helpers
-│       │   ├── command_palette.rs   # Cmd+Shift+P modal
-│       │   ├── menubar.rs           # native macOS menubar via `muda` (other OS: stub)
-│       │   ├── preferences.rs       # eframe::Storage-backed user prefs
-│       │   ├── theme.rs             # central color constants + helpers
-│       │   ├── doc.rs               # Doc + NodePath + Color_* sprite normalization
-│       │   ├── selection.rs         # multi-select state w/ click-modifier semantics
-│       │   ├── atlas.rs             # sibling .tpsheet/.png/.tps load + auto-pack + thumbnail rasterizer
-│       │   ├── tree_panel.rs        # left panel: tree edit + drag-reorder + thumbnails
-│       │   ├── inspector.rs         # right panel: per-node editor
-│       │   ├── preview.rs           # center canvas: composed mesh + rulers + guides + handles
-│       │   ├── picker.rs            # sprite / color modals
-│       │   └── serialize.rs         # manifest → fab.json round-trip
-│       └── tests/
-│           ├── app_ops.rs            # headless drive of the pending-op pipeline
-│           └── round_trip_goldens.rs # parse → serialize → parse against fixtures
-├── docs/
-│   ├── fab.md              # .tps.fab.json schema + per-part transform math
-│   ├── sma-migration.md    # SpriteMeshAuthor → mesh_emit migration map
-│   └── unity-probes.md     # in-Editor procedures for the four blocked TODOs
-├── scripts/
-│   ├── migrate-tpsheet-meta.sh  # --dry-run; .tpsheet.meta → .tps.meta
-│   ├── regen-corpus.sh          # TexturePackerCLI sweep over $MEOW_CLIENT/Assets
-│   └── delete-authoring.sh      # Phase 3 atomic deletion of authoring C# + prefabs
-├── justfile                # `just install` → ~/.local/bin/unity-sprite-author
-└── CLAUDE.md
-```
+- **`crates/core/`** — the rlib (`unity-sprite-author` package). Consumed by the BoxcatBridge cdylib in meow-tower (`Native~/bridge/` points its `path = "..."` here). Module-level orientation lives in `src/lib.rs`; key entry points are `pipeline::generate`, `manifest::parse` (unified CSA+SMA tree), `combine::build_combined`, `mesh_emit::build_mesh`, and `emit::SpriteAsset`. Golden tests under `tests/golden/{orgel,fab,sma}/`; opt-in `e2e_meow_tower.rs` walks a meow-tower checkout.
+- **`crates/cli/`** — offline `unity-sprite-author` bin. Shells out to TexturePackerCLI, threads the result into `core`. See [[#cli]].
+- **`crates/editor/`** — GUI tool (`eframe` + `egui`, native macOS menubar via `muda`) for authoring `.tps.fab.json`. Every user-facing command flows through one `Action` enum in `action.rs` — extend `Action`, add a `match` arm in `App::dispatch`, optionally register a `CommandEntry` for palette discoverability. Editor and CLI never leak into the rlib.
+
+Supporting: `docs/` (fab schema, SMA migration map, Unity-Editor probe runbooks), `scripts/` (corpus regen, one-shot `.tpsheet.meta` → `.tps.meta` migration), `justfile` (`just install` → `~/.local/bin/`).

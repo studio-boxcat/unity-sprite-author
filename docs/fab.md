@@ -10,12 +10,9 @@ tree are excluded from per-tpsheet emission.
 
 Authoring paths: hand-edit the JSON, LLM-assist, or open it in the GUI
 editor (`cargo run -p unity-sprite-author-editor`, see `crates/editor/`).
-The editor opens your most-recently-used fab.json on launch, exposes
-every command through a Cmd+Shift+P palette, and auto-converts
-`type: "sprite", sprite: "Color_*"` leaves into rect polygons on load.
-The historical `CanvasSpriteAuthor` and `SpriteMeshAuthor` Unity prefabs
-that seeded the corpus have been retired (meow-tower c23474b2ab40); new
-trees are declared directly in the sidecar JSON.
+The original `CanvasSpriteAuthor` / `SpriteMeshAuthor` Unity prefabs that
+seeded the corpus were retired in meow-tower `c23474b2ab40`; new trees
+are declared directly in the sidecar JSON.
 
 ## Location
 
@@ -156,13 +153,10 @@ front-loaded into the leaf, container nodes typically declare just
 `[±1, ±1]` for flips and identity scaling.
 
 `rotDegCCW` cascades the same way and *also* rotates child anchored
-positions, not just the per-vert R. A child at local `pos (-28.4, -16)`
-under a parent rotated `-45°` in Z lands at world `(-31.4, +8.8)`, not
-at the unrotated `(-28.4, -16)`. Pre-walker-rotation fix, container
-rotations only affected the leaf's own per-vert R and broke composites
-like the Spider Ghost sticker (4 child verts shifted by `(+2.97,
--24.76)` world units when the `-45°` Body parent's rot wasn't applied
-to its child position).
+positions, not just the per-vert R — a child at local `pos (-28.4, -16)`
+under a parent rotated `-45°` lands at world `(-31.4, +8.8)`. (Earlier
+walker applied container rot only to per-vert R, which broke composites
+like the Spider Ghost sticker.)
 
 ### Polygon UV sampling
 

@@ -70,6 +70,29 @@ Position uses `Vector3` (z = 0); UV uses `Vector2`. Triangles are u16.
 - **f16 UVs via explicit byte-port.** `float_to_half` mirrors Unity's
   `Mathf.FloatToHalf` bit-for-bit; pinned by the Box_29_Ghost golden.
 
+## Outstanding (Phase 2b): polygon-color synthesis
+
+9 Box atlases (`Boxes/{03_Unicorn,05_Dino,09_Wizard,28_Boardgame,29_Ghost,30_Sleepy,31_Raincoat,32_Pilot,33_Vampire}`)
+have child SpriteRenderers named `Polygon` whose `.sprite` is a
+runtime-created Color texture (no GUID, hashed name like `mBzYY2st`).
+The Unity-side SMA pipeline accepts these because it walks geometry;
+the Rust port requires every renderer's sprite to resolve in the
+sibling tpsheet, and `manifest::to_mesh_combined` currently rejects
+polygon graphics under SMA trees (`bridge_to_mesh_rejects_polygon_in_sma`).
+
+To unblock:
+
+- **Authoring path**: hand- or LLM-edited fab.json declares polygon
+  leaves under SMA trees the same way the CSA side does (see [[fab.md]]
+  schema for `type: "polygon"`).
+- **Manifest schema** (`manifest.rs` Node): add polygon-leaf fields to
+  `spriteRenderer` mode (mirrors the existing UISolid path on CSA trees).
+- **Emit extension** (`mesh_emit::build_mesh`): for polygon renderers,
+  synthesize verts directly + sample UVs from a `Color_RRGGBB` entry in
+  the same tpsheet (mirrors `combine::polygon_mesh_with_tris` on CSA).
+- **Golden coverage**: extend `tests/golden/sma/box_29_ghost/` to
+  exercise the polygon branch.
+
 ## References
 
 - `Packages/com.boxcat.libs/Core/Runtime/SpriteMeshAuthoring/SpriteMeshAuthor.cs` (meow-tower)

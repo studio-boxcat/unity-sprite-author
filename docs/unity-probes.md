@@ -15,6 +15,12 @@ All four assume the meow-tower checkout at `$MEOW_CLIENT` (alias for
 cdylib — no separate dylib drop is needed; the `bxc_sprite_author_generate`
 entry point wraps `pipeline::generate` in this rlib.
 
+**Common prerequisite (A, B, D).** `pipeline::generate` deletes the
+`.tpsheet` on success, so it's only present mid-import. Before any
+procedure that needs the postprocessor to fire, regenerate the sibling
+`.tpsheet` either with `TexturePackerCLI <atlas>.tps` (Unity closed) or
+right-click the `.tps` in the Editor → `Run TexturePacker`.
+
 ## A. Bootstrap experiment — GUID preservation
 
 **Question.** Does Unity preserve the GUID this crate writes into a
@@ -26,14 +32,7 @@ the GUID at import time, BoxcatBridge needs a second-pass rewrite of
 proves the rlib's mint → write → re-read → re-emit chain is a fixed
 point. The Unity-side question below is the remaining unknown.
 
-**Prerequisite.** This procedure needs an `Orgel.tpsheet` on disk
-(`pipeline::generate` deletes it on success, so it's only present
-mid-import). With Unity closed, run `TexturePackerCLI Orgel.tps` (or
-right-click the `.tps` in the Editor → `Run TexturePacker` once Unity
-is open) to regenerate the sibling `.tpsheet` first. The
-postprocessor below fires on that file.
-
-**Procedure.**
+**Procedure.** (Regen `Orgel.tpsheet` per the common prerequisite above.)
 
 1. Close Unity.
 2. From the meow-tower repo root, snapshot a known sprite:
@@ -81,14 +80,9 @@ does it actually pack those bits? The current emit hard-codes 192 with no
 guard (see CLAUDE.md trap note); a varying corpus would surface as e2e
 mismatch but never as a localized failure.
 
-**Prerequisite.** The rust pipeline only re-emits sprite `.asset` files
-when `TPSheetPostprocessor` fires on a `.tpsheet`, so this probe needs
-a `.tpsheet` present (which `pipeline::generate` deletes on success —
-regenerate via TexturePacker CLI or right-click the `.tps` → Run
-TexturePacker if absent).
-
-**Procedure.** Pick three Texture Importers with deliberately differing
-settings and read back the emitted `settingsRaw`:
+**Procedure.** (Per-atlas `.tpsheet` regen as above.) Pick three
+Texture Importers with deliberately differing settings and read back
+the emitted `settingsRaw`:
 
 1. From the meow-tower repo root, pick three atlas PNGs with stable goldens:
    ```sh
@@ -164,10 +158,8 @@ need a consistent `(.tps, .tpsheet, .asset)` triple.
 **Procedure.**
 
 1. From the meow-tower checkout, ensure the current `Orgel.tps` and
-   `Orgel.tpsheet` are what TexturePacker last emitted. Since
-   `pipeline::generate` deletes the `.tpsheet` on success, regenerate
-   via `TexturePackerCLI Orgel.tps` (or right-click → Run TexturePacker
-   in the Editor) if absent.
+   `Orgel.tpsheet` are what TexturePacker last emitted (regen per the
+   common prerequisite above).
 2. Force a reimport so this rlib re-emits every Orgel sprite under the
    current `.tps`:
    ```sh
@@ -191,6 +183,25 @@ need a consistent `(.tps, .tpsheet, .asset)` triple.
 commit message noting the byte-exact rate before/after.
 
 ## Archive
+
+- **Phase-1b corpus regen** — root-caused, not actioned. The
+  `PA_InfinitePencil_Clock` byte-exactness gap was traced to upstream
+  tpsheet drift, not a pipeline bug. Unity-side bit-level probe + Rust
+  trace showed Clock1's per-vert Y matched bit-exact while Clock2
+  diverged 16 ULPs in `v_local × ui_scale` at vertex 4 — same code
+  path, same inputs from the loaded sprite, so the divergence is in
+  the input data. Running without the fab manifest also diverged on
+  multiple constituent sprites: the .tpsheet regenerated via
+  `texturepacker` doesn't match what TexturePacker historically
+  produced when the goldens were emitted (source PNGs or TexturePacker
+  itself drifted). Forward path is a one-shot corpus regen — re-run
+  TexturePackerCLI across every atlas, run the pipeline, accept new
+  bytes as canonical, commit the resulting `.asset` diffs together.
+  The Silloutte goldens align with current TexturePacker output, which
+  is why those tests stay green. The `pa_clock` diagnostic test was
+  dropped along with the v1 fab schema retirement; reproducing it now
+  requires running `pipeline::generate` against a real meow-tower
+  atlas under `--skip-pack`.
 
 - **Silloutte3 root-anchored y-shift** — SOLVED, then RETIRED. The fix
   threaded the prefab root's `RectTransform.anchoredPosition` through an
