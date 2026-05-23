@@ -21,6 +21,8 @@ use unity_sprite_author::pipeline::{self, GenerateInputs, StandardLayout};
 pub enum PollResult {
     Idle,
     Processed(usize),
+    /// Watchman is not running. Logged once per session by the C# caller.
+    Unavailable,
 }
 
 pub struct Watcher {
@@ -36,7 +38,7 @@ impl Watcher {
     pub fn poll(&mut self) -> PollResult {
         let delta = match watchman::since(&self.project_root, self.clock.as_deref()) {
             Ok(d) => d,
-            Err(watchman::WatchError::Unavailable) => return PollResult::Idle,
+            Err(watchman::WatchError::Unavailable) => return PollResult::Unavailable,
             Err(e) => {
                 eprintln!("sprite-author watch: {e}");
                 return PollResult::Idle;
