@@ -17,9 +17,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::Duration;
 
-use unity_assetdb::bake::with_meta_suffix;
 use unity_assetdb::register::{self, ImporterKind, RegisterOptions};
-use unity_sprite_author::meta::read_tps_prefix;
+use unity_sprite_author::meta::{read_png_ppu, read_tps_prefix};
 use unity_sprite_author::pipeline::{self, GenerateInputs, StandardLayout};
 
 const USAGE: &str = "\
@@ -288,19 +287,6 @@ fn ensure_meta(
         );
     }
     Ok(())
-}
-
-/// Extract `spritePixelsToUnits:` from a `TextureImporter` block in a
-/// `.png.meta`. The serialized field name is `spritePixelsToUnits` even
-/// though the C# property is `spritePixelsPerUnit`.
-fn read_png_ppu(png: &Path) -> Option<f32> {
-    let text = std::fs::read_to_string(with_meta_suffix(png)).ok()?;
-    for line in text.lines() {
-        if let Some(rest) = line.trim_start().strip_prefix("spritePixelsToUnits:") {
-            return rest.trim().parse().ok();
-        }
-    }
-    None
 }
 
 /// Walk up `start` until a directory containing `ProjectSettings/` is

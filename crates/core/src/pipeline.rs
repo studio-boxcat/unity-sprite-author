@@ -55,7 +55,7 @@ impl fmt::Display for Error {
             Self::Meta(e) => write!(f, "meta: {e}"),
             Self::Emit(e) => write!(f, "emit: {e}"),
             Self::AtlasSizeUnknown => write!(f, "atlas size missing from tpsheet header"),
-            Self::EmptySheet => write!(f, "tpsheet has zero sprites; refusing to delete it"),
+            Self::EmptySheet => write!(f, "tpsheet has zero sprites"),
             Self::DuplicateSpriteName(name) => write!(
                 f,
                 "duplicate sprite name after prefix application: {name:?}"
@@ -130,7 +130,8 @@ impl std::error::Error for LayoutError {}
 /// the process's working directory); the pipeline does no path-walking
 /// beyond what's spelled out here.
 pub struct GenerateInputs<'a> {
-    /// The TexturePacker-emitted `.tpsheet` to consume. Deleted on success.
+    /// The TexturePacker-emitted `.tpsheet`. Not deleted — TexturePacker
+    /// uses it for `smartUpdateKey` hash checks on next publish.
     pub tpsheet_path: &'a Path,
     /// Sibling `.tps`. Used to read per-sprite `spriteScale`; not modified.
     pub tps_path: &'a Path,
@@ -392,16 +393,8 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
         }
     }
 
-    // The consumed .tpsheet and its .meta also get deleted post-success.
-    let tpsheet_meta_path = {
-        let mut p = input.tpsheet_path.to_path_buf();
-        p.as_mut_os_string().push(".meta");
-        p
-    };
-    deleted_paths.push(input.tpsheet_path.to_path_buf());
-    if tpsheet_meta_path.exists() {
-        deleted_paths.push(tpsheet_meta_path);
-    }
+    // The .tpsheet is NOT deleted — TexturePacker needs it on disk for its
+    // smartUpdateKey hash check (skips redundant .png rewrites on next publish).
 
     // ---- Phase 2: commit -------------------------------------------------
 
@@ -765,11 +758,8 @@ mod tests {
     }
 
     #[test]
-    fn pipeline_deletes_tpsheet_after_successful_run() {
-        // First-pass observable: the consumed .tpsheet is gone after a
-        // successful generate(). The companion skip-write-if-equal claim
-        // is exercised by `pipeline_second_run_is_idempotent` below.
-        let dir = copy_orgel_to_temp("delete_tpsheet");
+    fn pipeline_retains_tpsheet_after_successful_run() {
+        let dir = copy_orgel_to_temp("retain_tpsheet");
         let inputs = GenerateInputs {
             tpsheet_path: &dir.join("Orgel.tpsheet"),
             tps_path: &dir.join("Orgel.tps"),
@@ -780,8 +770,8 @@ mod tests {
         };
         let _ = generate(&inputs).unwrap();
         assert!(
-            !inputs.tpsheet_path.exists(),
-            "tpsheet should be deleted after run"
+            inputs.tpsheet_path.exists(),
+            "tpsheet should be retained for TexturePacker hash checks"
         );
         let _ = fs::remove_dir_all(&dir);
     }

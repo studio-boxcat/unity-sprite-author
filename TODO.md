@@ -24,6 +24,25 @@ hidden f64 precision, or derives the offset from the mesh AABB not the
 rect. Magnitude is invisible at runtime; revisit only when Unity engine
 source becomes available (UnityCsReference or decompilation).
 
+## Watchman watcher (remaining)
+
+The watchman-based watcher that replaces `TPSheetPostprocessor` is
+implemented: `crates/watch/` (rlib), bridge FFI
+(`bxc_sprite_author_watch_{init,poll}`), C# polling via
+`BoxcatBridgeInit` + `EditorApplication.update`.
+`TPSheetPostprocessor` is deleted. `.tpsheet` is retained on disk
+(`retain_tpsheet: true`) so TexturePacker's `smartUpdateKey` hash
+check works on next GUI publish.
+
+**Remaining:**
+
+- Migrate `_prefix` from `.tps.meta` `TPSImporter` into the fab.json
+  manifest. Once done, delete `TPSImporter` + `SpriteAuthorGenerate`
+  FFI (the old bridge entry point the CLI no longer needs).
+- Bridge `Cargo.toml` `rev` bump — the `unity-sprite-author` and
+  `unity-sprite-author-watch` git refs need updating to the commit
+  that includes `retain_tpsheet` + `crates/watch/`.
+
 ## Deferred (waiting on a real case)
 
 - **`keepStandalone` allowlist** — only matters if a part ever needs

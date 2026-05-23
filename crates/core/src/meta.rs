@@ -308,6 +308,21 @@ pub fn read_tps_prefix<P: AsRef<Path>>(tps_path: P) -> Option<String> {
     None
 }
 
+/// Extract `spritePixelsToUnits` from a `.png.meta` TextureImporter block.
+/// The serialized field name is `spritePixelsToUnits` even though the C#
+/// property is `spritePixelsPerUnit`.
+pub fn read_png_ppu<P: AsRef<Path>>(png_path: P) -> Option<f32> {
+    let mut meta = png_path.as_ref().to_path_buf();
+    meta.as_mut_os_string().push(".meta");
+    let text = fs::read_to_string(&meta).ok()?;
+    for line in text.lines() {
+        if let Some(rest) = line.trim_start().strip_prefix("spritePixelsToUnits:") {
+            return rest.trim().parse().ok();
+        }
+    }
+    None
+}
+
 /// Compose a 128-bit GUID from two pre-derived entropy words (LE-packed:
 /// `lo` → bytes 0..8, `hi` → bytes 8..16). Split out from [`mint_guid`]
 /// so tests can pin the mint path against fixed entropy.

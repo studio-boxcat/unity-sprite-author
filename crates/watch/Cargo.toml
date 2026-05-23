@@ -1,0 +1,17 @@
+[package]
+name = "unity-sprite-author-watch"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "unity_sprite_author_watch"
+path = "src/lib.rs"
+
+# Watchman-based poller for the TexturePacker → sprite-author pipeline.
+# Sync facade — tokio confined to the watchman wire layer, same pattern as
+# unity-assetdb/src/watch.rs. See [[TODO.md#staging-folder--watchman-watcher]].
+[dependencies]
+unity-sprite-author = { path = "../core" }
+watchman_client = "0.9"
+tokio = { version = "1", default-features = false, features = ["rt", "net"] }
