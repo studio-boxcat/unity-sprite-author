@@ -33,8 +33,6 @@ Unity import → TPSheetImporter.OnImportAsset
 BoxcatBridge.SpriteAuthorGenerate → bxc_sprite_author_generate (cdylib)
        ↓
 pipeline::generate (this rlib) — .tpsheet retained, .asset written/pruned
-       ↓
-(SmartUpdate hash check skips redundant runs)
 ```
 
 ## Public Rust API
