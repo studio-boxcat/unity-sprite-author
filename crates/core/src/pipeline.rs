@@ -151,7 +151,7 @@ pub struct GenerateInputs<'a> {
 /// Result of a successful [`generate`] call. The caller routes each path
 /// through `AssetDatabase.ImportAsset` / `AssetDatabase.DeleteAsset` to
 /// notify Unity of the filesystem changes.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct GenerateOutput {
     /// Sprite `.asset` paths newly written or updated, plus the atlas `.png`
     /// when its sibling `.png.meta` was rewritten to sync `alphaIsTransparency`

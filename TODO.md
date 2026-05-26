@@ -27,15 +27,15 @@ source becomes available (UnityCsReference or decompilation).
 ## TPSheetImporter prefix migration (remaining)
 
 `TPSheetImporter` (`ScriptedImporter` for `.tpsheet`) replaces the old
-`TPSImporter` + `TPSheetPostprocessor` pair. Pipeline no longer deletes
-the `.tpsheet`; SmartUpdate hash check in `<sprite_dir>/.hash` skips
-redundant runs. `_prefix` migrated from `.tps.meta` to `.tpsheet.meta`.
+`TPSImporter` + `TPSheetPostprocessor` pair. Pipeline retains the
+`.tpsheet` on disk; deduplication handled by Unity's import system
+(importer only fires when file changes). `_prefix` migrated from
+`.tps.meta` to `.tpsheet.meta`.
 
 **Remaining:**
 
 - Run `scripts/migrate-prefix-to-tpsheet.sh` on meow-tower after
   `.tpsheet` files exist on disk (requires one full TP corpus pack).
-- Bridge `Cargo.toml` `rev` bump to pick up the hash-check changes.
 
 ## Deferred (waiting on a real case)
 
