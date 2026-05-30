@@ -20,12 +20,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use unity_sprite_author::{
-    emit::{self, SpriteAsset},
-    meta,
-    render_data::{self, AtlasSize},
-    tps, tpsheet,
-};
+use unity_sprite_author::pipeline::{self, GenerateInputs};
 
 fn meow_tower_root() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("MEOW_TOWER_PATH") {
@@ -54,15 +49,6 @@ fn find_tpsheets(root: &Path, out: &mut Vec<PathBuf>) {
             out.push(path);
         }
     }
-}
-
-fn extract_ppu(meta_text: &str) -> Option<f32> {
-    for line in meta_text.lines() {
-        if let Some(rest) = line.trim_start().strip_prefix("spritePixelsToUnits: ") {
-            return rest.trim().parse().ok();
-        }
-    }
-    None
 }
 
 // Mirrors TPSheetPostprocessor.IsLegacyTexture: textureType=Sprite (8) AND
@@ -130,14 +116,10 @@ fn e2e_meow_tower_byte_exact() {
     find_tpsheets(&assets_root, &mut tpsheets);
     tpsheets.sort();
 
-    // `.tpsheet` files are ephemeral by design — `pipeline::generate`
-    // deletes each one on success after re-emitting the per-sprite
-    // `.asset`s. In a quiesced meow-tower checkout (all imports
-    // settled, TexturePacker not re-run since), the `.tps` files are
-    // present but no `.tpsheet` siblings exist. Skip cleanly in that
-    // case — only panic if we found tpsheets but compared none of
-    // them, which would be a real wiring bug rather than a fixture-
-    // state quirk.
+    // `.tpsheet` files are produced by TexturePacker (via Unity import) and
+    // are the pipeline's input — `generate` retains them on disk. But a
+    // checkout that has never run a TP pack won't have any, so skip cleanly
+    // in that case rather than failing.
     if tpsheets.is_empty() {
         eprintln!(
             "e2e: no .tpsheet files under {}; skipping (run TexturePacker via Unity first).",
@@ -177,42 +159,27 @@ fn e2e_meow_tower_byte_exact() {
             stats.atlases_legacy += 1;
             continue;
         }
-        let Some(ppu) = extract_ppu(&png_meta_text) else {
-            stats.atlases_parse_failed += 1;
-            stats.parse_failures.push((tpsheet_path.clone(), "no spritePixelsToUnits in .png.meta".into()));
-            continue;
-        };
-        let Ok(atlas_guid) = meta::parse_guid(&png_meta_text) else {
-            stats.atlases_parse_failed += 1;
-            stats.parse_failures.push((tpsheet_path.clone(), "no guid in .png.meta".into()));
-            continue;
-        };
         let prefix = extract_prefix(&tps_meta_path);
+        let png_path = parent.join(format!("{base}.png"));
 
-        let Ok(tpsheet_text) = fs::read_to_string(tpsheet_path) else {
-            stats.atlases_parse_failed += 1;
-            stats.parse_failures.push((tpsheet_path.clone(), "tpsheet read failed".into()));
-            continue;
-        };
-        let sheet = match tpsheet::parse(&tpsheet_text) {
-            Ok(s) => s,
+        // Drive the real pipeline (phase 1): this applies the .tps.fab.json /
+        // .tps.mesh.json combination, so we compare each *final* emitted sprite
+        // (combined geometry and all) against the committed golden — not the raw
+        // tpsheet part. `build` reads PPU / atlas GUID / existing-meta GUIDs
+        // itself and writes nothing.
+        let plan = match pipeline::build(&GenerateInputs {
+            tpsheet_path,
+            tps_path: &tps_path,
+            atlas_png_path: &png_path,
+            sprite_dir: &sprite_dir,
+            prefix: &prefix,
+        }) {
+            Ok(p) => p,
             Err(e) => {
                 stats.atlases_parse_failed += 1;
-                stats.parse_failures.push((tpsheet_path.clone(), format!("tpsheet: {e}")));
+                stats.parse_failures.push((tpsheet_path.clone(), format!("build: {e}")));
                 continue;
             }
-        };
-        let tps_data = match tps::parse(&tps_path) {
-            Ok(d) => d,
-            Err(e) => {
-                stats.atlases_parse_failed += 1;
-                stats.parse_failures.push((tpsheet_path.clone(), format!("tps: {e}")));
-                continue;
-            }
-        };
-        let atlas_size = AtlasSize {
-            width: sheet.tex.width,
-            height: sheet.tex.height,
         };
 
         let atlas_label = parent
@@ -220,91 +187,54 @@ fn e2e_meow_tower_byte_exact() {
             .map(|p| p.join(&base).to_string_lossy().into_owned())
             .unwrap_or_else(|_| base.clone());
 
-        for sprite in &sheet.sprites {
-            let asset_name = format!("{prefix}{}", sprite.name);
-            let asset_path = sprite_dir.join(format!("{asset_name}.asset"));
-            let meta_path = sprite_dir.join(format!("{asset_name}.asset.meta"));
-
-            let Ok(golden_asset) = fs::read(&asset_path) else {
+        // `plan.writes` is the final emitted output: `.asset` + `.asset.meta`
+        // for every sprite (combined sprites/meshes included), plus the atlas
+        // `.png.meta` when alphaIsTransparency would change. Compare each
+        // against the committed golden at the same path.
+        for (path, bytes) in &plan.writes {
+            let ps = path.to_string_lossy();
+            let is_meta = ps.ends_with(".asset.meta");
+            if !is_meta && !ps.ends_with(".asset") {
+                continue; // atlas .png.meta — not a per-sprite golden
+            }
+            let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+            let Ok(golden) = fs::read(path) else {
                 stats.sprites_missing_golden += 1;
                 continue;
             };
-            let Ok(golden_meta) = fs::read(&meta_path) else {
-                stats.sprites_missing_golden += 1;
-                continue;
-            };
 
-            let Ok(golden_meta_text) = std::str::from_utf8(&golden_meta) else {
-                continue;
-            };
-            let Ok(own_guid) = meta::parse_guid(golden_meta_text) else {
-                continue;
-            };
-            let meta_shape = meta::detect_shape(golden_meta_text);
-
-            let invert_scale = tps_data.invert_scale(&sprite.name);
-            let pixels_to_units = ppu / invert_scale;
-            let rd = render_data::build(
-                sprite.rect,
-                sprite.pivot,
-                &sprite.geometry.vertices,
-                &sprite.geometry.triangles,
-                ppu,
-                invert_scale,
-                atlas_size,
-            );
-            let asset = SpriteAsset {
-                name: asset_name.clone(),
-                rect: sprite.rect,
-                border: sprite.border,
-                pivot: sprite.pivot,
-                pixels_to_units,
-                own_guid,
-                atlas_guid,
-                render_data: rd,
-                source: emit::SpriteSource::Tpsheet,
-            };
-
-            let generated_asset = match emit::emit(&asset) {
-                Ok(s) => s.into_bytes(),
-                Err(e) => match e {}, // EmitError is uninhabited
-            };
-            let generated_meta = meta::render_asset_meta_with_shape(&own_guid, meta_shape).into_bytes();
-
-            stats.sprites_compared += 1;
-            let asset_match = generated_asset == golden_asset;
-            let meta_match = generated_meta == golden_meta;
-
-            if asset_match && meta_match {
-                stats.sprites_byte_exact += 1;
-            } else {
-                if !asset_match {
-                    stats.sprites_mismatch_asset += 1;
-                    if first_mismatches.len() < 12 {
-                        first_mismatches.push((
-                            tpsheet_path.clone(),
-                            asset_name.clone(),
-                            "asset",
-                            first_diff_offset(&generated_asset, &golden_asset),
-                        ));
-                    }
-                }
-                if !meta_match {
+            if is_meta {
+                if *bytes != golden {
                     stats.sprites_mismatch_meta += 1;
                     if stats.sprites_mismatch_meta <= 3 {
-                        // Metas only carry GUID variation; mismatches are
-                        // structurally interesting. Dump the diff window.
-                        let off = first_diff_offset(&generated_meta, &golden_meta);
+                        // Metas only carry GUID variation; dump the diff window.
+                        let off = first_diff_offset(bytes, &golden);
                         let lo = off.saturating_sub(8);
-                        let hi_g = (off + 24).min(generated_meta.len());
-                        let hi_e = (off + 24).min(golden_meta.len());
+                        let hi_g = (off + 24).min(bytes.len());
+                        let hi_e = (off + 24).min(golden.len());
                         eprintln!(
-                            "  META DIFF {} :: {asset_name}\n    generated[{lo}..{hi_g}]: {:?}\n    golden   [{lo}..{hi_e}]: {:?}",
+                            "  META DIFF {} :: {name}\n    generated[{lo}..{hi_g}]: {:?}\n    golden   [{lo}..{hi_e}]: {:?}",
                             tpsheet_path.display(),
-                            String::from_utf8_lossy(&generated_meta[lo..hi_g]),
-                            String::from_utf8_lossy(&golden_meta[lo..hi_e]),
+                            String::from_utf8_lossy(&bytes[lo..hi_g]),
+                            String::from_utf8_lossy(&golden[lo..hi_e]),
                         );
                     }
+                }
+                continue;
+            }
+
+            stats.sprites_compared += 1;
+            if *bytes == golden {
+                stats.sprites_byte_exact += 1;
+            } else {
+                stats.sprites_mismatch_asset += 1;
+                if first_mismatches.len() < 12 {
+                    first_mismatches.push((
+                        tpsheet_path.clone(),
+                        name,
+                        "asset",
+                        first_diff_offset(bytes, &golden),
+                    ));
                 }
                 *stats.drift_atlases.entry(atlas_label.clone()).or_insert(0) += 1;
             }

@@ -197,9 +197,160 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
         return Ok(GenerateOutput::default());
     }
 
-    // ---- Phase 1: pure compute ------------------------------------------
+    let Plan {
+        writes,
+        written_asset_paths,
+        deleted_paths,
+        warnings,
+        atlas_meta_rewritten,
+    } = build_plan(input, &tpsheet_text)?;
 
-    let sheet = tpsheet::parse(&tpsheet_text).map_err(Error::Tpsheet)?;
+    // ---- Phase 2: commit -------------------------------------------------
+
+    fs::create_dir_all(input.sprite_dir).map_err(|e| Error::Io {
+        path: input.sprite_dir.to_path_buf(),
+        source: e,
+    })?;
+
+    // Wipe stale .tmp files from prior crashed runs.
+    if let Ok(entries) = fs::read_dir(input.sprite_dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.extension().is_some_and(|e| e == "tmp") {
+                let _ = fs::remove_file(&p);
+            }
+        }
+    }
+
+    // (tmp_path, final_path) pairs to commit. Skip-equal writes don't enter.
+    let mut staged: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(writes.len());
+    let mut changed_finals: HashSet<PathBuf> = HashSet::new();
+
+    let cleanup = |staged: &[(PathBuf, PathBuf)]| {
+        for (tmp, _) in staged {
+            let _ = fs::remove_file(tmp);
+        }
+    };
+
+    for (final_path, bytes) in &writes {
+        if let Ok(existing) = fs::read(final_path)
+            && existing == *bytes
+        {
+            continue; // skip-write-if-equal
+        }
+        let tmp = with_tmp_suffix(final_path);
+        if let Err(e) = fs::write(&tmp, bytes) {
+            cleanup(&staged);
+            return Err(Error::Io {
+                path: tmp.clone(),
+                source: e,
+            });
+        }
+        staged.push((tmp, final_path.clone()));
+        changed_finals.insert(final_path.clone());
+    }
+
+    // All temps written; commit via rename.
+    for (tmp, final_path) in &staged {
+        if let Err(e) = fs::rename(tmp, final_path) {
+            // Mid-rename failure: clean remaining temps; partial state may
+            // remain (already-renamed files stay). std has no atomic
+            // multi-rename. Surface the error.
+            cleanup(&staged);
+            return Err(Error::Io {
+                path: final_path.clone(),
+                source: e,
+            });
+        }
+    }
+
+    let mut paths_to_import: Vec<PathBuf> = Vec::with_capacity(written_asset_paths.len());
+    for asset_path in &written_asset_paths {
+        if changed_finals.contains(asset_path) {
+            paths_to_import.push(asset_path.clone());
+        }
+    }
+    // .png.meta rewrite doesn't enroll the .png via `writes` (we only stage
+    // the .meta there), so add the .png here so C# reimports the texture.
+    if atlas_meta_rewritten {
+        paths_to_import.push(input.atlas_png_path.to_path_buf());
+    }
+
+    // Prune orphans (and the consumed .tpsheet pair). Surface non-NotFound
+    // failures via stderr — silently swallowing would hide real permission
+    // problems behind a "successful" return.
+    for p in &deleted_paths {
+        if let Err(e) = fs::remove_file(p)
+            && e.kind() != io::ErrorKind::NotFound
+        {
+            eprintln!("unity-sprite-author: failed to remove {p:?}: {e}");
+        }
+    }
+
+    // Write the SmartUpdate key so the next run (this CLI or Unity's
+    // importer) can skip an unchanged tpsheet. Best-effort — a failed
+    // write just means the next run does the full pass.
+    if let Some(key) = &smart_key {
+        let _ = fs::write(&hash_path, key);
+    }
+
+    Ok(GenerateOutput {
+        written_paths: paths_to_import,
+        deleted_paths,
+        warnings,
+    })
+}
+
+/// Pipeline phase-1 result: every `(path, bytes)` [`generate`] would write and
+/// every orphan path it would prune — computed WITHOUT mutating the filesystem
+/// (beyond the reads needed to preserve GUIDs and detect orphans). `generate`
+/// is [`build`] + the two-phase commit; exposing `build` on its own lets
+/// callers diff the would-be output against committed goldens (corpus tests)
+/// or dry-run without touching the project.
+#[derive(Debug, Default)]
+pub struct BuildPlan {
+    /// `(final_path, bytes)` for every `.asset` / `.asset.meta` (and the atlas
+    /// `.png.meta` when `alphaIsTransparency` would be rewritten). Combined
+    /// sprites/meshes from `.tps.fab.json` / `.tps.mesh.json` are included —
+    /// this is the final emitted output, not the raw per-tpsheet parts.
+    pub writes: Vec<(PathBuf, Vec<u8>)>,
+    /// Orphan `.asset` / `.asset.meta` paths `generate` would delete.
+    pub deleted_paths: Vec<PathBuf>,
+    /// Non-fatal warnings (see [`GenerateOutput::warnings`]).
+    pub warnings: Vec<String>,
+}
+
+/// Run pipeline phase 1 and return the in-memory [`BuildPlan`] without writing
+/// anything. `generate` runs the same compute, then commits. The SmartUpdate
+/// `.hash` skip is intentionally NOT applied here — that's a `generate`-level
+/// commit optimization; `build` always computes the full plan.
+pub fn build(input: &GenerateInputs) -> Result<BuildPlan, Error> {
+    let tpsheet_text = read_to_string(input.tpsheet_path)?;
+    let plan = build_plan(input, &tpsheet_text)?;
+    Ok(BuildPlan {
+        writes: plan.writes,
+        deleted_paths: plan.deleted_paths,
+        warnings: plan.warnings,
+    })
+}
+
+/// Internal phase-1 result. `generate` additionally needs `written_asset_paths`
+/// and `atlas_meta_rewritten` for its commit/import bookkeeping; the public
+/// [`BuildPlan`] omits them.
+struct Plan {
+    writes: Vec<(PathBuf, Vec<u8>)>,
+    written_asset_paths: Vec<PathBuf>,
+    deleted_paths: Vec<PathBuf>,
+    warnings: Vec<String>,
+    atlas_meta_rewritten: bool,
+}
+
+/// Pipeline phase 1 (pure compute): parse all inputs and build every
+/// `(path, bytes)` pair plus the orphan-prune set. No filesystem mutation
+/// (only the reads needed to preserve existing GUIDs and find orphans). Any
+/// error here means `generate` writes nothing.
+fn build_plan(input: &GenerateInputs, tpsheet_text: &str) -> Result<Plan, Error> {
+    let sheet = tpsheet::parse(tpsheet_text).map_err(Error::Tpsheet)?;
     if sheet.tex.width == 0 || sheet.tex.height == 0 {
         return Err(Error::AtlasSizeUnknown);
     }
@@ -416,99 +567,12 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
     // The .tpsheet is NOT deleted — TexturePacker needs it on disk for its
     // smartUpdateKey hash check (skips redundant .png rewrites on next publish).
 
-    // ---- Phase 2: commit -------------------------------------------------
-
-    fs::create_dir_all(input.sprite_dir).map_err(|e| Error::Io {
-        path: input.sprite_dir.to_path_buf(),
-        source: e,
-    })?;
-
-    // Wipe stale .tmp files from prior crashed runs.
-    if let Ok(entries) = fs::read_dir(input.sprite_dir) {
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.extension().is_some_and(|e| e == "tmp") {
-                let _ = fs::remove_file(&p);
-            }
-        }
-    }
-
-    // (tmp_path, final_path) pairs to commit. Skip-equal writes don't enter.
-    let mut staged: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(writes.len());
-    let mut changed_finals: HashSet<PathBuf> = HashSet::new();
-
-    let cleanup = |staged: &[(PathBuf, PathBuf)]| {
-        for (tmp, _) in staged {
-            let _ = fs::remove_file(tmp);
-        }
-    };
-
-    for (final_path, bytes) in &writes {
-        if let Ok(existing) = fs::read(final_path)
-            && existing == *bytes
-        {
-            continue; // skip-write-if-equal
-        }
-        let tmp = with_tmp_suffix(final_path);
-        if let Err(e) = fs::write(&tmp, bytes) {
-            cleanup(&staged);
-            return Err(Error::Io {
-                path: tmp.clone(),
-                source: e,
-            });
-        }
-        staged.push((tmp, final_path.clone()));
-        changed_finals.insert(final_path.clone());
-    }
-
-    // All temps written; commit via rename.
-    for (tmp, final_path) in &staged {
-        if let Err(e) = fs::rename(tmp, final_path) {
-            // Mid-rename failure: clean remaining temps; partial state may
-            // remain (already-renamed files stay). std has no atomic
-            // multi-rename. Surface the error.
-            cleanup(&staged);
-            return Err(Error::Io {
-                path: final_path.clone(),
-                source: e,
-            });
-        }
-    }
-
-    let mut paths_to_import: Vec<PathBuf> = Vec::with_capacity(written_asset_paths.len());
-    for asset_path in &written_asset_paths {
-        if changed_finals.contains(asset_path) {
-            paths_to_import.push(asset_path.clone());
-        }
-    }
-    // .png.meta rewrite doesn't enroll the .png via `writes` (we only stage
-    // the .meta there), so add the .png here so C# reimports the texture.
-    if atlas_meta_rewritten {
-        paths_to_import.push(input.atlas_png_path.to_path_buf());
-    }
-
-    // Prune orphans (and the consumed .tpsheet pair). Surface non-NotFound
-    // failures via stderr — silently swallowing would hide real permission
-    // problems behind a "successful" return.
-    for p in &deleted_paths {
-        if let Err(e) = fs::remove_file(p)
-            && e.kind() != io::ErrorKind::NotFound
-        {
-            eprintln!("unity-sprite-author: failed to remove {p:?}: {e}");
-        }
-    }
-
-    // Write the SmartUpdate key so the next run (this CLI or Unity's
-    // importer) can skip an unchanged tpsheet. Best-effort — a failed
-    // write just means the next run does the full pass.
-    if let Some(key) = &smart_key {
-        let _ = fs::write(&hash_path, key);
-    }
-
-    Ok(GenerateOutput {
-        written_paths: paths_to_import,
+    Ok(Plan {
+        writes,
+        written_asset_paths,
         deleted_paths,
         warnings,
+        atlas_meta_rewritten,
     })
 }
 

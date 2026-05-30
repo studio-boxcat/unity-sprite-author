@@ -47,14 +47,6 @@ source becomes available (UnityCsReference or decompilation).
   (only re-scans the `.tps` set). If a source changed while `watch` was down,
   that atlas stays stale until its next edit — run the one-shot CLI to catch up.
 
-## `e2e_meow_tower` drift
-
-`GiftShop` and `PiggyBank` atlases show 4 `.asset` mismatches in the opt-in
-`e2e_meow_tower` test — the live meow-tower `.tps` drifted from the committed
-`.asset` goldens (same class as the `m_Border` outlier noted in CLAUDE.md, not
-an emit regression: the test goes through `emit::emit`, untouched by the watch
-work). Repack those atlases in meow-tower or refresh the goldens to re-green.
-
 ## Deferred (waiting on a real case)
 
 - **`keepStandalone` allowlist** — only matters if a part ever needs
