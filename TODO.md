@@ -29,6 +29,13 @@ source becomes available (UnityCsReference or decompilation).
 
 ## Deferred (waiting on a real case)
 
+- **TexturePacker spawn overhead** — `texturepacker` boots in ~33 ms
+  (`--version`); a small-atlas pack is ~50 ms total, so spawn/init is ~66%
+  of it (real packing ~17 ms). Worth eliminating *if* it ever mattered for a
+  frequently-repacking watch — but TexturePacker is a closed CLI with no
+  public lib/SDK to FFI into, and no server/warm-process mode. 50 ms/pack is
+  imperceptible for artist-facing repacks; revisit only if CodeAndWeb ships a
+  library or daemon interface.
 - **`keepStandalone` allowlist** — only matters if a part ever needs
   both standalone *and* combined emission. Otherwise just rename in
   TexturePacker. No corpus pressure today.

@@ -1,0 +1,20 @@
+[package]
+name = "unity-sprite-author-pack"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "usa_pack"
+path = "src/lib.rs"
+
+# Pack orchestration shared by the CLI one-shot and the boxcat bridge's
+# Editor-hosted watch: 1×1 `Color_*.png` synthesis (`color_synth` + `color_png`)
+# and the TexturePackerCLI shell-out. `tps-core` is a GIT dep on purpose so each
+# consuming workspace's root `[patch]` collapses it to that workspace's vendored
+# copy — a path dep would duplicate-package across vendored workspaces.
+[dependencies]
+unity-sprite-author = { path = "../core" }
+tps-core = { git = "https://github.com/studio-boxcat/tps.git" }
+
+[dev-dependencies]

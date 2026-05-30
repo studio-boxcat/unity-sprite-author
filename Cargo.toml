@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/cli", "crates/editor"]
+members = ["crates/core", "crates/cli", "crates/editor", "crates/pack"]
 # Vendored submodules (unity-assetdb, tps, unity-watch) are their own Cargo
 # workspaces/crates. Without this, Cargo adopts their nested crates into THIS
 # workspace and their `*.workspace = true` inheritance fails against our root
@@ -15,6 +15,12 @@ exclude = ["vendor"]
 # dep declared in vendor/unity-assetdb/Cargo.toml.
 [patch."https://github.com/studio-boxcat/unity-watch.git"]
 unity-watch = { path = "vendor/unity-watch" }
+
+# `crates/pack` git-deps `tps-core` (so the boxcat bridge, which vendors its own
+# `tps`, can [patch] it to *its* copy). Redirect it here to our `vendor/tps`,
+# unifying with `crates/cli`'s direct path dep.
+[patch."https://github.com/studio-boxcat/tps.git"]
+tps-core = { path = "vendor/tps/crates/core" }
 
 [profile.release]
 panic = "unwind"

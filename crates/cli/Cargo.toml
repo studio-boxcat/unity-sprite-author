@@ -8,17 +8,13 @@ publish = false
 name = "unity-sprite-author"
 path = "src/main.rs"
 
-# `unity-assetdb` mints `.tps.meta` / `.png.meta` on first-time packs outside
-# the Unity Editor. `default-features = false` skips its `cli` feature so we
-# don't transitively pull clap. Vendored as a git submodule under `vendor/`.
-# (It git-deps `unity-watch`, redirected to vendor/unity-watch by the root
-# Cargo.toml `[patch]`.)
-#
-# `tps-core` is the canonical TexturePacker `.tps` DOM (vendored from the `tps`
-# repo). We use `list_file_lists` for the pre-pack color-PNG synthesis — the
-# rlib keeps its own hand-rolled, single-field spriteScale extractor (per
-# CLAUDE.md's "library deps held to serde" policy on `core`).
+# `unity-sprite-author-pack` is the shared pre-pack synthesis + TexturePackerCLI
+# shell-out (also used by the boxcat bridge). `unity-assetdb` mints
+# `.tps.meta` / `.png.meta` on first-time packs outside the Unity Editor
+# (`default-features = false` skips its `cli` feature so we don't transitively
+# pull clap; it git-deps `unity-watch`, redirected to vendor/unity-watch by the
+# root `[patch]`).
 [dependencies]
 unity-sprite-author = { path = "../core" }
+unity-sprite-author-pack = { path = "../pack" }
 unity-assetdb = { path = "../../vendor/unity-assetdb", default-features = false }
-tps-core = { path = "../../vendor/tps/crates/core" }

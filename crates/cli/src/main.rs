@@ -10,11 +10,9 @@
 //! orchestrator that mirrors what `TPSheetPostprocessor.cs` does inside
 //! Unity.
 
-mod color_png;
-mod color_synth;
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 use std::time::Duration;
 
 use unity_assetdb::register::{self, ImporterKind, RegisterOptions};
@@ -187,11 +185,11 @@ fn author_tps(
     // by a sibling `.tps.fab.json`. No-op when no fab.json exists or all
     // referenced swatches are already on disk.
     if !skip_pack {
-        let synth = color_synth::synthesize_for_tps(&tps_path)?;
+        let synth = usa_pack::synthesize_for_tps(&tps_path)?;
         for p in &synth.written_paths {
             eprintln!("synth color: {}", rel(p, &tps_dir));
         }
-        pack(texturepacker, &tps_path)?;
+        usa_pack::pack(texturepacker, &tps_path)?;
     }
     if !tpsheet_path.exists() {
         return Err(format!(
@@ -244,23 +242,6 @@ fn author_tps(
     })?;
 
     Ok((out, project_root))
-}
-
-fn pack(cmd: &str, tps: &Path) -> Result<(), String> {
-    let dir = tps.parent().expect("tps has parent (canonicalized)");
-    let name = tps.file_name().expect("tps has filename");
-    let status = Command::new(cmd)
-        .arg(name)
-        .current_dir(dir)
-        .status()
-        .map_err(|e| format!("spawn `{cmd} {}`: {e}", name.to_string_lossy()))?;
-    if !status.success() {
-        return Err(format!(
-            "`{cmd} {}` exited with {status}",
-            name.to_string_lossy()
-        ));
-    }
-    Ok(())
 }
 
 fn ensure_meta(
