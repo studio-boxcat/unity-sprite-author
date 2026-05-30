@@ -1,15 +1,18 @@
 # TODO
 
-> **Related:** [[CLAUDE.md]], [[BENCHMARKS.md]], [[fab.md]], [[sma-migration.md]], [[unity-probes.md]]
+> **Related:** [[CLAUDE.md]], [[BENCHMARKS.md]], [[fab.md]], [[byte-format.md]]
 
 Deferred items surfaced during planning.
 
 ## Unity-side probes (blocked on Editor in the loop)
 
-Four byte-exactness questions need data from inside the Unity Editor:
-GUID preservation bootstrap, `settingsRaw` bit layout, `m_AtlasRD` vs
-`m_RD` divergence under SpriteAtlas, and a non-1.0 `spriteScale` fixture
-refresh. Procedures + result formats live in [[unity-probes.md]].
+Four byte-exactness questions need data from inside the Unity Editor, none
+runtime-visible: GUID-preservation bootstrap, `settingsRaw` bit layout,
+`m_AtlasRD` vs `m_RD` divergence under SpriteAtlas, and a non-1.0
+`spriteScale` fixture refresh (the Orgel `Cake__DecoLeft` golden carries a
+drifted `spriteScale`, so `golden_parity` skips its `m_PixelsToUnits`). Each
+needs a one-off Editor capture to resolve; until then emit stays on the
+corpus-verified formula.
 
 ## Sub-millipixel `m_Offset.y` drift
 
@@ -34,3 +37,12 @@ source becomes available (UnityCsReference or decompilation).
   (`combine::polygon_uv_center`). Mirrors `SolidUVCache.Get` byte-exact.
   Switch to bilinear-over-rect only when a non-solid polygon part
   appears in authoring.
+- **SMA polygon end-to-end golden** — the polygon branch of `mesh_emit`
+  (`Graphic::Polygon` → `MeshRendererContent::Polygon`) is pinned only by
+  `mesh_emit::tests::build_mesh_polygon_*` unit math; the `Box_29_Ghost`
+  golden was captured pre-port and doesn't exercise it. Capture a real
+  polygon-bearing SMA fixture when one is available.
+- **Off-origin CSA root drifts ~1 ULP/vertex** — fab fixtures whose CSA
+  root sits off-origin diverge ~1 ULP per vertex from Unity's emit (the
+  retired Silloutte3 fixture). Pin the root at origin when authoring, or
+  re-introduce the FMA-fused `compute_m13_axis` path it exercised.

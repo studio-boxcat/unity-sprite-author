@@ -1,6 +1,6 @@
 # `.tps.fab.json` — Unified manifest for fabricated sprites + SMA meshes
 
-> **Related:** [[CLAUDE.md]], [[TODO.md]], [[sma-migration.md]]
+> **Related:** [[CLAUDE.md]], [[TODO.md]], [[byte-format.md]]
 
 The `.tps.fab.json` sidecar declares **fabricated** sprites (combined from
 multiple atlas parts) and **SMA meshes** (multi-mesh `.asset` outputs)

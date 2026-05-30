@@ -1,6 +1,6 @@
 // SpriteMeshAuthor (SMA) byte-exact Mesh `.asset` emit.
 //
-// > **Related:** [[sma-migration.md]], [[CLAUDE.md]]
+// > **Related:** [[fab.md]], [[CLAUDE.md]]
 //
 // Implementation in progress. Currently:
 // - `MeshAsset` struct + builder

@@ -16,8 +16,8 @@ of 62 sprites under the 1204 orgel-event hierarchy).
   `.asset`'s `m_PixelsToUnits == 80` (matching the test's `ATLAS_PPU`)
   and asserts byte-exact equality. Eight sprites pass; the other 54
   carry a non-1 `spriteScale` in the current `Orgel.tps` and are skipped
-  — see `docs/unity-probes.md#d-non-10-spritescale-fixture-refresh` for
-  the refresh procedure.
+  — refreshing them needs an in-Unity capture (tracked under "Unity-side
+  probes" in `TODO.md`).
 - `src/render_data.rs` and `src/emit.rs` have inline `cake_decoleft_*`
   tests that pin the typelessdata / index-buffer / full-asset byte
   patterns against this fixture's `Cake__DecoLeft.asset`.

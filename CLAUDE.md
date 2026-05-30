@@ -1,6 +1,6 @@
 # unity-sprite-author
 
-> **Related:** [[TODO.md]], [[BENCHMARKS.md]], [[fab.md]], [[sma-migration.md]], [[unity-probes.md]]
+> **Related:** [[TODO.md]], [[BENCHMARKS.md]], [[fab.md]], [[byte-format.md]]
 
 Rust `rlib` consumed by meow-tower via the shared **BoxcatBridge** cdylib (see `Packages/com.boxcat.libs/Native~/bridge/` in `meow-tower`). Authors Unity Sprite `.asset` files byte-exactly from a TexturePacker `.tpsheet` + `.tps` + atlas `.png`.
 
@@ -42,7 +42,7 @@ TexturePacker emits `Foo.tps` + `Foo.tpsheet` + `Foo.png` into `Assets/`. The Un
 
 ## Public Rust API
 
-The primary entry point is `pipeline::generate`. The crate has no FFI of its own — the BoxcatBridge cdylib in meow-tower wraps this fn behind `bxc_sprite_author_generate` and handles C# marshalling. `pipeline::StandardLayout::from_tpsheet` / `from_tps` is a small helper for callers (the bridge and the CLI) that need to derive `tpsheet` / `tps` / `png` / `sprite_dir` from a single stem path under the standard `<parent>/<stem>.ext` convention. `meta::read_tps_prefix` is the parallel helper for sourcing the `_prefix` default from the `<path>.meta` ScriptedImporter block (called on `.tpsheet` → `.tpsheet.meta`, or `.tps` → `.tps.meta` for the legacy importer) — shared so the bridge and CLI agree on the on-disk shape.
+The primary entry point is `pipeline::generate`. The crate has no FFI of its own — the BoxcatBridge cdylib in meow-tower wraps this fn behind `bxc_sprite_author_generate` and handles C# marshalling. `pipeline::StandardLayout::from_tpsheet` / `from_tps` is a small helper for callers (the bridge and the CLI) that need to derive `tpsheet` / `tps` / `png` / `sprite_dir` from a single stem path under the standard `<parent>/<stem>.ext` convention. `meta::read_tps_prefix` is the parallel helper for sourcing the `_prefix` default from the `.tpsheet.meta` (`TPSheetImporter`) block — shared so the bridge and CLI agree on the on-disk shape.
 
 ```rust
 use std::path::Path;
@@ -89,7 +89,7 @@ unity-sprite-author watch                     # repack every .tps under Assets/ 
 unity-sprite-author watch path/in/project     # any path in the project (resolves the worktree root)
 ```
 
-`--prefix` overrides the meta-derived default (prefix falls back to `_prefix` from the `.tpsheet.meta`/`.tps.meta`, else `""`). PPU is read from `<atlas>.png.meta` inside `generate` — there is no `--ppu` flag. Default `--sprite-dir` follows `pipeline::StandardLayout` (`<tps-parent>/<tps-stem>/`), shared with the meow-tower bridge. `.tps.fab.json` / `.tps.mesh.json` sidecars are picked up automatically since the bin just forwards `tps_path` to `pipeline::generate` — no extra flags.
+`--prefix` overrides the meta-derived default (`_prefix` from the `.tpsheet.meta`, else `""`). PPU is read from `<atlas>.png.meta` inside `generate` — there is no `--ppu` flag. Default `--sprite-dir` follows `pipeline::StandardLayout` (`<tps-parent>/<tps-stem>/`), shared with the meow-tower bridge. `.tps.fab.json` / `.tps.mesh.json` sidecars are picked up automatically since the bin just forwards `tps_path` to `pipeline::generate` — no extra flags.
 
 `watch` is the inverse trigger of Unity's importer: it watches every `.tps` under `Assets/` **and the source folders/files each one references** (TexturePacker `fileLists`), and on change re-packs the affected atlas (TexturePackerCLI) + re-authors. Unity's `TPSheetImporter` independently handles the regenerated `.tpsheet → .asset`; the `.hash` skip keeps the two from duplicating work. It holds one watchman **subscription** (push, not polling) via the shared `unity-watch` crate ([[#layout]]) — `init_socket_env` pins `WATCHMAN_SOCK` so each connect skips the `get-sockname` fork, and the daemon coalesces a single OS-level watch across this and unity-assetdb's own refresh, so running both is free. The first (fresh-instance) push only (re)scans the `.tps` set and waits — it does **not** repack everything (use the one-shot form for that). Project root is resolved from the cwd / `[project-dir]` up to the nearest `ProjectSettings/`, so it watches the active `wt go` worktree's own root. Requires `watchman` (`brew install watchman`).
 
@@ -97,71 +97,15 @@ unity-sprite-author watch path/in/project     # any path in the project (resolve
 
 `StartAssetEditing` is **not** wrapped around the call — Rust writes raw bytes that the editing batch wouldn't observe anyway. The canonical C# integration is `TPSheetImporter` (`ScriptedImporter`) calling `BoxcatBridge.SpriteAuthorGenerate` on `.tpsheet` import.
 
-## GUID policy
+## Byte format
 
-- For sprite `<name>` in output dir `<dir>`:
-  - If `<dir>/<prefix><name>.asset.meta` exists → read existing `guid`, preserve. Detect the file's shape (Legacy189 vs Modern186, `mainObjectFileID` value) and rewrite in the same shape so on-disk bytes don't churn just because we touched the file. The `guid` and detected shape are the only preserved values. Hand-edits to other fields are not supported.
-  - Else → mint random 128-bit GUID, write a fresh `.asset.meta` in the Modern186 shape with `mainObjectFileID: 21300000`.
-- `m_RenderDataKey` in the `.asset` body uses the SAME GUID as the sibling `.asset.meta` (verified against `Cake__DecoLeft.asset.meta` corpus, 3645 files: `m_RenderDataKey` always equals own meta GUID).
-- Renames must be done in tpsheet AND Unity at the same time by the developer. This design does not detect renames automatically.
-
-### `.asset.meta` shape
-
-Two trailing-space variants exist in the corpus and one varying field:
-
-- **Legacy189** (older Unity emit): trailing space after `userData:`, `assetBundleName:`, `assetBundleVariant:`. 189 bytes.
-- **Modern186** (current Unity emit): no trailing spaces. 186 bytes.
-- **`mainObjectFileID`**: usually `21300000` (Sprite class fileID). Some incompletely-imported sprites carry `0` instead.
-
-To avoid byte churn on existing metas the pipeline preserves both axes when present (`meta::detect_shape`). Fresh mints use Modern186 + `21300000`. Golden tests stage the committed `.asset.meta` before invoking the pipeline so the preserve branch is exercised; the mint branch is unit-tested via `mint_guid_from(lo, hi)` with fixed entropy (no `rand` crate).
-
-## Reference: tpsheet → Sprite `.asset` field map
-
-tpsheet line format (semicolon-separated):
-
-```
-<name>;<x>;<y>;<w>;<h>; <pivotX>;<pivotY>; <bL>;<bR>;<bT>;<bB>;
-  <vCount>;<v0x>;<v0y>;...;
-  <triCount>;<t0a>;<t0b>;<t0c>;...
-```
-
-| Sprite `.asset` field          | Source                                                              |
-| ------------------------------ | ------------------------------------------------------------------- |
-| `m_Rect`                       | tpsheet rect                                                        |
-| `textureRect`                  | always tpsheet rect. If an existing `.asset` carries a divergent `textureRect.{w,h}` (only seen on legacy Tight + `spriteMode: Multiple` outputs), `generate()` emits a non-fatal warning via `GenerateOutput.warnings` (also echoed to stderr) and overwrites with the current tpsheet's rect. Current tpsheet is authoritative. |
-| `m_Pivot`                      | tpsheet pivot                                                       |
-| `m_Border`                     | tpsheet borders (LRTB)                                              |
-| `m_PixelsToUnits`              | `ppu / spriteScale` (PPU from importer; spriteScale from `.tps`)    |
-| `_typelessdata` pos (stream 0) | `(px − w·pivotX)/ppu`, `(py − h·pivotY)/ppu`, `0` — vec3 f32 LE      |
-| `_typelessdata` uv (stream 1)  | `(rect.x + px)/atlasW`, `(rect.y + py)/atlasH` — vec2 f32 LE         |
-| `_typelessdata` layout         | stream 0 packed, padded up to 16-byte boundary, then stream 1       |
-| `m_DataSize`                   | `align16(vCount·12) + vCount·8`                                     |
-| `m_IndexBuffer`                | tpsheet triangles, u16 LE                                           |
-| `uvTransform`                  | `(ppu, rect.x + w·pivotX, ppu, rect.y + h·pivotY)`                  |
-| `settingsRaw`                  | constant `192` (0xC0). No emit-side guard — divergence surfaces via the e2e byte-mismatch.|
-| `texture` GUID                 | from atlas `.png.meta`                                              |
-| `m_RenderDataKey` GUID         | own `.asset.meta` GUID (preserve or mint per policy above)          |
-
-Reference fixture for parity testing: `tests/golden/orgel/` — a self-contained snapshot of `Orgel.{tpsheet, tps, png.meta}` + the per-sprite `.asset` / `.asset.meta` corpus (`Cake__DecoLeft.asset` is the canonical example). The matching meow-tower-side files live under `meow-tower/Assets/21_Collections/OrgelContents/1204/Orgel/`, but the `.tpsheet` there is ephemeral — `pipeline::generate` deletes it on success, so it's only present mid-import.
+The byte-exactness reference — GUID policy, the two `.asset.meta` shape variants, the tpsheet→`.asset` field map, and the corpus-audit traps — lives in [[byte-format.md]]. Parity fixture: `tests/golden/orgel/` (`Cake__DecoLeft.asset` is the canonical example).
 
 ## Reference Implementations
 
 C# integration in `meow-tower` lives under `Packages/com.boxcat.libs/{TexturePacker,Native,Native~/bridge}/`. Entry chain: `TPSheetImporter.OnImportAsset` → `BoxcatBridge.SpriteAuthorGenerate` → `bxc_sprite_author_generate` (cdylib) → `pipeline::generate`. `TPSheetImporter` (`ScriptedImporter`) holds the `_prefix` on `.tpsheet`.
 
 TS prior art at `prefab-saloon/src/lib/sprite/` (`tpsheet-parser.ts`, `generator.ts`) was the byte-exact reference for `m_IndexBuffer` + mesh encoding during the initial port; goldens have since taken over that role. The sibling `prefab-saloon/src/lib/prefab/{parser,serializer,templates}.ts` is intentionally *not* ported — we don't read `.asset` files and the YAML emit must be Unity-flavor specific from day one.
-
-## Known byte-exactness traps (from corpus audit)
-
-- `m_PackingTag: ` and `m_SpriteID: ` end with a literal trailing space before LF.
-- File ends `m_SpriteID: \n` with single LF, no trailing blank line.
-- `_typelessdata` is one unbroken hex line, never folded.
-- `m_RenderDataKey` is the only non-flow nested mapping; everything else is flow `{x: ..., y: ...}`.
-- `atlasRectOffset: {x: -1, y: -1}` — Unity's sentinel for non-SpriteAtlas sprites. Constant; applies uniformly to TexturePacker-imported sprites AND to `SpriteFactory.CreateFromMesh` outputs (verified against the Silloutte1 golden). The earlier "fabricated ships (0, 0)" claim was wrong — emit doesn't branch on `SpriteSource` here.
-- `m_Border` field order is `{x: L, y: B, z: R, w: T}` per Unity `Sprite.cs`. Verified empirically: 50/51 non-zero-border sprites in the meow-tower corpus emit byte-exactly under the current formula (the lone outlier is .tps drift — golden has all-zero borders, current tpsheet has non-zero). The hard-fail guard was retired once this was proven.
-- Float formatting must match C# `ToString("R")`. `yaml::float` uses Rust's default `Display`, which matches across the entire golden corpus (93 distinct fractional literals); the round-trip guard lives in `yaml::tests::float_corpus_full_roundtrip` so a future Display divergence surfaces as a unit failure instead of a golden-byte mismatch.
-- `m_AtlasRD == m_RD` for non-SpriteAtlas sprites (verified across the corpus); emit always writes `m_SpriteAtlas: {fileID: 0}` as a constant. The "diverge under SpriteAtlas" hypothesis lives as a deferred probe in [[unity-probes.md#c-m_atlasrd-vs-m_rd-divergence-under-spriteatlas]] — guard wiring waits on a fixture.
-- LF line endings; pin via `.gitattributes` (`*.asset binary`, `*.asset.meta binary`).
-- `mainObjectFileID: 21300000` in every sprite `.asset.meta` (Unity class ID 213). Constant, not parameterized.
 
 ## Tech
 

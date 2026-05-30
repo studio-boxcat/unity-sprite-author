@@ -10,7 +10,7 @@
 // [[fab.md]]. The "why this collapse exists" rationale is in
 // [[fab.md#per-part-transform]] — don't duplicate here.
 //
-// > **Related:** [[fab.md]], [[sma-migration.md]]
+// > **Related:** [[fab.md]]
 
 use std::collections::HashSet;
 use std::fmt;

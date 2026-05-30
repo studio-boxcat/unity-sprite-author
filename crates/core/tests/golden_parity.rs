@@ -6,8 +6,8 @@
 //
 // The other 54 of 62 Orgel sprites have `m_PixelsToUnits != 80`, meaning
 // the `.tps` was edited after the `.asset` goldens were emitted by Unity.
-// Validating those requires regenerating the goldens — procedure lives in
-// [`docs/unity-probes.md#d-non-10-spritescale-fixture-refresh`].
+// Validating those requires regenerating the goldens from inside Unity —
+// tracked under "Unity-side probes" in TODO.md.
 
 use std::fs;
 use std::path::Path;
