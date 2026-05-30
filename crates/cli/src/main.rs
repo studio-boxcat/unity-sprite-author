@@ -33,8 +33,6 @@ options:
                         <tps-parent>/<tps-stem>/.
   --skip-pack           Don't run TexturePackerCLI; assume .tpsheet
                         and .png are already up to date.
-  --texturepacker <CMD> TexturePackerCLI command. Default: $TEXTUREPACKER,
-                        else the platform's canonical install path.
   -h, --help            Show this help.
 ";
 
@@ -65,7 +63,6 @@ struct Cli {
     prefix: Option<String>,
     sprite_dir: Option<PathBuf>,
     skip_pack: bool,
-    texturepacker: String,
     help: bool,
 }
 
@@ -86,7 +83,6 @@ impl Cli {
         let mut prefix: Option<String> = None;
         let mut sprite_dir: Option<PathBuf> = None;
         let mut skip_pack = false;
-        let mut texturepacker = usa_pack::texturepacker_cmd();
         let mut help = false;
         let mut iter = args.iter();
         while let Some(arg) = iter.next() {
@@ -96,9 +92,6 @@ impl Cli {
                 "--prefix" => prefix = Some(take_value(&mut iter, "--prefix")?.clone()),
                 "--sprite-dir" => {
                     sprite_dir = Some(PathBuf::from(take_value(&mut iter, "--sprite-dir")?));
-                }
-                "--texturepacker" => {
-                    texturepacker = take_value(&mut iter, "--texturepacker")?.clone();
                 }
                 s if s.starts_with("--") => return Err(format!("unknown flag: {s}")),
                 _ => {
@@ -115,7 +108,6 @@ impl Cli {
                 prefix,
                 sprite_dir,
                 skip_pack,
-                texturepacker,
                 help: true,
             });
         }
@@ -124,7 +116,6 @@ impl Cli {
             prefix,
             sprite_dir,
             skip_pack,
-            texturepacker,
             help: false,
         })
     }
@@ -133,7 +124,6 @@ impl Cli {
 fn run(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let (out, project_root) = author_tps(
         &cli.tps_path,
-        &cli.texturepacker,
         cli.skip_pack,
         cli.prefix.as_deref(),
         cli.sprite_dir.as_deref(),
@@ -163,7 +153,6 @@ fn run(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
 /// relative-path logging).
 fn author_tps(
     tps_path: &Path,
-    texturepacker: &str,
     skip_pack: bool,
     prefix_override: Option<&str>,
     sprite_dir_override: Option<&Path>,
@@ -190,7 +179,7 @@ fn author_tps(
         for p in &synth.written_paths {
             eprintln!("synth color: {}", rel(p, &tps_dir));
         }
-        usa_pack::pack(texturepacker, &tps_path)?;
+        usa_pack::pack(&tps_path)?;
     }
     if !tpsheet_path.exists() {
         return Err(format!(

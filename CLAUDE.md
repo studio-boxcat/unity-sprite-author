@@ -72,7 +72,7 @@ For non-pipeline consumers (the GUI editor today), `combine::build_combined_with
 
 ### CLI
 
-`unity-sprite-author <atlas.tps>` packs the `.tps` with TexturePackerCLI (shells out to `texturepacker`), mints any missing `.tps.meta` / `.png.meta` via the `unity-assetdb` `register` API, then runs `pipeline::generate`. Intended for one-shot regens outside the Unity Editor — Unity must NOT be running, same caveat as `scripts/regen-corpus.sh`.
+`unity-sprite-author <atlas.tps>` packs the `.tps` with TexturePackerCLI (at the platform install path — `crates/pack`'s `TEXTUREPACKER_CMD`, the single source shared by CLI / editor / bridge; no env/flag override), mints any missing `.tps.meta` / `.png.meta` via the `unity-assetdb` `register` API, then runs `pipeline::generate`. Intended for one-shot regens outside the Unity Editor — Unity must NOT be running, same caveat as `scripts/regen-corpus.sh`.
 
 ```sh
 just install                                  # builds release, symlinks to ~/.local/bin/

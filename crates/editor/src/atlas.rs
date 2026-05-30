@@ -46,10 +46,10 @@ pub enum AtlasError {
     TpsheetParse(tpsheet::ParseError),
     PngDecode(image::ImageError),
     PngIo(std::io::Error),
-    /// TexturePackerCLI not in PATH (or whatever `cmd` was used).
-    PackSpawn { cmd: String, err: std::io::Error },
+    /// TexturePackerCLI couldn't be spawned (not installed at the expected path).
+    PackSpawn(std::io::Error),
     /// TexturePackerCLI exited non-zero.
-    PackExit { cmd: String, status: std::process::ExitStatus },
+    PackExit(std::process::ExitStatus),
 }
 
 impl std::fmt::Display for AtlasError {
@@ -66,11 +66,14 @@ impl std::fmt::Display for AtlasError {
             Self::TpsheetParse(e) => write!(f, ".tpsheet parse: {e:?}"),
             Self::PngDecode(e) => write!(f, ".png decode: {e}"),
             Self::PngIo(e) => write!(f, ".png read: {e}"),
-            Self::PackSpawn { cmd, err } => write!(
+            Self::PackSpawn(err) => write!(
                 f,
-                "couldn't run `{cmd}`: {err} — install TexturePackerCLI or set TEXTUREPACKER",
+                "couldn't run `{}`: {err} — install TexturePacker",
+                usa_pack::TEXTUREPACKER_CMD,
             ),
-            Self::PackExit { cmd, status } => write!(f, "`{cmd}` exited with {status}"),
+            Self::PackExit(status) => {
+                write!(f, "`{}` exited with {status}", usa_pack::TEXTUREPACKER_CMD)
+            }
         }
     }
 }
@@ -330,20 +333,19 @@ mod tests {
     }
 }
 
-/// Shell out to TexturePackerCLI in the `.tps`'s parent dir. Command resolved
-/// by `usa_pack::texturepacker_cmd` (`$TEXTUREPACKER`, else the platform's
-/// canonical install path) — the same source the CLI and bridge watch use.
+/// Shell out to TexturePackerCLI (`usa_pack::TEXTUREPACKER_CMD` — the platform
+/// install path, same source the CLI and bridge watch use) in the `.tps`'s
+/// parent dir.
 fn run_texturepacker(tps_path: &Path) -> Result<(), AtlasError> {
-    let cmd = usa_pack::texturepacker_cmd();
     let dir = tps_path.parent().unwrap_or(Path::new("."));
     let name = tps_path.file_name().unwrap_or_default();
-    let status = Command::new(&cmd)
+    let status = Command::new(usa_pack::TEXTUREPACKER_CMD)
         .arg(name)
         .current_dir(dir)
         .status()
-        .map_err(|e| AtlasError::PackSpawn { cmd: cmd.clone(), err: e })?;
+        .map_err(AtlasError::PackSpawn)?;
     if !status.success() {
-        return Err(AtlasError::PackExit { cmd, status });
+        return Err(AtlasError::PackExit(status));
     }
     Ok(())
 }
