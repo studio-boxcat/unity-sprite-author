@@ -36,8 +36,8 @@ usage: unity-sprite-author <atlas.tps> [options]
   `unity-sprite-author watch --help`.
 
 options:
-  --prefix <STR>        Sprite filename prefix. Default: TPSImporter
-                        `_prefix` from .tps.meta if present, else \"\".
+  --prefix <STR>        Sprite filename prefix. Default: `_prefix` from
+                        the `.tpsheet.meta` (TPSheetImporter), else \"\".
   --sprite-dir <DIR>    Output dir for sprite .asset files. Default:
                         <tps-parent>/<tps-stem>/.
   --skip-pack           Don't run TexturePackerCLI; assume .tpsheet
@@ -237,11 +237,8 @@ pub(crate) fn author_tps(
 
     let prefix = match prefix_override {
         Some(p) => p.to_string(),
-        // TPSheetImporter stores _prefix in .tpsheet.meta; fall back to
-        // .tps.meta (TPSImporter, legacy) for projects mid-migration.
-        None => read_tps_prefix(&tpsheet_path)
-            .or_else(|| read_tps_prefix(&tps_path))
-            .unwrap_or_default(),
+        // _prefix lives on the `.tpsheet.meta` (TPSheetImporter).
+        None => read_tps_prefix(&tpsheet_path).unwrap_or_default(),
     };
 
     std::fs::create_dir_all(&sprite_dir)

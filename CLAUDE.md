@@ -42,7 +42,7 @@ TexturePacker emits `Foo.tps` + `Foo.tpsheet` + `Foo.png` into `Assets/`. The Un
 
 ## Public Rust API
 
-The primary entry point is `pipeline::generate`. The crate has no FFI of its own — the BoxcatBridge cdylib in meow-tower wraps this fn behind `bxc_sprite_author_generate` and handles C# marshalling. `pipeline::StandardLayout::from_tpsheet` / `from_tps` is a small helper for callers (the bridge and the CLI) that need to derive `tpsheet` / `tps` / `png` / `sprite_dir` from a single stem path under the standard `<parent>/<stem>.ext` convention. `meta::read_tps_prefix` is the parallel helper for sourcing the `_prefix` default from a `.tps.meta` ScriptedImporter block — shared so the bridge and CLI agree on the on-disk shape.
+The primary entry point is `pipeline::generate`. The crate has no FFI of its own — the BoxcatBridge cdylib in meow-tower wraps this fn behind `bxc_sprite_author_generate` and handles C# marshalling. `pipeline::StandardLayout::from_tpsheet` / `from_tps` is a small helper for callers (the bridge and the CLI) that need to derive `tpsheet` / `tps` / `png` / `sprite_dir` from a single stem path under the standard `<parent>/<stem>.ext` convention. `meta::read_tps_prefix` is the parallel helper for sourcing the `_prefix` default from the `<path>.meta` ScriptedImporter block (called on `.tpsheet` → `.tpsheet.meta`, or `.tps` → `.tps.meta` for the legacy importer) — shared so the bridge and CLI agree on the on-disk shape.
 
 ```rust
 use std::path::Path;
@@ -60,6 +60,8 @@ let result = pipeline::generate(&pipeline::GenerateInputs {
 //                       (caller invokes AssetDatabase.ImportAsset on each)
 // result.deleted_paths — pruned .asset paths
 ```
+
+`pipeline::build` is `generate`'s phase 1 without the commit: it returns a `BuildPlan` (the in-memory `(path, bytes)` writes — final combined sprites/meshes included — plus the would-be `deleted_paths` and `warnings`) and touches nothing on disk. Used to diff the would-be output against committed goldens (the `e2e_meow_tower` corpus test drives it) or to dry-run; `generate` runs the same compute then commits.
 
 For non-pipeline consumers (the GUI editor today), `combine::build_combined_with_ranges` returns the same `CombinedMesh` plus per-part `[start, end)` index ranges into the merged vertex arrays — useful for picking, outlining, and vertex-color overrides without re-running the build per part. `build_combined` is a one-line wrapper that discards the ranges.
 
@@ -183,4 +185,4 @@ Vendored as git submodules (path deps from `crates/cli`; each is its own Cargo w
 - **`vendor/tps/`** ([studio-boxcat/tps](https://github.com/studio-boxcat/tps)) — the `tps-core` TexturePacker `.tps` DOM (`list_file_lists`, sprite settings).
 - **`vendor/unity-watch/`** ([studio-boxcat/unity-watch](https://github.com/studio-boxcat/unity-watch)) — standalone shared Watchman wire layer (`since` / `enumerate` / `subscribe` + `init_socket_env`, all driven by a caller-supplied dir/suffix `Filter`). Consumed by `crates/cli` (path) **and**, as a git dep, by the vendored unity-assetdb; the root `Cargo.toml` `[patch]` redirects that git URL to this one submodule so both resolve to a single editable copy. Also consumed by unity-solution-generator.
 
-Supporting: `docs/` (fab schema, SMA migration map, Unity-Editor probe runbooks), `scripts/` (corpus regen, one-shot `.tpsheet.meta` → `.tps.meta` migration), `justfile` (`just install` → `~/.local/bin/`).
+Supporting: `docs/` (fab schema, SMA migration map, Unity-Editor probe runbooks), `scripts/` (corpus regen, authoring teardown), `justfile` (`just install` → `~/.local/bin/`).

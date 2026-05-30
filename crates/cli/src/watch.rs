@@ -109,8 +109,11 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             match watcher.next() {
                 // The first push after subscribing is the fresh-instance
                 // snapshot (all current matches). Re-scan the .tps set but
-                // don't repack everything — a watch start isn't a rebuild
-                // (use the one-shot CLI for that).
+                // don't repack everything — a watch start isn't a rebuild.
+                // (The `.hash` skip would make a redundant *generate* cheap,
+                // but `author_tps` always re-packs, so authoring every atlas
+                // here would spawn TexturePackerCLI per atlas. Use the
+                // one-shot CLI for a full catch-up.)
                 Ok(Change::Files { is_fresh: true, .. }) => entries = discover(&project_root),
                 Ok(Change::Files { paths, is_fresh: false }) => {
                     if !paths.is_empty() {
@@ -290,5 +293,81 @@ impl Opts {
             }
         }
         Ok(Self { project_dir, texturepacker, help })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(refs: &[&str]) -> TpsEntry {
+        TpsEntry {
+            tps: PathBuf::from("Assets/Atlas.tps"),
+            refs: refs.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn matches_exact_ref() {
+        // Own `.tps` and an exact source-file ref both match by equality.
+        let e = entry(&["Assets/Atlas.tps", "Assets/src/icon.png"]);
+        assert!(e.matches("Assets/Atlas.tps"));
+        assert!(e.matches("Assets/src/icon.png"));
+    }
+
+    #[test]
+    fn matches_dir_prefix() {
+        // A source-dir ref matches the dir itself and anything beneath it.
+        let e = entry(&["Assets/src"]);
+        assert!(e.matches("Assets/src"));
+        assert!(e.matches("Assets/src/a.png"));
+        assert!(e.matches("Assets/src/sub/b.png"));
+    }
+
+    #[test]
+    fn matches_rejects_non_prefix() {
+        let e = entry(&["Assets/src"]);
+        assert!(!e.matches("Assets/src2/a.png")); // sibling dir, not under src/
+        assert!(!e.matches("Assets/other.png"));
+        // A `.tps.meta` hint must not match the `.tps` ref (exact + `/` only).
+        assert!(!entry(&["Assets/Atlas.tps"]).matches("Assets/Atlas.tps.meta"));
+    }
+
+    #[test]
+    fn relpath_strips_root_or_returns_none() {
+        let root = Path::new("/proj");
+        assert_eq!(
+            relpath(root, Path::new("/proj/Assets/x.png")).as_deref(),
+            Some("Assets/x.png"),
+        );
+        assert_eq!(relpath(root, Path::new("/proj")).as_deref(), Some("")); // root itself
+        assert_eq!(relpath(root, Path::new("/other/x.png")), None); // outside the root
+    }
+
+    fn args(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn opts_parse_defaults() {
+        let o = Opts::parse(&[]).unwrap();
+        assert!(o.project_dir.is_none());
+        assert_eq!(o.texturepacker, "texturepacker");
+        assert!(!o.help);
+    }
+
+    #[test]
+    fn opts_parse_positional_and_flags() {
+        let o = Opts::parse(&args(&["/proj", "--texturepacker", "tp"])).unwrap();
+        assert_eq!(o.project_dir, Some(PathBuf::from("/proj")));
+        assert_eq!(o.texturepacker, "tp");
+        assert!(Opts::parse(&args(&["-h"])).unwrap().help);
+    }
+
+    #[test]
+    fn opts_parse_errors() {
+        assert!(Opts::parse(&args(&["--nope"])).is_err()); // unknown flag
+        assert!(Opts::parse(&args(&["--texturepacker"])).is_err()); // missing value
+        assert!(Opts::parse(&args(&["a", "b"])).is_err()); // two positionals
     }
 }

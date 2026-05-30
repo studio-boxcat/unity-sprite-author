@@ -24,29 +24,6 @@ hidden f64 precision, or derives the offset from the mesh AABB not the
 rect. Magnitude is invisible at runtime; revisit only when Unity engine
 source becomes available (UnityCsReference or decompilation).
 
-## TPSheetImporter prefix migration (remaining)
-
-`TPSheetImporter` (`ScriptedImporter` for `.tpsheet`) replaces the old
-`TPSImporter` + `TPSheetPostprocessor` pair. Pipeline retains the
-`.tpsheet` on disk; deduplication handled by Unity's import system
-(importer only fires when file changes). `_prefix` migrated from
-`.tps.meta` to `.tpsheet.meta`.
-
-**Remaining:**
-
-- Run `scripts/migrate-prefix-to-tpsheet.sh` on meow-tower after
-  `.tpsheet` files exist on disk (requires one full TP corpus pack).
-
-## `watch` (CLI) follow-ups
-
-- No unit coverage for `crates/cli/src/watch.rs` — the hint→`.tps` matching
-  (`TpsEntry::matches`), `.tps` discovery, and arg parsing are exercised only
-  manually + via the shared `unity-watch` tests. Add fixtures if the matching
-  logic grows (e.g. absolute `fileLists` entries, symlinked source dirs).
-- Watchman `Fresh` on startup intentionally does **not** repack everything
-  (only re-scans the `.tps` set). If a source changed while `watch` was down,
-  that atlas stays stale until its next edit — run the one-shot CLI to catch up.
-
 ## Deferred (waiting on a real case)
 
 - **`keepStandalone` allowlist** — only matters if a part ever needs

@@ -112,9 +112,8 @@ fn main() {
         let base = tpsheet_path.file_stem().unwrap().to_string_lossy().to_string();
         let png_meta_path = parent.join(format!("{base}.png.meta"));
         let tps_path = parent.join(format!("{base}.tps"));
-        // _prefix moved from .tpsheet.meta to .tps.meta in the TPSImporter
-        // migration (see scripts/migrate-tpsheet-meta.sh + CLAUDE.md).
-        let tps_meta_path = parent.join(format!("{base}.tps.meta"));
+        // _prefix lives on the `.tpsheet.meta` (TPSheetImporter).
+        let tps_meta_path = parent.join(format!("{base}.tpsheet.meta"));
         let sprite_dir = parent.join(&base);
 
         let Ok(png_meta_text) = fs::read_to_string(&png_meta_path) else {

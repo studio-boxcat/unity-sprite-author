@@ -67,8 +67,8 @@ fn is_legacy_texture(meta_text: &str) -> bool {
     texture_type == Some(8) && sprite_mode == Some(2)
 }
 
-fn extract_prefix(tps_meta_path: &Path) -> String {
-    let Ok(text) = fs::read_to_string(tps_meta_path) else {
+fn extract_prefix(meta_path: &Path) -> String {
+    let Ok(text) = fs::read_to_string(meta_path) else {
         return String::new();
     };
     for line in text.lines() {
@@ -146,9 +146,8 @@ fn e2e_meow_tower_byte_exact() {
             tps_path.exists(),
             "missing .tps for {tpsheet_path:?} (stem mismatch?)"
         );
-        // _prefix moved from .tpsheet.meta to .tps.meta in the TPSImporter
-        // migration (see scripts/migrate-tpsheet-meta.sh + CLAUDE.md "Migration").
-        let tps_meta_path = parent.join(format!("{base}.tps.meta"));
+        // _prefix lives on the `.tpsheet.meta` (TPSheetImporter).
+        let tpsheet_meta_path = parent.join(format!("{base}.tpsheet.meta"));
         let sprite_dir = parent.join(&base);
 
         let Ok(png_meta_text) = fs::read_to_string(&png_meta_path) else {
@@ -159,7 +158,7 @@ fn e2e_meow_tower_byte_exact() {
             stats.atlases_legacy += 1;
             continue;
         }
-        let prefix = extract_prefix(&tps_meta_path);
+        let prefix = extract_prefix(&tpsheet_meta_path);
         let png_path = parent.join(format!("{base}.png"));
 
         // Drive the real pipeline (phase 1): this applies the .tps.fab.json /

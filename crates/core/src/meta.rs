@@ -291,13 +291,14 @@ pub fn read_existing_texture_rect_size<P: AsRef<Path>>(asset_path: P) -> Option<
     None
 }
 
-/// Read `_prefix:` out of a `.tps`'s sibling `.tps.meta` ScriptedImporter
-/// block. Returns `None` when the meta is missing, unreadable, the field
-/// is absent (freshly-minted DefaultImporter meta), or the value is empty.
-/// Shared by the CLI and the BoxcatBridge cdylib so prefix-defaulting is
-/// uniform across headless packs and Unity Editor postprocess.
-pub fn read_tps_prefix<P: AsRef<Path>>(tps_path: P) -> Option<String> {
-    let mut meta = tps_path.as_ref().to_path_buf();
+/// Read `_prefix:` out of the `TPSheetImporter` block on a `.tpsheet`'s
+/// sibling `.tpsheet.meta` (pass the `.tpsheet` path; `.meta` is appended).
+/// Returns `None` when the meta is missing, unreadable, the field is absent
+/// (freshly-minted DefaultImporter meta), or the value is empty. Shared by
+/// the CLI and the BoxcatBridge cdylib so prefix-defaulting is uniform across
+/// headless packs and Unity Editor import.
+pub fn read_tps_prefix<P: AsRef<Path>>(path: P) -> Option<String> {
+    let mut meta = path.as_ref().to_path_buf();
     meta.as_mut_os_string().push(".meta");
     let text = fs::read_to_string(&meta).ok()?;
     for line in text.lines() {

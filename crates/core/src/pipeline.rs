@@ -91,7 +91,7 @@ impl StandardLayout {
     }
 
     /// Build from a `.tpsheet` path. Used by the Unity Editor bridge (the
-    /// TPSImporter has already emitted the tpsheet+png).
+    /// `.tpsheet` + `.png` already on disk from TexturePacker).
     pub fn from_tpsheet(tpsheet_path: &Path) -> Result<Self, LayoutError> {
         Self::from_stem_path(tpsheet_path)
     }
@@ -143,8 +143,8 @@ pub struct GenerateInputs<'a> {
     /// orphans (no longer referenced by `tpsheet`) are pruned.
     pub sprite_dir: &'a Path,
     /// Filename prefix prepended to every output sprite (empty string OK).
-    /// Read from `TPSImporter._prefix` on the sibling `.tps.meta` by the
-    /// C# postprocessor, then passed through here.
+    /// Read from `TPSheetImporter._prefix` on the sibling `.tpsheet.meta`,
+    /// then passed through here.
     pub prefix: &'a str,
 }
 
@@ -178,15 +178,10 @@ pub struct GenerateOutput {
 /// leave the original files. See CLAUDE.md "Public Rust API" /
 /// "Invariants" for the two-phase commit semantics.
 pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
-    // ---- SmartUpdate hash check ----------------------------------------
-    // TexturePacker embeds a `$TexturePacker:SmartUpdate:<key>$` line in
-    // the tpsheet header. We store the last-processed key in
-    // `<sprite_dir>/.hash`. If they match, the tpsheet hasn't changed
-    // since the last run — skip the entire pipeline. This makes the two
-    // independent authors of a given tpsheet (this crate's CLI `watch`,
-    // which repacks then generates, and Unity's `TPSheetImporter`)
-    // mutually idempotent: whichever runs second sees a matching key and
-    // short-circuits to an empty result.
+    // SmartUpdate hash check: skip the whole pipeline when the tpsheet's
+    // `$TexturePacker:SmartUpdate:<key>$` still matches `<sprite_dir>/.hash`.
+    // Makes the CLI `watch` and Unity's `TPSheetImporter` mutually idempotent
+    // on a tpsheet — whichever runs second short-circuits. See CLAUDE.md.
     let tpsheet_text = read_to_string(input.tpsheet_path)?;
     let smart_key = extract_smart_update_key(&tpsheet_text);
     let hash_path = input.sprite_dir.join(".hash");
@@ -618,14 +613,24 @@ fn fab_manifest_path(tps_path: &Path) -> PathBuf {
     p
 }
 
-fn load_fab_manifest(tps_path: &Path) -> Result<Option<fab::Manifest>, Error> {
+/// Read + parse the `.tps.fab.json` sibling. `Ok(None)` when it's absent;
+/// any other read error or a parse error propagates. Shared by the CSA
+/// (`load_fab_manifest`) and SMA (`load_mesh_manifest`) lowerings, which each
+/// filter `trees` by `output` type.
+fn load_manifest(tps_path: &Path) -> Result<Option<manifest::Manifest>, Error> {
     let path = fab_manifest_path(tps_path);
     let text = match fs::read_to_string(&path) {
         Ok(t) => t,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(source) => return Err(Error::Io { path, source }),
     };
-    let m = manifest::parse(&text).map_err(Error::Manifest)?;
+    manifest::parse(&text).map(Some).map_err(Error::Manifest)
+}
+
+fn load_fab_manifest(tps_path: &Path) -> Result<Option<fab::Manifest>, Error> {
+    let Some(m) = load_manifest(tps_path)? else {
+        return Ok(None);
+    };
     let mut combined: Vec<fab::Combined> = Vec::with_capacity(m.trees.len());
     for tree in &m.trees {
         // Only CSA trees flow into the sprite-emit path; SMA trees are
@@ -743,13 +748,9 @@ fn emit_combined_sprites(
 // trees — the `output.type` discriminator picks them out at bridge time.
 
 fn load_mesh_manifest(tps_path: &Path) -> Result<Option<MeshManifest>, Error> {
-    let fab_path = fab_manifest_path(tps_path);
-    let text = match fs::read_to_string(&fab_path) {
-        Ok(t) => t,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(source) => return Err(Error::Io { path: fab_path, source }),
+    let Some(m) = load_manifest(tps_path)? else {
+        return Ok(None);
     };
-    let m = manifest::parse(&text).map_err(Error::Manifest)?;
     let mut sma: Vec<MeshCombined> = Vec::new();
     for tree in &m.trees {
         if matches!(tree.output, manifest::Output::Sma { .. }) {
@@ -1193,11 +1194,6 @@ mod tests {
         // skip checking m_PixelsToUnits for any sprite where current .tps
         // disagrees with the golden, mirroring the integration test in
         // tests/golden_parity.rs.
-        let golden_text = std::fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/golden/orgel/sprites/Cake__DecoLeft.asset"),
-        )
-        .unwrap();
         let golden_meta_text = std::fs::read_to_string(
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("tests/golden/orgel/sprites/Cake__DecoLeft.asset.meta"),
@@ -1221,7 +1217,6 @@ mod tests {
                    "guid preserved from existing meta");
         // Sanity-check the asset still parses correctly even if drifted.
         assert!(written.contains("Cake__DecoLeft"));
-        let _ = golden_text;
 
         let _ = fs::remove_dir_all(&dir);
     }

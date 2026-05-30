@@ -66,11 +66,11 @@ foreach (var pp in paths) {
         string atlasPngGuid = tex ? AssetGuid(tex) : "";
         string atlasPngPath = tex ? AssetDatabase.GetAssetPath(tex) : "";
 
-        // Atlas _prefix from TPSImporter on the sibling .tps.
+        // Atlas _prefix from TPSheetImporter on the sibling .tpsheet.
         string atlasPrefix = "";
         if (atlasPngPath.Length > 0) {
-            var tpsPath = atlasPngPath.Substring(0, atlasPngPath.Length - 4) + ".tps";
-            var imp = AssetImporter.GetAtPath(tpsPath) as TexturePacker.TPSImporter;
+            var tpsheetPath = atlasPngPath.Substring(0, atlasPngPath.Length - 4) + ".tpsheet";
+            var imp = AssetImporter.GetAtPath(tpsheetPath) as TexturePacker.TPSheetImporter;
             if (imp != null) atlasPrefix = imp.Prefix;
         }
 
