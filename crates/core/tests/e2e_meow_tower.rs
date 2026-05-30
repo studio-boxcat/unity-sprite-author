@@ -51,8 +51,10 @@ fn find_tpsheets(root: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-// Mirrors TPSheetPostprocessor.IsLegacyTexture: textureType=Sprite (8) AND
-// spriteMode=Multiple (2). YAML values are numeric.
+// Legacy Tight + `spriteMode: Multiple` atlas: textureType=Sprite (8) AND
+// spriteMode=Multiple (2). These carry divergent textureRect dims (see the
+// textureRect note in CLAUDE.md), so the e2e harness skips them. YAML values
+// are numeric.
 fn is_legacy_texture(meta_text: &str) -> bool {
     let mut texture_type: Option<i32> = None;
     let mut sprite_mode: Option<i32> = None;
