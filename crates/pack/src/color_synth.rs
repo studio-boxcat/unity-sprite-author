@@ -6,9 +6,9 @@
 //! source dir, this module drops a synthesized swatch so the next
 //! `texturepacker` pack picks it up. Mirrors meow-tower's
 //! `CanvasSpriteAuthor.ReplaceColorTextures` (which ran inside the
-//! Editor); we run it offline as part of the CLI orchestrator. No-op
-//! when there's no fab.json, no polygon leaves, or every required swatch
-//! already exists.
+//! Editor); we run it as the pre-pack step shared by the CLI one-shot and
+//! the bridge's Editor watch. No-op when there's no fab.json, no polygon
+//! leaves, or every required swatch already exists.
 
 use std::fs;
 use std::io;

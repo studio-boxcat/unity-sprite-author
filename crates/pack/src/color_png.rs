@@ -7,8 +7,8 @@
 //!
 //! Output is a fixed 73-byte byte-exact stream: PNG signature + IHDR (8-bit
 //! RGBA, no interlace) + IDAT (zlib stored-block scanline) + IEND. No
-//! external `png` crate — the core rlib is hand-rolled by policy and the
-//! CLI follows suit.
+//! external `png` crate — the core rlib is hand-rolled by policy; this crate
+//! follows suit.
 
 /// PNG signature: `\x89PNG\r\n\x1a\n`.
 const PNG_SIG: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];

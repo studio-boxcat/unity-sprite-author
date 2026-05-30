@@ -3,12 +3,12 @@
 //! are synthesized via `unity-assetdb` so first-time packs outside the
 //! Unity Editor don't error on the atlas-GUID read. Missing
 //! `Color_*.png` swatches referenced by a sibling `.tps.fab.json` are
-//! synthesized into the .tps's source dir before the pack (see
-//! `color_synth`).
+//! synthesized into the .tps's source dir before the pack (via the
+//! `unity-sprite-author-pack` crate).
 //!
 //! See `CLAUDE.md` for the rlib's contract; this binary is a thin
-//! orchestrator that mirrors what `TPSheetPostprocessor.cs` does inside
-//! Unity.
+//! orchestrator — the in-Editor equivalent is `TPSheetImporter` +
+//! the bridge's repack-on-source-change watch.
 
 
 use std::path::{Path, PathBuf};
