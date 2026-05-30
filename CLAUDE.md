@@ -117,7 +117,7 @@ Cargo workspace, three crates (plus vendored submodules under `vendor/`, see bel
 Vendored as git submodules (path deps from `crates/cli`; each is its own Cargo workspace/crate, so the root `Cargo.toml` `exclude = ["vendor"]`s them):
 
 - **`vendor/unity-assetdb/`** ([studio-boxcat/unity-assetdb](https://github.com/studio-boxcat/unity-assetdb)) — `.tps.meta`/`.png.meta` minting (`register`); its own `refresh` rides `unity-watch`.
-- **`vendor/tps/`** ([studio-boxcat/tps](https://github.com/studio-boxcat/tps)) — the `tps-core` TexturePacker `.tps` DOM (`list_file_lists`, sprite settings).
+- **`vendor/tps/`** ([studio-boxcat/tps](https://github.com/studio-boxcat/tps)) — the `tps-core` TexturePacker `.tps` DOM (`list_file_lists`, sprite settings). `crates/pack` git-deps it; the root `[patch]` collapses it to this submodule. Cross-repo deploy + propagation (push → submodule bump → rebuild): `` `tps-deployment.md` `` (tps).
 - **`vendor/unity-watch/`** ([studio-boxcat/unity-watch](https://github.com/studio-boxcat/unity-watch)) — standalone shared Watchman wire layer (`since` / `enumerate` / `subscribe` + `init_socket_env`). Not consumed directly here, but the vendored unity-assetdb (and unity-solution-generator) git-dep it — the root `Cargo.toml` `[patch]` redirects that git URL to this submodule so the whole graph resolves to one copy.
 
 Supporting: `docs/` (fab schema, SMA migration map, Unity-Editor probe runbooks), `scripts/` (corpus regen, authoring teardown), `justfile` (`just install` → `~/.local/bin/`).
