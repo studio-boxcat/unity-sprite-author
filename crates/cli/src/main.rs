@@ -33,7 +33,8 @@ options:
                         <tps-parent>/<tps-stem>/.
   --skip-pack           Don't run TexturePackerCLI; assume .tpsheet
                         and .png are already up to date.
-  --texturepacker <CMD> TexturePackerCLI command. Default: \"texturepacker\".
+  --texturepacker <CMD> TexturePackerCLI command. Default: $TEXTUREPACKER,
+                        else the platform's canonical install path.
   -h, --help            Show this help.
 ";
 
@@ -85,7 +86,7 @@ impl Cli {
         let mut prefix: Option<String> = None;
         let mut sprite_dir: Option<PathBuf> = None;
         let mut skip_pack = false;
-        let mut texturepacker = "texturepacker".to_string();
+        let mut texturepacker = usa_pack::texturepacker_cmd();
         let mut help = false;
         let mut iter = args.iter();
         while let Some(arg) = iter.next() {

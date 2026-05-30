@@ -18,6 +18,7 @@ path = "src/main.rs"
 # `eframe::get_value` keyed by `eframe::APP_KEY`.
 [dependencies]
 unity-sprite-author = { path = "../core" }
+unity-sprite-author-pack = { path = "../pack" }  # texturepacker_cmd resolver
 eframe = { version = "0.29", default-features = false, features = ["default_fonts", "glow", "wayland", "x11", "persistence"] }
 egui = "0.29"
 egui_extras = { version = "0.29", features = ["image"] }

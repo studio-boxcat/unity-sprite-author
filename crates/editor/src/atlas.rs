@@ -330,11 +330,11 @@ mod tests {
     }
 }
 
-/// Shell out to TexturePackerCLI in the `.tps`'s parent dir. Mirrors the
-/// `pack` fn in `unity-sprite-author-cli`. Override the command via the
-/// `TEXTUREPACKER` env var (default: `texturepacker`).
+/// Shell out to TexturePackerCLI in the `.tps`'s parent dir. Command resolved
+/// by `usa_pack::texturepacker_cmd` (`$TEXTUREPACKER`, else the platform's
+/// canonical install path) — the same source the CLI and bridge watch use.
 fn run_texturepacker(tps_path: &Path) -> Result<(), AtlasError> {
-    let cmd = std::env::var("TEXTUREPACKER").unwrap_or_else(|_| "texturepacker".to_string());
+    let cmd = usa_pack::texturepacker_cmd();
     let dir = tps_path.parent().unwrap_or(Path::new("."));
     let name = tps_path.file_name().unwrap_or_default();
     let status = Command::new(&cmd)
