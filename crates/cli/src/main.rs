@@ -12,7 +12,6 @@
 
 mod color_png;
 mod color_synth;
-mod watch;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -24,16 +23,10 @@ use unity_sprite_author::pipeline::{self, GenerateInputs, GenerateOutput, Standa
 
 const USAGE: &str = "\
 usage: unity-sprite-author <atlas.tps> [options]
-       unity-sprite-author watch [project-dir] [options]
 
   Packs the .tps with TexturePackerCLI, then authors Unity Sprite
   .asset files from the resulting .tpsheet. Missing .tps.meta and
   .png.meta are minted via unity-assetdb.
-
-  `watch` runs continuously: it watches every .tps under Assets/ and the
-  source folders each one references, re-packs + re-authors on change, and
-  lets Unity's TPSheetImporter pick up the .tpsheet itself. See
-  `unity-sprite-author watch --help`.
 
 options:
   --prefix <STR>        Sprite filename prefix. Default: `_prefix` from
@@ -48,15 +41,6 @@ options:
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().map(String::as_str) == Some("watch") {
-        return match watch::run(&args[1..]) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("error: {e}");
-                ExitCode::FAILURE
-            }
-        };
-    }
     let cli = match Cli::parse(&args) {
         Ok(c) => c,
         Err(msg) => {
@@ -175,10 +159,10 @@ fn run(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Pack one `.tps` with TexturePackerCLI (unless `skip_pack`), mint any
-/// missing `.tps.meta` / `.png.meta`, then run `pipeline::generate`. Shared
-/// by the one-shot CLI and the `watch` loop. Returns the generate output and
-/// the resolved Unity project root (for caller-side relative-path logging).
-pub(crate) fn author_tps(
+/// missing `.tps.meta` / `.png.meta`, then run `pipeline::generate`. Returns
+/// the generate output and the resolved Unity project root (for caller-side
+/// relative-path logging).
+fn author_tps(
     tps_path: &Path,
     texturepacker: &str,
     skip_pack: bool,

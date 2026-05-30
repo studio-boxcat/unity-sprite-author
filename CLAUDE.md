@@ -25,20 +25,15 @@ The bar is **byte-exactness**: output must equal what Unity's `EditorUtility.Cop
 
 ## Pipeline
 
-Two triggers feed `pipeline::generate`; the `.hash` skip ([[#invariants]]) makes them mutually idempotent so neither double-authors.
-
 ```
-                          ┌─ Unity import → TPSheetImporter.OnImportAsset
-Foo.tpsheet changes ──────┤      ↓
-                          │  BoxcatBridge.SpriteAuthorGenerate → bxc_sprite_author_generate (cdylib)
-                          │      ↓
-                          │  pipeline::generate (this rlib) — .tpsheet retained, .asset written/pruned
-                          │      ↑
-Foo.tps / source folder ──┴─ CLI `watch` → repack (texturepacker) → Foo.tpsheet + Foo.png → generate
-   changes (watchman)
+Foo.tpsheet changes → Unity import → TPSheetImporter.OnImportAsset
+       ↓
+BoxcatBridge.SpriteAuthorGenerate → bxc_sprite_author_generate (cdylib)
+       ↓
+pipeline::generate (this rlib) — .tpsheet retained, .asset written/pruned
 ```
 
-TexturePacker emits `Foo.tps` + `Foo.tpsheet` + `Foo.png` into `Assets/`. The Unity Editor reacts to `.tpsheet` writes on its own; the CLI `watch` ([[#cli]]) reacts to `.tps` / source-folder writes by re-packing (which produces a fresh `.tpsheet` the Editor then picks up too).
+TexturePacker emits `Foo.tps` + `Foo.tpsheet` + `Foo.png` into `Assets/`. Unity reacts only to `.tpsheet` writes (via `TPSheetImporter`); the upstream `.tps` / source-folder → repack step is driven separately (the `Texture Packer / Pack` Editor menu, or the offline `unity-sprite-author <atlas.tps>` one-shot), which produces a fresh `.tpsheet` the importer then picks up.
 
 ## Public Rust API
 
@@ -72,7 +67,7 @@ For non-pipeline consumers (the GUI editor today), `combine::build_combined_with
 - **Skip-write-if-equal**: before writing, read existing bytes; if identical, skip. Avoids mtime churn that would re-import dependents in Unity.
 - **No global state**: no `OnceCell`, `lazy_static`, thread-locals, or caches outliving a `generate` call. Mono does not unload native plugins on domain reload — global state would leak across script recompiles.
 - `.tpsheet` is retained on disk after a successful run — TexturePacker uses it for its `smartUpdateKey` hash check (skips redundant `.png` rewrites on next publish).
-- **SmartUpdate `.hash` skip**: TexturePacker embeds a `$TexturePacker:SmartUpdate:<key>$` line in the `.tpsheet` header. `generate` caches the last-processed key in `<sprite_dir>/.hash` and short-circuits to an empty `GenerateOutput` when it still matches. This makes the two independent authors of a given `.tpsheet` — the CLI [[#cli]] `watch` (which repacks then generates) and Unity's `TPSheetImporter` — mutually idempotent: whichever runs second sees the matching key and skips. Best-effort write; a missing / unwritable `.hash` just costs the next run a full pass. (`.hash` is not a `.asset`, so orphan pruning never touches it.)
+- **SmartUpdate `.hash` skip**: TexturePacker embeds a `$TexturePacker:SmartUpdate:<key>$` line in the `.tpsheet` header. `generate` caches the last-processed key in `<sprite_dir>/.hash` and short-circuits to an empty `GenerateOutput` when it still matches. So a redundant `generate` on an unchanged `.tpsheet` is a cheap no-op — relevant whenever more than one author can touch the same `.tpsheet` (e.g. an external repack-and-author plus Unity's `TPSheetImporter`). Best-effort write; a missing / unwritable `.hash` just costs the next run a full pass. (`.hash` is not a `.asset`, so orphan pruning never touches it.)
 - Atlas `.png.meta` `alphaIsTransparency` is kept in lockstep with the tpsheet's `alphahandling` header: `PremultiplyAlpha` / `KeepTransparentPixels` → `0` (premultiplied); anything else → `1` (Unity straight-alpha default). Surgical line rewrite — only the value flips. When a rewrite happens, the atlas `.png` path is appended to `written_paths` so the caller's `AssetDatabase.ImportAsset` retriggers `TextureImporter` (a `.meta`-only touch isn't always enough). Missing field → `Error::Meta(NoAlphaIsTransparencyField)`.
 
 ### CLI
@@ -84,14 +79,9 @@ just install                                  # builds release, symlinks to ~/.l
 unity-sprite-author Atlas.tps                 # pack + author; prefix/ppu read from existing metas
 unity-sprite-author Atlas.tps --prefix AC_ --sprite-dir Atlas
 unity-sprite-author Atlas.tps --skip-pack     # reuse existing .tpsheet/.png
-
-unity-sprite-author watch                     # repack every .tps under Assets/ on source change
-unity-sprite-author watch path/in/project     # any path in the project (resolves the worktree root)
 ```
 
 `--prefix` overrides the meta-derived default (`_prefix` from the `.tpsheet.meta`, else `""`). PPU is read from `<atlas>.png.meta` inside `generate` — there is no `--ppu` flag. Default `--sprite-dir` follows `pipeline::StandardLayout` (`<tps-parent>/<tps-stem>/`), shared with the meow-tower bridge. `.tps.fab.json` / `.tps.mesh.json` sidecars are picked up automatically since the bin just forwards `tps_path` to `pipeline::generate` — no extra flags.
-
-`watch` is the inverse trigger of Unity's importer: it watches every `.tps` under `Assets/` **and the source folders/files each one references** (TexturePacker `fileLists`), and on change re-packs the affected atlas (TexturePackerCLI) + re-authors. Unity's `TPSheetImporter` independently handles the regenerated `.tpsheet → .asset`; the `.hash` skip keeps the two from duplicating work. It holds one watchman **subscription** (push, not polling) via the shared `unity-watch` crate ([[#layout]]) — `init_socket_env` pins `WATCHMAN_SOCK` so each connect skips the `get-sockname` fork, and the daemon coalesces a single OS-level watch across this and unity-assetdb's own refresh, so running both is free. The first (fresh-instance) push only (re)scans the `.tps` set and waits — it does **not** repack everything (use the one-shot form for that). Project root is resolved from the cwd / `[project-dir]` up to the nearest `ProjectSettings/`, so it watches the active `wt go` worktree's own root. Requires `watchman` (`brew install watchman`).
 
 ### Caller-side notes (Unity / C#)
 
@@ -120,13 +110,13 @@ TS prior art at `prefab-saloon/src/lib/sprite/` (`tpsheet-parser.ts`, `generator
 Cargo workspace, three crates (plus vendored submodules under `vendor/`, see below):
 
 - **`crates/core/`** — the rlib (`unity-sprite-author` package). Consumed by the BoxcatBridge cdylib in meow-tower (`Native~/bridge/` points its `path = "..."` here). Module-level orientation lives in `src/lib.rs`; key entry points are `pipeline::generate`, `manifest::parse` (unified CSA+SMA tree), `combine::build_combined`, `mesh_emit::build_mesh`, and `emit::SpriteAsset`. Golden tests under `tests/golden/{orgel,fab,sma}/`; opt-in `e2e_meow_tower.rs` walks a meow-tower checkout.
-- **`crates/cli/`** — offline `unity-sprite-author` bin. Shells out to TexturePackerCLI, threads the result into `core`. Pre-pack step synthesizes missing 1×1 `Color_*.png` swatches into the .tps source dir (`color_png` + `color_synth` modules; .tps DOM via the `tps-core` crate). The `watch` subcommand (`watch.rs`) drives a long-lived repack-on-source-change loop over the shared `unity-watch` wire layer. See [[#cli]].
+- **`crates/cli/`** — offline `unity-sprite-author` bin. Shells out to TexturePackerCLI, threads the result into `core`. Pre-pack step synthesizes missing 1×1 `Color_*.png` swatches into the .tps source dir (`color_png` + `color_synth` modules; .tps DOM via the `tps-core` crate). See [[#cli]].
 - **`crates/editor/`** — GUI tool (`eframe` + `egui`, native macOS menubar via `muda`) for authoring `.tps.fab.json`. Every user-facing command flows through one `Action` enum in `action.rs` — extend `Action`, add a `match` arm in `App::dispatch`, optionally register a `CommandEntry` for palette discoverability. Editor and CLI never leak into the rlib.
 
 Vendored as git submodules (path deps from `crates/cli`; each is its own Cargo workspace/crate, so the root `Cargo.toml` `exclude = ["vendor"]`s them):
 
 - **`vendor/unity-assetdb/`** ([studio-boxcat/unity-assetdb](https://github.com/studio-boxcat/unity-assetdb)) — `.tps.meta`/`.png.meta` minting (`register`); its own `refresh` rides `unity-watch`.
 - **`vendor/tps/`** ([studio-boxcat/tps](https://github.com/studio-boxcat/tps)) — the `tps-core` TexturePacker `.tps` DOM (`list_file_lists`, sprite settings).
-- **`vendor/unity-watch/`** ([studio-boxcat/unity-watch](https://github.com/studio-boxcat/unity-watch)) — standalone shared Watchman wire layer (`since` / `enumerate` / `subscribe` + `init_socket_env`, all driven by a caller-supplied dir/suffix `Filter`). Consumed by `crates/cli` (path) **and**, as a git dep, by the vendored unity-assetdb; the root `Cargo.toml` `[patch]` redirects that git URL to this one submodule so both resolve to a single editable copy. Also consumed by unity-solution-generator.
+- **`vendor/unity-watch/`** ([studio-boxcat/unity-watch](https://github.com/studio-boxcat/unity-watch)) — standalone shared Watchman wire layer (`since` / `enumerate` / `subscribe` + `init_socket_env`). Not consumed directly here, but the vendored unity-assetdb (and unity-solution-generator) git-dep it — the root `Cargo.toml` `[patch]` redirects that git URL to this submodule so the whole graph resolves to one copy.
 
 Supporting: `docs/` (fab schema, SMA migration map, Unity-Editor probe runbooks), `scripts/` (corpus regen, authoring teardown), `justfile` (`just install` → `~/.local/bin/`).

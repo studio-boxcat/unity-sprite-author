@@ -180,8 +180,9 @@ pub struct GenerateOutput {
 pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
     // SmartUpdate hash check: skip the whole pipeline when the tpsheet's
     // `$TexturePacker:SmartUpdate:<key>$` still matches `<sprite_dir>/.hash`.
-    // Makes the CLI `watch` and Unity's `TPSheetImporter` mutually idempotent
-    // on a tpsheet — whichever runs second short-circuits. See CLAUDE.md.
+    // Makes a redundant generate on an unchanged tpsheet a cheap no-op —
+    // relevant when more than one author can touch it (an external
+    // repack-and-author + Unity's `TPSheetImporter`). See CLAUDE.md.
     let tpsheet_text = read_to_string(input.tpsheet_path)?;
     let smart_key = extract_smart_update_key(&tpsheet_text);
     let hash_path = input.sprite_dir.join(".hash");
