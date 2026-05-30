@@ -1,6 +1,20 @@
 [workspace]
 resolver = "2"
 members = ["crates/core", "crates/cli", "crates/editor"]
+# Vendored submodules (unity-assetdb, tps, unity-watch) are their own Cargo
+# workspaces/crates. Without this, Cargo adopts their nested crates into THIS
+# workspace and their `*.workspace = true` inheritance fails against our root
+# (which has no [workspace.package]). They're consumed only as path deps from
+# crates/cli.
+exclude = ["vendor"]
+
+# The vendored unity-assetdb depends on `unity-watch` as a git dep (so it
+# builds standalone). Redirect that git source to our local submodule so it
+# and crates/cli's path dep resolve to ONE copy — editable in place, no
+# network, no duplicate-package error. Keep the URL in exact lockstep with the
+# dep declared in vendor/unity-assetdb/Cargo.toml.
+[patch."https://github.com/studio-boxcat/unity-watch.git"]
+unity-watch = { path = "vendor/unity-watch" }
 
 [profile.release]
 panic = "unwind"

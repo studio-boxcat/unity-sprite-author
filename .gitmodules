@@ -1,0 +1,9 @@
+[submodule "vendor/unity-assetdb"]
+	path = vendor/unity-assetdb
+	url = git@github.com:studio-boxcat/unity-assetdb.git
+[submodule "vendor/tps"]
+	path = vendor/tps
+	url = git@github.com:studio-boxcat/tps.git
+[submodule "vendor/unity-watch"]
+	path = vendor/unity-watch
+	url = git@github.com:studio-boxcat/unity-watch.git
