@@ -12,6 +12,7 @@
 
 mod color_png;
 mod color_synth;
+mod watch;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -19,14 +20,20 @@ use std::time::Duration;
 
 use unity_assetdb::register::{self, ImporterKind, RegisterOptions};
 use unity_sprite_author::meta::read_tps_prefix;
-use unity_sprite_author::pipeline::{self, GenerateInputs, StandardLayout};
+use unity_sprite_author::pipeline::{self, GenerateInputs, GenerateOutput, StandardLayout};
 
 const USAGE: &str = "\
 usage: unity-sprite-author <atlas.tps> [options]
+       unity-sprite-author watch [project-dir] [options]
 
   Packs the .tps with TexturePackerCLI, then authors Unity Sprite
   .asset files from the resulting .tpsheet. Missing .tps.meta and
   .png.meta are minted via unity-assetdb.
+
+  `watch` runs continuously: it watches every .tps under Assets/ and the
+  source folders each one references, re-packs + re-authors on change, and
+  lets Unity's TPSheetImporter pick up the .tpsheet itself. See
+  `unity-sprite-author watch --help`.
 
 options:
   --prefix <STR>        Sprite filename prefix. Default: TPSImporter
@@ -41,6 +48,15 @@ options:
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("watch") {
+        return match watch::run(&args[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("error: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let cli = match Cli::parse(&args) {
         Ok(c) => c,
         Err(msg) => {
@@ -132,28 +148,66 @@ impl Cli {
 }
 
 fn run(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+    let (out, project_root) = author_tps(
+        &cli.tps_path,
+        &cli.texturepacker,
+        cli.skip_pack,
+        cli.prefix.as_deref(),
+        cli.sprite_dir.as_deref(),
+    )?;
+
+    eprintln!(
+        "written: {}  deleted: {}  warnings: {}",
+        out.written_paths.len(),
+        out.deleted_paths.len(),
+        out.warnings.len()
+    );
+    for p in &out.written_paths {
+        println!("W\t{}", rel(p, &project_root));
+    }
+    for p in &out.deleted_paths {
+        println!("D\t{}", rel(p, &project_root));
+    }
+    for w in &out.warnings {
+        eprintln!("warn: {w}");
+    }
+    Ok(())
+}
+
+/// Pack one `.tps` with TexturePackerCLI (unless `skip_pack`), mint any
+/// missing `.tps.meta` / `.png.meta`, then run `pipeline::generate`. Shared
+/// by the one-shot CLI and the `watch` loop. Returns the generate output and
+/// the resolved Unity project root (for caller-side relative-path logging).
+pub(crate) fn author_tps(
+    tps_path: &Path,
+    texturepacker: &str,
+    skip_pack: bool,
+    prefix_override: Option<&str>,
+    sprite_dir_override: Option<&Path>,
+) -> Result<(GenerateOutput, PathBuf), Box<dyn std::error::Error>> {
     // Canonicalize before TexturePackerCLI runs — texturepacker resolves
     // relative paths in the .tps against its CWD, so we cd into the .tps's
     // dir for the pack step regardless.
-    let tps_path = cli
-        .tps_path
+    let tps_path = tps_path
         .canonicalize()
-        .map_err(|e| format!("canonicalize {}: {e}", cli.tps_path.display()))?;
+        .map_err(|e| format!("canonicalize {}: {e}", tps_path.display()))?;
     let layout = StandardLayout::from_tps(&tps_path)?;
     let tps_dir = layout.tps_path.parent().unwrap().to_path_buf();
     let tpsheet_path = layout.tpsheet_path.clone();
     let png_path = layout.atlas_png_path.clone();
-    let sprite_dir = cli.sprite_dir.clone().unwrap_or_else(|| layout.sprite_dir.clone());
+    let sprite_dir = sprite_dir_override
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| layout.sprite_dir.clone());
 
     // Pre-pack: synthesize any missing `Color_*.png` swatches referenced
     // by a sibling `.tps.fab.json`. No-op when no fab.json exists or all
     // referenced swatches are already on disk.
-    if !cli.skip_pack {
+    if !skip_pack {
         let synth = color_synth::synthesize_for_tps(&tps_path)?;
         for p in &synth.written_paths {
             eprintln!("synth color: {}", rel(p, &tps_dir));
         }
-        pack(&cli.texturepacker, &tps_path)?;
+        pack(texturepacker, &tps_path)?;
     }
     if !tpsheet_path.exists() {
         return Err(format!(
@@ -170,12 +224,7 @@ fn run(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         .into());
     }
 
-    let project_root = find_project_root(&tps_dir).ok_or_else(|| {
-        format!(
-            "no Unity project root above {} (needs ProjectSettings/)",
-            tps_dir.display()
-        )
-    })?;
+    let project_root = unity_assetdb::walk::find_project_root(&tps_dir)?;
     let out_dir = project_root.join("Library").join("unity-assetdb");
 
     ensure_meta(&tps_path, &project_root, &out_dir, None)?;
@@ -186,8 +235,8 @@ fn run(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         Some(ImporterKind::Texture),
     )?;
 
-    let prefix = match &cli.prefix {
-        Some(p) => p.clone(),
+    let prefix = match prefix_override {
+        Some(p) => p.to_string(),
         // TPSheetImporter stores _prefix in .tpsheet.meta; fall back to
         // .tps.meta (TPSImporter, legacy) for projects mid-migration.
         None => read_tps_prefix(&tpsheet_path)
@@ -213,22 +262,7 @@ fn run(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         prefix: &prefix,
     })?;
 
-    eprintln!(
-        "written: {}  deleted: {}  warnings: {}",
-        out.written_paths.len(),
-        out.deleted_paths.len(),
-        out.warnings.len()
-    );
-    for p in &out.written_paths {
-        println!("W\t{}", rel(p, &project_root));
-    }
-    for p in &out.deleted_paths {
-        println!("D\t{}", rel(p, &project_root));
-    }
-    for w in &out.warnings {
-        eprintln!("warn: {w}");
-    }
-    Ok(())
+    Ok((out, project_root))
 }
 
 fn pack(cmd: &str, tps: &Path) -> Result<(), String> {
@@ -272,22 +306,7 @@ fn ensure_meta(
     Ok(())
 }
 
-/// Walk up `start` until a directory containing `ProjectSettings/` is
-/// found. `Assets/` is implied — we're walking up from a `.tps` already
-/// inside it. `unity_assetdb::walk::resolve_project_root` with `Some(p)`
-/// requires `p` to already be the project root, so we do the climb here.
-fn find_project_root(start: &Path) -> Option<PathBuf> {
-    let mut cur = Some(start);
-    while let Some(p) = cur {
-        if p.join("ProjectSettings").is_dir() {
-            return Some(p.to_path_buf());
-        }
-        cur = p.parent();
-    }
-    None
-}
-
-fn rel<'a>(p: &'a Path, root: &Path) -> std::borrow::Cow<'a, str> {
+pub(crate) fn rel<'a>(p: &'a Path, root: &Path) -> std::borrow::Cow<'a, str> {
     p.strip_prefix(root)
         .map(|r| r.to_string_lossy().into_owned().into())
         .unwrap_or_else(|_| p.to_string_lossy())

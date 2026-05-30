@@ -37,6 +37,24 @@ source becomes available (UnityCsReference or decompilation).
 - Run `scripts/migrate-prefix-to-tpsheet.sh` on meow-tower after
   `.tpsheet` files exist on disk (requires one full TP corpus pack).
 
+## `watch` (CLI) follow-ups
+
+- No unit coverage for `crates/cli/src/watch.rs` — the hint→`.tps` matching
+  (`TpsEntry::matches`), `.tps` discovery, and arg parsing are exercised only
+  manually + via the shared `unity-watch` tests. Add fixtures if the matching
+  logic grows (e.g. absolute `fileLists` entries, symlinked source dirs).
+- Watchman `Fresh` on startup intentionally does **not** repack everything
+  (only re-scans the `.tps` set). If a source changed while `watch` was down,
+  that atlas stays stale until its next edit — run the one-shot CLI to catch up.
+
+## `e2e_meow_tower` drift
+
+`GiftShop` and `PiggyBank` atlases show 4 `.asset` mismatches in the opt-in
+`e2e_meow_tower` test — the live meow-tower `.tps` drifted from the committed
+`.asset` goldens (same class as the `m_Border` outlier noted in CLAUDE.md, not
+an emit regression: the test goes through `emit::emit`, untouched by the watch
+work). Repack those atlases in meow-tower or refresh the goldens to re-green.
+
 ## Deferred (waiting on a real case)
 
 - **`keepStandalone` allowlist** — only matters if a part ever needs

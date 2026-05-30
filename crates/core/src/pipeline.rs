@@ -151,7 +151,7 @@ pub struct GenerateInputs<'a> {
 /// Result of a successful [`generate`] call. The caller routes each path
 /// through `AssetDatabase.ImportAsset` / `AssetDatabase.DeleteAsset` to
 /// notify Unity of the filesystem changes.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct GenerateOutput {
     /// Sprite `.asset` paths newly written or updated, plus the atlas `.png`
     /// when its sibling `.png.meta` was rewritten to sync `alphaIsTransparency`
@@ -178,9 +178,26 @@ pub struct GenerateOutput {
 /// leave the original files. See CLAUDE.md "Public Rust API" /
 /// "Invariants" for the two-phase commit semantics.
 pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
-    // ---- Phase 1: pure compute ------------------------------------------
-
+    // ---- SmartUpdate hash check ----------------------------------------
+    // TexturePacker embeds a `$TexturePacker:SmartUpdate:<key>$` line in
+    // the tpsheet header. We store the last-processed key in
+    // `<sprite_dir>/.hash`. If they match, the tpsheet hasn't changed
+    // since the last run — skip the entire pipeline. This makes the two
+    // independent authors of a given tpsheet (this crate's CLI `watch`,
+    // which repacks then generates, and Unity's `TPSheetImporter`)
+    // mutually idempotent: whichever runs second sees a matching key and
+    // short-circuits to an empty result.
     let tpsheet_text = read_to_string(input.tpsheet_path)?;
+    let smart_key = extract_smart_update_key(&tpsheet_text);
+    let hash_path = input.sprite_dir.join(".hash");
+    if let Some(key) = &smart_key
+        && let Ok(stored) = fs::read_to_string(&hash_path)
+        && stored.trim() == key.as_str()
+    {
+        return Ok(GenerateOutput::default());
+    }
+
+    // ---- Phase 1: pure compute ------------------------------------------
 
     let sheet = tpsheet::parse(&tpsheet_text).map_err(Error::Tpsheet)?;
     if sheet.tex.width == 0 || sheet.tex.height == 0 {
@@ -204,7 +221,7 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
     let atlas_guid = meta::parse_guid(&atlas_meta_text).map_err(Error::Meta)?;
 
     let ppu = meta::read_png_ppu(input.atlas_png_path)
-        .ok_or_else(|| Error::Meta(meta::MetaError::NoPpu))?;
+        .ok_or(Error::Meta(meta::MetaError::NoPpu))?;
 
     // Optional `.tps.fab.json` sidecar (see docs/fab.md). When present, it
     // declares fabricated combined sprites built from referenced parts; those
@@ -481,11 +498,32 @@ pub fn generate(input: &GenerateInputs) -> Result<GenerateOutput, Error> {
         }
     }
 
+    // Write the SmartUpdate key so the next run (this CLI or Unity's
+    // importer) can skip an unchanged tpsheet. Best-effort — a failed
+    // write just means the next run does the full pass.
+    if let Some(key) = &smart_key {
+        let _ = fs::write(&hash_path, key);
+    }
+
     Ok(GenerateOutput {
         written_paths: paths_to_import,
         deleted_paths,
         warnings,
     })
+}
+
+const SMART_UPDATE_PREFIX: &str = "$TexturePacker:SmartUpdate:";
+
+fn extract_smart_update_key(tpsheet_text: &str) -> Option<String> {
+    for line in tpsheet_text.lines() {
+        if let Some(rest) = line.find(SMART_UPDATE_PREFIX).map(|i| &line[i + SMART_UPDATE_PREFIX.len()..]) {
+            let key = rest.trim_end_matches('$').trim();
+            if !key.is_empty() {
+                return Some(key.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn read_to_string(path: &Path) -> Result<String, Error> {
